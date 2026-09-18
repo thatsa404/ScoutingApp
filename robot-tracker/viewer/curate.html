@@ -1,0 +1,683 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtrack curator</title>
+<style>
+  :root{
+    --bg:#16181c; --panel:#1e2126; --line:#2e323a; --fg:#e8eaed; --dim:#9aa0a6;
+    --red:#ef4444; --blue:#3b82f6; --ok:#22c55e; --warn:#f59e0b;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:16px;padding:10px 16px;
+         border-bottom:1px solid var(--line);background:var(--panel);
+         position:sticky;top:0;z-index:5;flex-wrap:wrap}
+  h1{font-size:15px;margin:0;font-weight:600;letter-spacing:.2px}
+  .sp{flex:1}
+  button{background:#2a2e35;color:var(--fg);border:1px solid var(--line);
+         border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}
+  button:hover{background:#343942}
+  button:disabled{opacity:.4;cursor:default}
+  .primary{background:#2563eb;border-color:#2563eb}
+  .primary:hover{background:#1d4ed8}
+  #drop{margin:12% auto;max-width:620px;border:2px dashed var(--line);
+        border-radius:12px;padding:48px 32px;text-align:center;color:var(--dim)}
+  #drop.hot{border-color:#2563eb;color:var(--fg)}
+  code{background:#0f1115;padding:2px 6px;border-radius:4px;font-size:12.5px}
+  main{padding:16px;max-width:1500px;margin:0 auto}
+  .meta{display:flex;gap:18px;align-items:baseline;flex-wrap:wrap;color:var(--dim);
+        font-size:12.5px;margin-bottom:10px}
+  .tid{font-size:22px;font-weight:700;color:var(--fg);letter-spacing:.5px}
+  .pill{border:1px solid var(--line);border-radius:999px;padding:2px 10px}
+  .pill.red{color:var(--red);border-color:#5b2626}
+  .pill.blue{color:var(--blue);border-color:#23406e}
+  /* WRAPS, never scrolls. A horizontally scrolling strip hid the later crops of
+     every track, so a curator judged mid-track switches from the first half alone --
+     which is exactly the error this tool exists to catch. */
+  .strip{display:flex;flex-wrap:wrap;gap:8px;padding:8px;background:#101216;
+         border:1px solid var(--line);border-radius:8px}
+  .strip figure{margin:0;flex:0 0 auto;text-align:center;cursor:pointer;
+                border:2px solid transparent;border-radius:6px;padding:2px}
+  .strip figure:hover{border-color:#3a4150}
+  .strip figure.sel{border-color:#facc15}
+  .strip figure.tagged{border-color:var(--ok)}
+  .strip img{height:150px;display:block;border-radius:4px;border:1px solid #000}
+  .strip figcaption{font-size:11px;color:var(--dim);margin-top:3px}
+  .strip .tag{font-size:12px;font-weight:700;color:var(--ok)}
+  .strip .tag.none{color:#555}
+  .teams{display:flex;gap:10px;margin-top:14px;flex-wrap:wrap}
+  .team{min-width:132px;padding:12px 14px;border-radius:8px;border:1px solid var(--line);
+        background:var(--panel);cursor:pointer;text-align:left}
+  .team b{display:block;font-size:19px;letter-spacing:.5px}
+  .team small{color:var(--dim)}
+  .team.red b{color:var(--red)} .team.blue b{color:var(--blue)}
+  .team.sel{outline:2px solid var(--ok);outline-offset:1px}
+  .team kbd{float:right;color:var(--dim);font-size:11px}
+  .row2{display:flex;gap:10px;margin-top:12px;flex-wrap:wrap}
+  .hintbox{margin-top:12px;padding:10px 12px;border:1px solid var(--line);
+           border-radius:8px;background:#101216;color:var(--dim);font-size:13px}
+  .warn{margin:10px 0;padding:11px 14px;border-radius:8px;font-size:13.5px;
+        border:1px solid #6b4a12;background:#2a2110;color:#f6d58a}
+  .warn b{color:#ffd479}
+  .danger{border-color:#7a2f2f;background:#2c1414;color:#ffb3b3}
+  .danger b{color:#ff8f8f}
+  .bar{height:5px;background:#0f1115;border-radius:3px;overflow:hidden;margin-top:10px}
+  .bar i{display:block;height:100%;background:#2563eb}
+  table{border-collapse:collapse;width:100%;font-size:13px;margin-top:8px}
+  th,td{text-align:left;padding:5px 8px;border-bottom:1px solid var(--line)}
+  th{color:var(--dim);font-weight:500}
+  .done{color:var(--ok)} .skip{color:var(--dim)} .mix{color:var(--warn)}
+  .hide{display:none}
+  /* ---- full-frame mode ---- */
+  #stage{position:relative;display:inline-block;line-height:0;
+         border:1px solid var(--line);border-radius:8px;overflow:hidden}
+  #stage img{display:block;max-width:100%;height:auto}
+  /* A scrim lifts the selected box above the others. Light touch on purpose: a
+     heavier one made the selection obvious and the surrounding field unreadable,
+     which defeats the reason this view exists. */
+  .scrim{position:absolute;inset:0;background:rgba(0,0,0,.28);z-index:5;
+         pointer-events:none}
+  .bx{position:absolute;border:2px solid #22d3ee;border-radius:3px;cursor:pointer;
+      box-shadow:0 0 0 1px rgba(0,0,0,.55) inset;z-index:3}
+  .bx:hover{border-color:#fff}
+  .bx.sel{border-color:#facc15;border-width:3px;z-index:8;
+          box-shadow:0 0 0 2px rgba(250,204,21,.30)}
+  .bx.dup{border-color:#ef4444;border-width:3px;
+          box-shadow:0 0 0 3px rgba(239,68,68,.35)}
+  .bx.sel b{background:#facc15;color:#101216;font-size:14px;top:-24px;
+            line-height:20px;padding:1px 8px}
+  /* filmstrip: which frame you are on, and which are finished */
+  .strip2{display:flex;gap:5px;flex-wrap:wrap;margin:10px 0 4px}
+  .pip{min-width:34px;padding:4px 7px;border-radius:6px;border:1px solid var(--line);
+       background:#1a1d22;color:var(--dim);font-size:12px;cursor:pointer;
+       text-align:center;line-height:1.2}
+  .pip b{display:block;font-size:11px;color:inherit;font-weight:600}
+  .pip.done{border-color:var(--ok);color:var(--ok)}
+  .pip.part{border-color:#a16207;color:#facc15}
+  .pip.here{outline:2px solid #2563eb;outline-offset:1px;background:#22303f;
+            color:var(--fg)}
+  .pip.bad{border-color:var(--red);color:#fff;background:#3a1414;font-weight:700}
+  .bx.red{border-color:var(--red)} .bx.blue{border-color:var(--blue)}
+  .bx.done{border-color:var(--ok)}
+  .bx.nr{border-color:#f59e0b;border-style:dashed}
+  /* the two tracks a clash bundle is asking about */
+  .bx.focus{border-color:#f59e0b;border-width:4px;
+            box-shadow:0 0 0 3px rgba(245,158,11,.35)}
+  .bx b{position:absolute;left:0;top:-20px;font-size:12px;font-weight:700;
+        background:#000a;padding:1px 5px;border-radius:3px;white-space:nowrap;
+        line-height:16px;color:#fff}
+  /* A team's state within the CURRENT frame, shown as a count rather than a binary
+     strike-through. 0 = free, 1 = already placed here, 2+ = impossible, because the
+     boxes in one frame are different robots. The old strike-through was too quiet to
+     notice and a team got assigned twice in one frame without anything objecting. */
+  .team .cnt{position:absolute;top:6px;right:8px;font-size:11px;font-weight:700;
+             padding:1px 6px;border-radius:999px;background:#2a2e35;color:var(--dim)}
+  .team{position:relative}
+  .team.once{opacity:.45}
+  .team.once .cnt{background:#334155;color:#cbd5e1}
+  .team.dup{outline:2px solid var(--red);outline-offset:1px;background:#2c1414}
+  .team.dup .cnt{background:var(--red);color:#fff}
+  .fmeta{display:flex;gap:16px;align-items:baseline;flex-wrap:wrap;margin-bottom:8px;
+         color:var(--dim);font-size:12.5px}
+</style>
+</head>
+<body>
+
+<header class="hide" id="bar">
+  <h1>rtrack curator</h1>
+  <span class="pill" id="progress">0 / 0</span>
+  <span class="pill" id="cover">covers 0%</span>
+  <span class="sp"></span>
+  <button id="filter">Filter: all <kbd>F</kbd></button>
+  <button id="prev">&larr; Prev</button>
+  <button id="next">Next &rarr;</button>
+  <button id="listBtn">List</button>
+  <button class="primary" id="save">Save corrections</button>
+</header>
+
+<div id="drop">
+  <p style="font-size:16px;color:var(--fg)"><b>Drop a curate bundle here</b></p>
+  <p>Build one with <code>uv run -m rtrack.curate &lt;video&gt; --match &lt;key&gt;</code><br>
+     then drag <code>out/stage3/&lt;video&gt;_curate.json</code> onto this page.</p>
+  <p><input type="file" id="file" accept="application/json,.json"></p>
+</div>
+
+<main class="hide" id="app"></main>
+
+<script>
+"use strict";
+// ANS[tid] = {track:team|null, crops:{cropIdx:team}, flag:null|"mixed"|"notrobot"
+//                                                        |"unknown"|"skip"}
+// Per-crop labels are the whole point of the crop grid: a track that reads 9644 early
+// and 6329 late is not "mixed", it is a CUT, and two labels at different times on one
+// track is exactly how rtrack.corrections expresses that.
+// SEL is a Set so ctrl/cmd-click can tag several crops in one keypress.
+let DOC=null, I=0, ANS={}, showHint=false, listMode=false;
+let SEL=new Set(), ANCHOR=null;
+// Guard state: "unknown" on a track that cannot be placed as a whole throws away all
+// its detections, so it takes a second press. See setFlag().
+let ARMED=null;
+// "all" | "todo" | "split" -- lets a re-pass go straight to the tracks that matter.
+let FILTER="all";
+const $=s=>document.querySelector(s);
+const teamsOf=d=>[...(d.teams?.red||[]),...(d.teams?.blue||[])];
+const allianceOf=(d,t)=>(d.teams?.red||[]).includes(t)?"red":"blue";
+
+/* ---------- loading ---------- */
+const drop=$("#drop");
+["dragenter","dragover"].forEach(e=>drop.addEventListener(e,ev=>{
+  ev.preventDefault(); drop.classList.add("hot");}));
+["dragleave","drop"].forEach(e=>drop.addEventListener(e,ev=>{
+  ev.preventDefault(); drop.classList.remove("hot");}));
+drop.addEventListener("drop",ev=>{
+  const f=ev.dataTransfer.files[0]; if(f) read(f);});
+$("#file").addEventListener("change",ev=>{
+  const f=ev.target.files[0]; if(f) read(f);});
+
+function read(f){
+  const r=new FileReader();
+  r.onload=()=>{ try{ start(JSON.parse(r.result)); }
+    catch(e){ alert("Could not parse that file: "+e.message); } };
+  r.readAsText(f);
+}
+
+/* ================= full-frame mode =================
+   FANS[frameIndex][tid] = team | "notrobot" | "unknown"
+   One frame shows every robot at one instant, so the labels within it are mutually
+   exclusive by construction -- a team already used in this frame is struck out in
+   the picker. That is the whole reason this view beats per-track strips: the
+   co-detection constraint is enforced while answering instead of repaired after. */
+// Keyed by VIDEO FRAME NUMBER, never by position in the list. Keying by index meant
+// a rebuilt bundle inherited the previous bundle's answers slot-for-slot: frame 91
+// showed 4 boxes while its stored object still held 8 entries from an older bundle
+// with different frames and different track ids, and the duplicate warning fired on
+// teams that were not on screen at all.
+let FANS={}, FI=0, FSEL=null, CARRY=[];
+
+function startFrames(doc){
+  DOC=doc; FANS={}; FI=0; FSEL=null;
+  try{ const s=localStorage.getItem("rtrackF:"+doc.video); if(s) FANS=JSON.parse(s); }
+  catch(e){ FANS={}; }
+  // Drop anything that does not correspond to a box in THIS bundle. Track ids are
+  // regenerated whenever the split thresholds change, so a stale entry is not merely
+  // useless -- it is a label pointing at a different robot.
+  const valid={}; let dropped=0;
+  for(const fr of doc.frames) valid[fr.f]=new Set(fr.dets.map(d=>d.tid));
+  for(const k of Object.keys(FANS)){
+    if(!valid[k]){ dropped+=Object.keys(FANS[k]).length; delete FANS[k]; continue; }
+    for(const tid of Object.keys(FANS[k]))
+      if(!valid[k].has(+tid)){ delete FANS[k][tid]; dropped++; }
+  }
+  if(dropped){
+    console.log(`dropped ${dropped} stale answer(s) from a previous bundle`);
+    fpersistDoc(doc);
+  }
+  // A follow-up bundle carries the labels already given. Ones whose frame is shown
+  // here seed the boxes; the rest ride along untouched so that saving produces ONE
+  // corrections file covering both rounds instead of two to merge by hand.
+  CARRY=[];
+  for(const l of (doc.carry||[])){
+    const fr=doc.frames.find(x=>x.f===l.f);
+    const d=fr && fr.dets.find(x=>x.xy[0]===l.xy[0]&&x.xy[1]===l.xy[1]);
+    if(d){ (FANS[l.f]=FANS[l.f]||{})[d.tid]=
+             l.team || (l.notrobot?"notrobot":l.unknown?"unknown":null); }
+    else CARRY.push(l);
+  }
+  drop.classList.add("hide"); $("#bar").classList.remove("hide");
+  $("#app").classList.remove("hide");
+  $("#filter").classList.add("hide"); $("#listBtn").classList.add("hide");
+  renderFrames();
+}
+function fpersistDoc(doc){
+  try{ localStorage.setItem("rtrackF:"+doc.video, JSON.stringify(FANS)); }catch(e){}
+}
+function fpersist(){ fpersistDoc(DOC); }
+function fkey(){ return DOC.frames[FI].f; }
+function fans(){ const k=fkey(); return FANS[k] || (FANS[k]={}); }
+function fset(v){
+  if(FSEL===null) return;
+  const a=fans();
+  if(v===null) delete a[FSEL]; else a[FSEL]=v;
+  fpersist();
+  // jump to the next unanswered box in this frame -- keeps a frame flowing
+  const d=DOC.frames[FI].dets, i=d.findIndex(x=>x.tid===FSEL);
+  const nxt=d.slice(i+1).find(x=>!fans()[x.tid]) || d.find(x=>!fans()[x.tid]);
+  FSEL = nxt ? nxt.tid : null;
+  renderFrames();
+}
+function renderFrames(){
+  const fr=DOC.frames[FI], TE=teamsOf(DOC), a=fans();
+  const answered=DOC.frames.reduce((s,x)=>
+      s+x.dets.filter(d=>(FANS[x.f]||{})[d.tid]).length,0);
+  const totalBoxes=DOC.frames.reduce((s,f)=>s+f.dets.length,0);
+  $("#progress").textContent=`${answered} / ${totalBoxes} boxes answered`;
+  $("#cover").textContent=`frame ${FI+1} of ${DOC.frames.length} · covers `+
+    `${DOC.coveragePct}% of detections`;
+  // How many boxes in THIS frame carry each team. The frame is one instant, so every
+  // box is a different robot: 2 is not a warning, it is impossible.
+  // Count over the boxes ON SCREEN, not over every key stored for this frame.
+  const count={};
+  for(const t of TE) count[t]=0;
+  for(const d of fr.dets){ const v=a[d.tid]; if(TE.includes(v)) count[v]++; }
+  const dupTeams=new Set(TE.filter(t=>count[t]>1));
+  const boxes=fr.dets.map(d=>{
+    const v=a[d.tid];
+    const cls=[ "bx",
+      FSEL===d.tid?"sel":"",
+      (DOC.focus&&(DOC.focus[fr.f]||[]).includes(d.tid))?"focus":"",
+      v&&dupTeams.has(v)?"dup":"",
+      v&&TE.includes(v)&&!dupTeams.has(v)?"done":"",
+      v==="notrobot"?"nr":"",
+      (!v&&d.alliance==="red")?"red":"", (!v&&d.alliance==="blue")?"blue":""
+    ].join(" ");
+    const lab = v ? (v==="notrobot"?"not a robot":v==="unknown"?"?":v)
+                  : `#${d.tid}`;
+    return `<div class="${cls}" data-tid="${d.tid}" style="left:${d.box[0]}px;
+      top:${d.box[1]}px;width:${d.box[2]-d.box[0]}px;height:${d.box[3]-d.box[1]}px">
+      <b>${lab}</b></div>`;}).join("");
+  const pips=DOC.frames.map((x,i)=>{
+    const fa=FANS[x.f]||{};
+    const n=x.dets.filter(d=>fa[d.tid]).length, tot=x.dets.length;
+    // a pip turns red if that frame has a team on two boxes, so a mistake made
+    // earlier is visible from anywhere rather than only when you return to it
+    const c={}; for(const d of x.dets){ const v=fa[d.tid]; if(v) c[v]=(c[v]||0)+1; }
+    const dup=Object.entries(c).some(([k,v])=>v>1&&teamsOf(DOC).includes(k));
+    const cls=dup?"bad":(n>=tot?"done":(n>0?"part":""));
+    return `<div class="pip ${cls} ${i===FI?"here":""}" data-i="${i}">
+      ${i+1}<b>${dup?"!":x.t+"s"}</b></div>`;}).join("");
+  $("#app").innerHTML=`
+    <div class="fmeta">
+      <span class="tid">frame ${FI+1} / ${DOC.frames.length}</span>
+      <span>t ${fr.t}s &middot; video frame ${fr.f}</span>
+      <span>${fr.dets.length} robots detected</span>
+      <span class="${Object.keys(a).length>=fr.dets.length?"done":""}">
+        ${Object.keys(a).length} of ${fr.dets.length} answered here</span>
+    </div>
+    ${DOC.note?`<div class="warn"><b>${DOC.note}</b></div>`:""}
+    <div class="strip2">${pips}</div>
+    <div id="stage" style="width:${fr.w}px;max-width:100%">
+      <img src="${fr.img}" alt="frame ${fr.f}">
+      ${FSEL!==null?'<div class="scrim"></div>':""}${boxes}</div>
+    <div class="hintbox" style="margin-top:10px">
+      ${FSEL===null
+        ? `Click a box, then press <b>1&ndash;6</b>. Everything visible here is a
+           DIFFERENT robot, so each team can be used once per frame.`
+        : `Box <b>#${FSEL}</b> selected &mdash; <b>1&ndash;6</b> to name it,
+           <b>N</b> not a robot, <b>U</b> unknown, <b>Backspace</b> to clear.
+           <kbd>Esc</kbd> deselects.`}
+    </div>
+    ${dupTeams.size?`<div class="warn danger" style="margin-top:10px">
+       <b>${[...dupTeams].join(", ")} assigned to more than one box in this frame.</b>
+       Everything visible at one instant is a different robot, so at most one of them
+       can be right &mdash; the duplicates are outlined in red above.</div>`:""}
+    <div class="teams">${TE.map((t,i)=>{
+      const al=allianceOf(DOC,t), n=count[t];
+      const cls=n>1?"dup":(n===1&&a[FSEL]!==t?"once":"");
+      return `<button class="team ${al} ${a[FSEL]===t?"sel":""} ${cls}"
+        data-team="${t}"><kbd>${i+1}</kbd><b>${t}</b><small>${al}</small>
+        <span class="cnt">${n}</span></button>`;
+    }).join("")}</div>
+    <div class="row2">
+      <button id="fnr"><kbd>N</kbd>&nbsp; Not a robot</button>
+      <button id="fun"><kbd>U</kbd>&nbsp; Unknown</button>
+      <button id="fclr">Clear this box</button>
+    </div>`;
+  const st=$("#stage");
+  const sc=st.clientWidth/fr.w;
+  st.querySelectorAll(".bx").forEach(b=>{
+    // scale boxes if the image was shrunk to fit the window
+    if(Math.abs(sc-1)>0.01){
+      for(const k of ["left","top","width","height"])
+        b.style[k]=(parseFloat(b.style[k])*sc)+"px";
+    }
+    b.onclick=()=>{ FSEL = (FSEL===+b.dataset.tid? null : +b.dataset.tid);
+                    renderFrames(); };
+  });
+  $("#app").querySelectorAll(".pip").forEach(p=>p.onclick=()=>{
+    FI=+p.dataset.i; FSEL=null; renderFrames();
+    $("#app").scrollIntoView({block:"start",behavior:"smooth"});});
+  $("#app").querySelectorAll(".team").forEach(b=>b.onclick=()=>fset(b.dataset.team));
+  $("#fnr").onclick=()=>fset("notrobot");
+  $("#fun").onclick=()=>fset("unknown");
+  $("#fclr").onclick=()=>fset(null);
+}
+
+function start(doc){
+  if(doc.schemaVersion===2 && doc.mode==="frames"){ startFrames(doc); return; }
+  if(doc.schemaVersion!==1){ alert("Unsupported bundle version "+doc.schemaVersion); return; }
+  DOC=doc; I=0; ANS={};
+  // Resume anything saved for this video in this browser, migrating the v1 answer
+  // shape ({kind,team}) to the per-crop shape so an in-progress pass is not lost.
+  try{ const s=localStorage.getItem("rtrack:"+doc.video);
+       if(s){ ANS=JSON.parse(s);
+         for(const [tid,v] of Object.entries(ANS)){
+           if(!v){ delete ANS[tid]; continue; }
+           if("kind" in v)                       // v1: {kind, team}
+             ANS[tid]={track:v.kind==="team"?v.team:null,crops:{},
+                       flag:(v.kind==="team"?null:v.kind)};
+           else if("mixed" in v || "skip" in v)  // v2: {mixed, skip} booleans
+             ANS[tid]={track:v.track||null,crops:v.crops||{},
+                       flag:v.mixed?"mixed":(v.skip?"skip":null)};
+           else if(!v.crops) v.crops={};
+         } } }catch(e){ ANS={}; }
+  drop.classList.add("hide"); $("#bar").classList.remove("hide");
+  $("#app").classList.remove("hide");
+  render();
+}
+
+/* ---------- persistence ---------- */
+function persist(){
+  try{ localStorage.setItem("rtrack:"+DOC.video,JSON.stringify(ANS)); }catch(e){}
+}
+
+/* ---------- answering ---------- */
+function cur(){ const t=DOC.tracks[I].tid;
+  return ANS[t] || (ANS[t]={track:null,crops:{},flag:null}); }
+function answered(a){
+  return !!(a && (a.track || a.flag || Object.keys(a.crops||{}).length)); }
+
+function setTeam(team){
+  const a=cur();
+  if(SEL.size){                    // label only the selected crops -- the cut case
+    for(const k of SEL) a.crops[k]=team;
+    a.flag=null; persist(); SEL=new Set(); render(); return;
+  }
+  a.track=team; a.crops={}; a.flag=null;
+  persist(); advance();
+}
+function setFlag(k){
+  const tr=DOC.tracks[I], a=cur();
+  // With crops selected, "unknown" applies to THOSE MOMENTS, not the whole track.
+  // That is what lets a partial reading contribute: label the crops you can read,
+  // mark the ones you cannot, and the pipeline cuts between them -- pinning the part
+  // you identified and leaving the rest for the solver instead of claiming it.
+  if(k==="unknown" && SEL.size){
+    for(const j of SEL) a.crops[j]="unknown";
+    a.flag=null; ARMED=null; persist(); SEL=new Set(); render(); return;
+  }
+  // Marking a split-advised track "unknown" is the single most expensive answer in
+  // the tool: it discards every detection in what are usually the LARGEST tracks.
+  // On the first real pass, 2129 of 3055 unassigned detections came from three
+  // tracks answered this way. So make it deliberate rather than reflexive.
+  if(k==="unknown" && tr.splitAdvised && a.flag!=="unknown"
+     && !Object.keys(a.crops||{}).length && ARMED!==tr.tid){
+    ARMED=tr.tid; render(); return;
+  }
+  ARMED=null;
+  a.flag = a.flag===k ? null : k;
+  if(a.flag){ a.track=null; a.crops={}; }
+  persist(); a.flag ? advance() : render();
+}
+
+function visible(){
+  return DOC.tracks.map((t,i)=>i).filter(i=>{
+    const t=DOC.tracks[i];
+    if(FILTER==="todo") return !answered(ANS[t.tid]);
+    if(FILTER==="split") return t.splitAdvised;
+    return true;
+  });
+}
+function step(dir){
+  const v=visible(); if(!v.length) return;
+  let j=v.findIndex(i=>i>=I);
+  if(j<0) j=v.length-1;
+  if(dir>0) j=Math.min(j+ (v[j]===I?1:0), v.length-1);
+  else { const k=v.findIndex(i=>i>=I); j=Math.max((k<0?v.length:k)-1,0); }
+  I=v[j]; SEL=new Set(); ARMED=null; render();
+}
+function clearAns(){ delete ANS[DOC.tracks[I].tid]; SEL=new Set(); persist(); render(); }
+function advance(){
+  SEL=new Set(); ANCHOR=null; ARMED=null;
+  const v=visible();
+  const n=v.find(i=>i>I && !answered(ANS[DOC.tracks[i].tid]));
+  I = n!==undefined ? n : (v.find(i=>i>I) ?? I);
+  render();
+}
+
+/* ctrl/cmd-click toggles one crop, shift-click extends, plain click replaces. */
+function pick(k,ev){
+  if(ev.ctrlKey||ev.metaKey){ SEL.has(k)?SEL.delete(k):SEL.add(k); ANCHOR=k; }
+  else if(ev.shiftKey && ANCHOR!==null){
+    SEL=new Set(); const [a,b]=[Math.min(ANCHOR,k),Math.max(ANCHOR,k)];
+    for(let i=a;i<=b;i++) SEL.add(i);
+  } else {
+    if(SEL.size===1 && SEL.has(k)) SEL=new Set();
+    else { SEL=new Set([k]); }
+    ANCHOR=k;
+  }
+  render();
+}
+
+/* ---------- rendering ---------- */
+function render(){
+  if(listMode) return renderList();
+  const tr=DOC.tracks[I], TE=teamsOf(DOC);
+  const a=ANS[tr.tid]||{track:null,crops:{},flag:null};
+  const nAns=DOC.tracks.filter(t=>answered(ANS[t.tid])).length;
+  const cov=DOC.tracks.filter(t=>answered(ANS[t.tid])).reduce((s,t)=>s+t.n,0);
+  $("#progress").textContent=`${nAns} / ${DOC.tracks.length} answered`;
+  $("#cover").textContent=`covers ${(100*cov/DOC.totalDetections).toFixed(0)}% of detections`;
+  const nSplit=DOC.tracks.filter(t=>t.splitAdvised).length;
+  $("#filter").innerHTML=`Filter: ${FILTER}`+
+    (FILTER==="all"?` (${nSplit} need split)`:` (${visible().length})`)+` <kbd>F</kbd>`;
+
+  const tally=Object.entries(tr.tally||{}).sort((x,y)=>y[1]-x[1])
+      .map(([k,v])=>`${k}:${v}`).join("  ")||"no bumper reads";
+  const FLAGTXT={mixed:"mixed",notrobot:"not a robot",unknown:"unknown",skip:"skipped"};
+  const state = a.flag?FLAGTXT[a.flag]
+      : a.track?`all = ${a.track}`
+      : Object.keys(a.crops).length?`${Object.keys(a.crops).length} crop label(s)`:"";
+
+  $("#app").innerHTML=`
+    <div class="meta">
+      <span class="tid">track ${tr.tid}</span>
+      <span class="pill ${tr.alliance||""}">${tr.alliance||"alliance ?"}</span>
+      <span>${tr.n} detections</span>
+      <span>${tr.t0}&ndash;${tr.t1}s</span>
+      <span>${tr.durS}s long, ${tr.crops.length} crops</span>
+      ${tr.splitAdvised?'<span class="pill" style="color:#ffd479;border-color:#6b4a12">needs split</span>':""}
+      <span>${I+1} of ${DOC.tracks.length}</span>
+      ${state?`<span class="done">${state}</span>`:""}
+    </div>
+    <div class="bar"><i style="width:${100*(I+1)/DOC.tracks.length}%"></i></div>
+    ${tr.splitAdvised?`<div class="warn">
+       <b>This track probably contains more than one robot.</b>
+       ${tr.splitWhy}. Asking "which team is all of this?" has no right answer &mdash;
+       find the crop where it changes and label the crops on <i>each side</i>.
+       Two different labels on one track tell the pipeline to cut it there, and both
+       halves get used. Marking it <b>unknown</b> discards all
+       ${tr.n} detections.</div>`:""}
+    ${ARMED===tr.tid?`<div class="warn danger">
+       <b>Press U again to confirm.</b> Unknown on this track throws away
+       ${tr.n} detections (${tr.durS}s). If you can see even one moment clearly,
+       labelling that crop alone is worth more.</div>`:""}
+    <div class="strip">${tr.crops.map((c,k)=>{
+      const t=a.crops[k];
+      const unk=t==="unknown";
+      return `<figure data-k="${k}" class="${SEL.has(k)?"sel":""} ${t&&!unk?"tagged":""}">
+        <img src="${c.img}" alt="t${c.t}s">
+        <figcaption>t${c.t}s &middot; f${c.f}</figcaption>
+        <div class="tag ${t?"":"none"}" ${unk?'style="color:#f6d58a"':""}>${
+          unk?"?":(t||"&mdash;")}</div></figure>`;}).join("")}</div>
+    <div class="hintbox" style="margin-top:8px">
+      ${SEL.size===0
+        ? `Pressing <b>1&ndash;6</b> labels the <b>whole track</b>.
+           Click crops first to label only those moments &mdash; use that when the
+           track changes robot partway, and the pipeline will cut it there.
+           <b>Ctrl/&#8984;-click</b> adds to the selection, <b>Shift-click</b> extends a run.`
+        : `<b>${SEL.size}</b> crop${SEL.size>1?"s":""} selected
+           (${[...SEL].sort((x,y)=>x-y).map(k=>"t"+tr.crops[k].t+"s").join(", ")})
+           &mdash; <b>1&ndash;6</b> labels ${SEL.size>1?"them all":"just this one"},
+           <b>U</b> marks ${SEL.size>1?"them":"it"} unreadable so no label claims
+           ${SEL.size>1?"those moments":"that moment"}.
+           <kbd>Esc</kbd> to deselect.`}
+    </div>
+    <div class="teams">${TE.map((t,i)=>{
+      const al=allianceOf(DOC,t);
+      return `<button class="team ${al} ${a.track===t?"sel":""}"
+               data-team="${t}"><kbd>${i+1}</kbd><b>${t}</b><small>${al}</small></button>`;
+    }).join("")}</div>
+    <div class="row2">
+      <button id="f-unknown" class="${a.flag==="unknown"?"sel":""}">
+        <kbd>U</kbd>&nbsp; Unknown &mdash; a robot, can't say which</button>
+      <button id="f-notrobot" class="${a.flag==="notrobot"?"sel":""}">
+        <kbd>N</kbd>&nbsp; Not a robot</button>
+      <button id="f-mixed" class="${a.flag==="mixed"?"sel":""}">
+        <kbd>M</kbd>&nbsp; Mixed &mdash; can't separate</button>
+      <button id="f-skip" class="${a.flag==="skip"?"sel":""}">
+        <kbd>S</kbd>&nbsp; Skip &mdash; come back later</button>
+      <button id="clear">Clear answer</button>
+      <span class="sp"></span>
+      <button id="hintBtn">${showHint?"Hide":"Show"} machine guess <kbd>H</kbd></button>
+    </div>
+    ${showHint?`<div class="hintbox">
+        Current label: <b>${tr.hint||"none"}</b> &nbsp;&middot;&nbsp; bumper reads: ${tally}
+        <br><small>Shown on request only &mdash; deciding before you look at this
+        keeps the label independent of the machine's answer.</small></div>`:""}
+  `;
+  $("#app").querySelectorAll(".team").forEach(b=>
+    b.onclick=()=>setTeam(b.dataset.team));
+  $("#app").querySelectorAll(".strip figure").forEach(f=>
+    f.onclick=ev=>pick(+f.dataset.k,ev));
+  ["unknown","notrobot","mixed","skip"].forEach(k=>
+    $("#f-"+k).onclick=()=>setFlag(k));
+  $("#clear").onclick=clearAns;
+  $("#hintBtn").onclick=()=>{showHint=!showHint;render();};
+}
+
+function renderList(){
+  const rows=DOC.tracks.map((t,k)=>{
+    const a=ANS[t.tid]; let txt="&mdash;", cls="";
+    const FT={mixed:"mixed",notrobot:"not a robot",unknown:"unknown",skip:"skipped"};
+    if(a&&a.flag){txt=FT[a.flag];cls=(a.flag==="skip"||a.flag==="unknown")?"skip":"mix";}
+    else if(a&&a.track){txt=a.track;cls="done";}
+    else if(a&&Object.keys(a.crops||{}).length){
+      const v=[...new Set(Object.values(a.crops))];
+      txt=v.join(" &rarr; ")+(v.length>1?"  (cut)":""); cls="done";}
+    return `<tr><td><a href="#" data-i="${k}">track ${t.tid}</a></td>
+      <td>${t.n}</td><td>${t.t0}&ndash;${t.t1}s</td><td>${t.alliance||"?"}</td>
+      <td class="${cls}">${txt}</td>
+      <td>${t.cumPct}%</td></tr>`;}).join("");
+  $("#app").innerHTML=`<table><tr><th>track</th><th>dets</th><th>span</th>
+    <th>hue</th><th>answer</th><th>cumulative coverage</th></tr>${rows}</table>`;
+  $("#app").querySelectorAll("a[data-i]").forEach(a=>a.onclick=e=>{
+    e.preventDefault(); I=+a.dataset.i; listMode=false; render();});
+}
+
+/* ---------- keyboard: the whole point is speed ---------- */
+document.addEventListener("keydown",e=>{
+  if(!DOC||e.metaKey||e.ctrlKey) return;
+  const TE=teamsOf(DOC);
+  if(DOC.mode==="frames"){
+    if(e.key>="1"&&e.key<="9"){ const t=TE[+e.key-1]; if(t) fset(t); return; }
+    const k=e.key.toLowerCase();
+    if(e.key==="Escape"){ FSEL=null; renderFrames(); }
+    else if(k==="n") fset("notrobot");
+    else if(k==="u") fset("unknown");
+    else if(e.key==="Backspace"){ e.preventDefault(); fset(null); }
+    else if(e.key==="ArrowRight"){ FI=Math.min(FI+1,DOC.frames.length-1);
+                                   FSEL=null; renderFrames(); }
+    else if(e.key==="ArrowLeft"){ FI=Math.max(FI-1,0); FSEL=null; renderFrames(); }
+    else if(e.key==="Tab"){ e.preventDefault();
+      const d=DOC.frames[FI].dets, i=d.findIndex(x=>x.tid===FSEL);
+      FSEL=d[(i+1)%d.length].tid; renderFrames(); }
+    return;
+  }
+  if(e.key>="1"&&e.key<="9"){ const t=TE[+e.key-1]; if(t){setTeam(t);} return; }
+  const k=e.key.toLowerCase();
+  if(e.key==="Escape"){ SEL=new Set(); render(); }
+  else if(k==="u") setFlag("unknown");
+  else if(k==="n") setFlag("notrobot");
+  else if(k==="m") setFlag("mixed");
+  else if(k==="s") setFlag("skip");
+  else if(k==="a"){ SEL=new Set(DOC.tracks[I].crops.map((_,i)=>i)); render(); }
+  else if(k==="h"){ showHint=!showHint; render(); }
+  else if(k==="f"){ cycleFilter(); }
+  else if(e.key==="ArrowRight"){ step(1); }
+  else if(e.key==="ArrowLeft"){ step(-1); }
+  else if(k==="l"){ listMode=!listMode; render(); }
+});
+
+function cycleFilter(){
+  FILTER = FILTER==="all" ? "todo" : FILTER==="todo" ? "split" : "all";
+  const v=visible();
+  if(v.length && !v.includes(I)) I=v[0];
+  SEL=new Set(); ARMED=null; render();
+}
+$("#prev").onclick=()=>{
+  if(DOC&&DOC.mode==="frames"){ FI=Math.max(FI-1,0); FSEL=null; renderFrames(); return; }
+  listMode=false;step(-1);};
+$("#next").onclick=()=>{
+  if(DOC&&DOC.mode==="frames"){ FI=Math.min(FI+1,DOC.frames.length-1); FSEL=null;
+                                renderFrames(); return; }
+  listMode=false;step(1);};
+$("#filter").onclick=cycleFilter;
+$("#listBtn").onclick=()=>{listMode=!listMode;render();};
+
+/* ---------- export ---------- */
+$("#save").onclick=()=>{
+  const labels=[];
+  if(DOC.mode==="frames"){
+    // Every answered box becomes one detection-anchored label. Two answers on the
+    // same track at different frames and different teams is read downstream as a
+    // CUT -- which is exactly how a mid-track switch should be expressed.
+    DOC.frames.forEach((fr)=>{
+      const a=FANS[fr.f]||{};
+      for(const d of fr.dets){
+        const v=a[d.tid];
+        if(!v) continue;
+        labels.push(v==="notrobot" ? {f:fr.f,xy:d.xy,notrobot:true}
+                  : v==="unknown"  ? {f:fr.f,xy:d.xy,unknown:true}
+                                   : {f:fr.f,xy:d.xy,team:v});
+      }
+    });
+    labels.push(...CARRY);   // labels from earlier rounds, untouched
+    const doc={schemaVersion:1,match:DOC.match,video:DOC.video,by:"curator",
+               createdAt:new Date().toISOString(),labels};
+    const blob=new Blob([JSON.stringify(doc,null,2)],{type:"application/json"});
+    const url=URL.createObjectURL(blob), a=document.createElement("a");
+    a.href=url; a.download=(DOC.match||DOC.video)+"_corrections.json";
+    document.body.appendChild(a); a.click(); a.remove();
+    setTimeout(()=>URL.revokeObjectURL(url),1000);
+    return;
+  }
+  for(const tr of DOC.tracks){
+    const a=ANS[tr.tid];
+    // "skip" means not answered -- never written, so it comes back next pass.
+    if(!a||a.flag==="skip") continue;
+    const per=Object.keys(a.crops||{});
+    if(a.flag){
+      // mixed / notrobot / unknown -- recorded at both ends rather than guessing.
+      for(const c of [tr.crops[0],tr.crops[tr.crops.length-1]].filter(Boolean))
+        labels.push({f:c.f,xy:c.xy,[a.flag]:true});
+    } else if(per.length){
+      // One label per labelled crop. Where two differ, rtrack.corrections reads that
+      // as "cut this track between them" -- which is what a mid-track switch IS.
+      // "unknown" is a value here too: it bounds how far a team label may claim.
+      for(const k of per){
+        const c=tr.crops[+k]; const v=a.crops[k];
+        if(!c) continue;
+        labels.push(v==="unknown" ? {f:c.f,xy:c.xy,unknown:true}
+                                  : {f:c.f,xy:c.xy,team:v});
+      }
+    } else if(a.track){
+      // Whole-track label: anchor at BOTH ends so it still binds if a later
+      // re-split cuts this track in half.
+      for(const c of [tr.crops[0],tr.crops[tr.crops.length-1]].filter(Boolean))
+        labels.push({f:c.f,xy:c.xy,team:a.track});
+    }
+  }
+  const doc={schemaVersion:1,match:DOC.match,video:DOC.video,
+             by:"curator",createdAt:new Date().toISOString(),labels};
+  const blob=new Blob([JSON.stringify(doc,null,2)],{type:"application/json"});
+  const url=URL.createObjectURL(blob), a=document.createElement("a");
+  a.href=url; a.download=(DOC.match||DOC.video)+"_corrections.json";
+  document.body.appendChild(a); a.click(); a.remove();
+  setTimeout(()=>URL.revokeObjectURL(url),1000);
+};
+</script>
+</body>
+</html>

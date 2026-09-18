@@ -1,3 +1,27 @@
 .env
 dist
 /node_modules
+
+# Working notes. Scratch thinking, feedback lists and occasionally a credential
+# pasted in while debugging -- none of it belongs in a shared history.
+notes.txt
+
+# Local Claude Code settings. Machine-specific absolute paths and per-machine tool
+# permissions; nothing another checkout can use.
+.claude/
+
+# robot-tracker (CV subproject)
+robot-tracker/.venv/
+robot-tracker/data/
+robot-tracker/roboflow/
+robot-tracker/out/
+robot-tracker/models/
+robot-tracker/eval/frames/
+robot-tracker/**/__pycache__/
+robot-tracker/**/*.pyc
+robot-tracker/runs/
+robot-tracker/weights/
+# Recursive, not robot-tracker/*.pt: ultralytics drops weights in the CWD, but its
+# CLIP backend writes to weights/clip/ and that is a ~350 MB file.
+robot-tracker/**/*.pt
+robot-tracker/**/*.onnx

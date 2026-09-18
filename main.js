@@ -15,6 +15,15 @@ db.version(2).stores({
     matches: 'key, eventKey, matchNumber',
     tbaTeams: 'teamNumber, eventKey'
 });
+// v3 adds robot position tracks, produced offline by robot-tracker/ and published as
+// public/tracks/<matchKey>.json. Keyed by TBA match key so it joins `matches` for free.
+// Every existing table must be repeated here or Dexie drops it (see CLAUDE.md).
+db.version(3).stores({
+    teams: 'teamNumber, eventKey',
+    matches: 'key, eventKey, matchNumber',
+    tbaTeams: 'teamNumber, eventKey',
+    matchTracks: 'key, eventKey'
+});
 window.db = db;
 
 // 2. CONFIG & API KEYS
@@ -1511,7 +1520,179 @@ window.viewMatchDetail = async function (matchKey) {
     if (isSplitDetail) pushCurrentRightPanel();
     document.getElementById('matchDetailView').style.display = isSplitDetail ? 'block' : 'flex';
     pushNavState('matchDetail');
+
+    // Robot routes, if this match has been tracked. Deliberately AFTER the modal is
+    // shown: the canvas cannot measure itself while its container is display:none, the
+    // same constraint that makes performanceChart render lazily. Fire-and-forget so a
+    // slow/absent tracks file never delays the modal.
+    renderMatchTracks(matchKey);
 };
+
+// Populates #matchTracksSection. Silent no-op when the match has no tracks, which is
+// the normal case for almost every match.
+async function renderMatchTracks(matchKey) {
+    const host = document.getElementById('matchTracksSection');
+    if (!host) return;
+    host.innerHTML = '';
+    const doc = await loadMatchTracks(matchKey);
+    if (!doc) return;
+
+    const q = doc.quality || {};
+    const vid = doc.source?.videoId;
+    host.innerHTML = `
+        <h3 style="margin:18px 0 8px; font-size:15px;">Robot Routes</h3>
+        <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:baseline;
+                    color:#94a3b8; font-size:12px; margin-bottom:8px;">
+            <span>${q.samplesOut ?? 0} samples @ ${doc.sampling?.outputHz ?? '?'} Hz</span>
+            <span>custody ${Math.round(100 * (q.meanCustody || 0))}%</span>
+            ${q.curated ? '<span style="color:#22c55e;">curated</span>'
+                        : '<span style="color:#f59e0b;">auto-labelled</span>'}
+        </div>
+        <div id="mtWrap" style="position:relative; width:100%; border-radius:8px; overflow:hidden;">
+            <img id="mtImg" src="${import.meta.env.BASE_URL}${doc.field.imageRef}"
+                 alt="field" style="display:block; width:100%; height:auto;">
+            <canvas id="mtCanvas" style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
+        </div>
+        <div style="display:flex; gap:10px; align-items:center; margin-top:8px; flex-wrap:wrap;">
+            <button id="mtPlay" style="padding:3px 10px;font-size:0.78em;border-radius:4px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;">▶</button>
+            <input type="range" id="mtScrub" min="0" max="1000" value="1000" style="flex:1; min-width:160px;">
+            <span id="mtClock" style="font-variant-numeric:tabular-nums; font-size:12px;
+                  color:#94a3b8; min-width:64px;">full</span>
+            ${vid ? `<button id="mtSeek" title="Open the match video at the moment the slider is showing"
+                 style="padding:3px 10px;font-size:0.78em;border-radius:4px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;">▶ Watch this moment</button>` : ''}
+        </div>
+        <div id="mtTeams" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
+        <div style="margin-top:8px;">
+          <button id="mtAuto" style="padding:4px 11px; font-size:12px; border-radius:6px;
+                  cursor:pointer; border:1px solid #334155; background:transparent;
+                  color:#94a3b8; font-weight:600;">Auto only</button>
+          <span id="mtAutoNote" style="color:#64748b; font-size:11px; margin-left:8px;"></span>
+        </div>`;
+
+    const img = document.getElementById('mtImg');
+    const cv  = document.getElementById('mtCanvas');
+    const shown = new Set(doc.robots.map(r => String(r.team)));
+    let tMin = Infinity, tMax = -Infinity;
+    for (const r of doc.robots) for (const s of r.samples) {
+        if (s.t < tMin) tMin = s.t;
+        if (s.t > tMax) tMax = s.t;
+    }
+    let tNow = tMax, playing = false, raf = 0;
+    // Autonomous is the slice scouts care about most and it is ~20 s of ~170, so at full
+    // scale it is a knot in the corner of the plot. Sample times are relative to auto
+    // start, so isolating it is just an upper bound on t -- no second dataset, no
+    // re-fetch, and the scrubber keeps working inside the clipped range.
+    const autoEnd = autoEndOf(doc);
+    let autoOnly = false;
+
+    const paint = () => renderFieldRoutes(cv, doc, {
+        teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
+        tMax: autoOnly ? autoEnd : null,
+    });
+    const resize = () => { if (_trackSizeCanvas(img, cv)) paint(); };
+
+    document.getElementById('mtTeams').innerHTML = doc.robots.map((r, i) => `
+        <button class="mt-team" data-team="${r.team}" style="padding:4px 9px; font-size:12px;
+                border:1px solid #334155; border-radius:6px; cursor:pointer;
+                background:transparent; color:${window.trackColourFor(r, i)};
+                font-weight:700;">${r.team}</button>`).join('');
+    document.getElementById('mtTeams').querySelectorAll('.mt-team').forEach(b => {
+        b.onclick = () => {
+            const t = b.dataset.team;
+            if (shown.has(t)) { shown.delete(t); b.style.opacity = '0.35'; }
+            else { shown.add(t); b.style.opacity = '1'; }
+            paint();
+        };
+    });
+
+    const autoBtn = document.getElementById('mtAuto');
+    const autoNote = document.getElementById('mtAutoNote');
+    const syncAuto = () => {
+        autoBtn.style.background = autoOnly ? '#1e3a5f' : 'transparent';
+        autoBtn.style.borderColor = autoOnly ? '#3b82f6' : '#334155';
+        autoBtn.style.color = autoOnly ? '#60a5fa' : '#94a3b8';
+        autoNote.textContent = autoOnly ? `first ${autoEnd.toFixed(0)}s of the match` : '';
+    };
+    autoBtn.onclick = () => {
+        autoOnly = !autoOnly;
+        // Snap the scrubber to the end of whichever range is now showing, so the plot is
+        // never blank because tNow sits past the clip.
+        if (autoOnly && tNow > autoEnd) setT(autoEnd); else paint();
+        syncAuto();
+    };
+    syncAuto();
+
+    const setT = (t) => {
+        tNow = Math.max(tMin, Math.min(tMax, t));
+        document.getElementById('mtScrub').value =
+            String(Math.round((tNow - tMin) / (tMax - tMin) * 1000));
+        document.getElementById('mtClock').textContent =
+            tNow >= tMax ? 'full' : `${tNow.toFixed(1)}s`;
+        paint();
+    };
+    document.getElementById('mtScrub').oninput = (e) => {
+        if (playing) { playing = false; cancelAnimationFrame(raf);
+                       document.getElementById('mtPlay').textContent = '▶'; }
+        setT(tMin + (e.target.value / 1000) * (tMax - tMin));
+    };
+    const step = (prev) => {
+        if (!playing) return;
+        const now = performance.now();
+        setT(tNow + (now - prev) / 1000);
+        if (tNow >= tMax) { playing = false;
+                            document.getElementById('mtPlay').textContent = '▶'; return; }
+        raf = requestAnimationFrame(() => step(now));
+    };
+    document.getElementById('mtPlay').onclick = () => {
+        playing = !playing;
+        document.getElementById('mtPlay').textContent = playing ? '❚❚' : '▶';
+        if (playing) { if (tNow >= tMax) setT(tMin);
+                       raf = requestAnimationFrame(() => step(performance.now())); }
+        else cancelAnimationFrame(raf);
+    };
+    const seek = document.getElementById('mtSeek');
+    if (seek) seek.onclick = () => {
+        // Opens the match video at whatever instant the slider is on. One-way only:
+        // reading playback position BACK would need the full YouTube IFrame API with
+        // event listeners, and this app only ever posts commands to embeds.
+        const at = Math.max(0, (doc.source?.matchStartVideoSec || 0)
+                               + (tNow >= tMax ? 0 : tNow));
+        // Thumbnails are '#yt-thumb-<i>' (~main.js:1504) or '#stream-seek-thumb'.
+        const holder = document.querySelector(
+            '#matchVideoSection [id^="yt-thumb-"], #matchVideoSection #stream-seek-thumb');
+        if (holder) { loadYTEmbedAtTime(vid, holder.id, at); return; }
+        // Embed already running: rewriting iframe.src mid-playback was the error you
+        // hit -- the player is initialised and a src swap tears it down uncleanly. Post
+        // a seek instead, which is what the API is for, and only touch src as a last
+        // resort when there is no iframe at all.
+        const frame = document.querySelector('#matchVideoSection iframe[data-yt]');
+        if (frame && frame.contentWindow) {
+            try {
+                frame.contentWindow.postMessage(JSON.stringify({
+                    event: 'command', func: 'seekTo', args: [Math.floor(at), true],
+                }), '*');
+                frame.contentWindow.postMessage(JSON.stringify({
+                    event: 'command', func: 'playVideo', args: [],
+                }), '*');
+                return;
+            } catch { /* fall through */ }
+        }
+        // Nothing to talk to: build the embed fresh at the right time.
+        const host = document.getElementById('matchVideoSection');
+        if (host) {
+            const id = 'mt-yt-host';
+            host.insertAdjacentHTML('afterbegin', `<div id="${id}"></div>`);
+            loadYTEmbedAtTime(vid, id, at);
+        }
+    };
+
+    // The img may already be cached (complete) or still loading — handle both, exactly
+    // as initFieldTab does for the drawing canvas.
+    if (img.complete && img.naturalWidth) resize();
+    else img.addEventListener('load', resize, { once: true });
+    window.addEventListener('resize', resize);
+    host._trackResize = resize;   // so closeMatchDetail can unhook it
+}
 
 window.openLightbox = function (url) {
     const lb = document.getElementById('photoLightbox');
@@ -1528,6 +1709,14 @@ window.closeLightbox = function () {
 window.closeMatchDetail = function () {
     document.getElementById('matchDetailView').style.display = 'none';
     document.getElementById('matchVideoSection').innerHTML = '';
+    // Same teardown for the routes section, plus its window-level resize listener --
+    // clearing innerHTML alone would leak one listener per modal open.
+    const mt = document.getElementById('matchTracksSection');
+    if (mt) {
+        if (mt._trackResize) { window.removeEventListener('resize', mt._trackResize);
+                               mt._trackResize = null; }
+        mt.innerHTML = '';
+    }
     if (document.body.classList.contains('split-ui') && !popRightPanel()) {
         document.getElementById('splitRightPanel').style.display = 'flex';
     }
@@ -2692,6 +2881,14 @@ async function importArchiveBundle(data, eventKey) {
         if (data.teams?.length)    await db.teams.bulkPut(data.teams);
         if (data.tbaTeams?.length) await db.tbaTeams.bulkPut(data.tbaTeams);
         if (data.matches?.length)  await db.matches.bulkPut(data.matches);
+        if (data.matchTracks?.length) {
+            try {
+                await db.matchTracks.bulkPut(data.matchTracks);
+                // Both caches key off what is in Dexie, and neither notices a bulkPut.
+                _tracksManifest = null;
+                routesRenderedFor = null;
+            } catch { /* older schema without the table: routes simply stay unavailable */ }
+        }
         if (data.tbaAlliances?.length) {
             localStorage.setItem(`tbaAlliances_${eventKey}`, JSON.stringify(data.tbaAlliances));
             const alliances = Array.from({ length: 8 }, (_, i) => {
@@ -3037,6 +3234,11 @@ function showArchiveSummaryModal(bundle) {
         row('Matches', isConfig ? '— (config only)' : `${bundle.matches?.length || 0} total (${played} played, ${unplayed} unplayed)`),
         row('Scouting data', isConfig ? '— (config only)' : `${bundle.scoutingRows?.length || 0} match rows, ${bundle.pitRows?.length || 0} pit rows`),
         row('Alliance picks', isConfig ? '— (config only)' : check(bundle.tbaAlliances?.length)),
+        row('Robot routes', isConfig ? '— (config only)'
+            : bundle.matchTracks?.length
+              ? `${bundle.matchTracks.length} match${bundle.matchTracks.length === 1 ? '' : 'es'}`
+                + ` (~${Math.round(JSON.stringify(bundle.matchTracks).length / 1024)} KB)`
+              : check(false)),
         row('RP thresholds', check(bundle.rpThresholds)),
         row('Webcast URLs', bundle.webcasts?.length ? `${bundle.webcasts.length} streams` : check(false)),
         row('Scouting sheet URL', check(bundle.scoutingSheetUrl)),
@@ -3136,6 +3338,17 @@ window.saveArchiveBundle = async function (mode = 'full') {
         bundle.pitRows       = JSON.parse(localStorage.getItem(`pitData_${eventKey}`) ?? 'null');
         bundle.matches       = matches;
         bundle.tbaAlliances  = JSON.parse(localStorage.getItem(`tbaAlliances_${eventKey}`) ?? 'null');
+        // Robot routes. Without these an archive restores everything about a past event
+        // EXCEPT where the robots were, and the Routes tabs come back empty on any device
+        // that cannot reach public/tracks/ -- which is the case an archive exists for.
+        //
+        // Size scales with how many matches were actually processed, not with the event:
+        // ~143 KB each, and a realistic event has tracks for a fraction of its matches
+        // (11 of 100 on 2026mawor). Only what is already cached locally is included; the
+        // archive is a snapshot of what this device has, not a fetch-everything trigger.
+        try {
+            bundle.matchTracks = await db.matchTracks.where('eventKey').equals(eventKey).toArray();
+        } catch { bundle.matchTracks = []; }
     }
 
     showArchiveSummaryModal(bundle);
@@ -3402,6 +3615,7 @@ window.clearCache = async function () {
         await db.teams.clear();
         await db.tbaTeams.clear();
         await db.matches.clear();
+        await _clearTrackCache();
 
         // Clear persisted sync state
         localStorage.removeItem('lastEventKey');
@@ -3435,10 +3649,24 @@ window.clearCache = async function () {
     }
 };
 
+// Track data is cached in THREE places and clearing one without the others is worse than
+// clearing none: the Dexie rows, the in-memory manifest, and the Routes tab's memo. Leave
+// the memo set and the tab keeps painting the old event's routes from a stale closure;
+// leave the manifest and the next render re-populates Dexie from it immediately.
+async function _clearTrackCache() {
+    try { await db.matchTracks.clear(); } catch { /* table absent on a stale schema */ }
+    _tracksManifest = null;
+    routesRenderedFor = null;
+}
+
 async function _silentClearEvent(eventKey) {
     await db.teams.clear();
     await db.tbaTeams.clear();
     await db.matches.clear();
+    // Cleared wholesale like the tables above, not filtered to eventKey, so that "clear
+    // the event" means the same thing for every table. Losing another event's cached
+    // routes costs one re-fetch from public/tracks/, which is the cheapest thing here.
+    await _clearTrackCache();
 
     for (const key of ['statboticsLive', 'tbaOPR', 'tbaMatches', 'statboticsProjections']) {
         localStorage.removeItem(`lastSync_${key}`);
@@ -8149,7 +8377,8 @@ window.sortPickListBy = function (col) {
 
 window.switchToolsTab = function (tab) {
     currentToolsTab = tab;
-    const allTabs = ['field', 'picklist', 'draft', 'alliances', 'dev'];
+    // Order must match the buttons in #toolsTabs — the .active toggle below is by index.
+    const allTabs = ['field', 'picklist', 'draft', 'alliances', 'tracks', 'dev'];
     allTabs.forEach(t => {
         document.getElementById(`tools-tab-${t}`).style.display = t === tab ? 'block' : 'none';
     });
@@ -8160,8 +8389,196 @@ window.switchToolsTab = function (tab) {
     if (tab === 'draft') renderDraft();
     if (tab === 'field') initFieldTab();
     if (tab === 'alliances') renderAlliancesTab();
+    if (tab === 'tracks') renderTracksTab();
     if (tab === 'dev') renderDevTab();
 };
+
+// ── Robot tracking work queue ────────────────────────────────────────────────
+//
+// One place to see what the tracker has done and what still needs a human, so nobody
+// has to type a relay URL or a match key. Every action here is a deep link that carries
+// the relay address and the match id, because the person doing the work is usually on a
+// phone in a venue and typing a workers.dev URL on a phone is its own small punishment.
+//
+// State comes from two independent places and they mean different things:
+//   public/tracks/index.json  what has been EXPORTED (finished, routes viewable)
+//   the relay's /index        what is IN FLIGHT (bundle waiting, answer returned)
+// A match can be in either, both, or neither.
+
+const RELAY_KEY = 'rtrackRelay';
+
+async function _relayIndex(url) {
+    if (!url) return null;
+    try {
+        const r = await fetch(`${url.replace(/\/+$/, '')}/index`, { cache: 'no-store' });
+        if (!r.ok) return null;
+        const d = await r.json();
+        return Array.isArray(d.items) ? d.items : null;
+    } catch { return null; }
+}
+
+async function renderTracksTab() {
+    const host = document.getElementById('tools-tab-tracks');
+    if (!host) return;
+    const relay = (localStorage.getItem(RELAY_KEY) || '').trim().replace(/\/+$/, '');
+    const eventKey = (document.getElementById('eventKeyInput')?.value || '').trim().toLowerCase();
+
+    host.innerHTML = `
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <input id="trkRelay" value="${relay}" placeholder="https://rtrack-relay.<you>.workers.dev"
+               style="flex:1;min-width:240px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                      border-radius:6px;padding:8px 10px;font-size:0.85em;">
+        <button id="trkSave" style="padding:8px 12px;border-radius:6px;border:1px solid #334155;
+                background:transparent;color:#94a3b8;cursor:pointer;">Save</button>
+        <button id="trkRefresh" style="padding:8px 12px;border-radius:6px;border:1px solid #2563eb;
+                background:#2563eb;color:#fff;cursor:pointer;font-weight:600;">Refresh</button>
+      </div>
+      <div id="trkBody" style="color:#94a3b8;">Loading…</div>`;
+
+    document.getElementById('trkSave').onclick = () => {
+        localStorage.setItem(RELAY_KEY, document.getElementById('trkRelay').value.trim());
+        renderTracksTab();
+    };
+    document.getElementById('trkRefresh').onclick = () => renderTracksTab();
+
+    const body = document.getElementById('trkBody');
+    const [man, items, matches] = await Promise.all([
+        loadTracksManifest(true),
+        _relayIndex(relay),
+        (async () => {
+            try {
+                return eventKey
+                    ? await db.matches.where('eventKey').equals(eventKey).toArray()
+                    : await db.matches.toArray();
+            } catch { return []; }
+        })(),
+    ]);
+
+    const pub = new Map((man.matches || []).map(m => [m.key, m]));
+    const onRelay = new Map();
+    for (const it of items || []) onRelay.set(`${it.kind}:${it.id}`, it);
+    const gal = (man.gallery || {})[eventKey] || {};
+
+    // Union of THREE sources, and the third is the one that matters most here:
+    //   db.matches   the schedule — quals only, syncTBAMatches drops playoffs
+    //   manifest     what has been exported and published
+    //   the relay    what is IN FLIGHT right now
+    //
+    // A match waiting to be curated is typically in NONE of the first two: it has not
+    // been published (that is what curation unblocks) and, if it is a playoff, the
+    // schedule never had it. Leaving the relay out of this set made exactly the rows
+    // this tab exists to surface invisible -- 2026mawor_qm1 sat on the relay with a
+    // bundle and never appeared.
+    const relayKeys = (items || [])
+        .filter(it => it.kind === 'bundle' || it.kind === 'answer' || it.kind === 'calib')
+        .map(it => it.id);
+    const keys = new Set([...matches.map(m => m.key), ...pub.keys(), ...relayKeys]);
+    const rows = [...keys]
+        .filter(k => !eventKey || k.startsWith(eventKey + '_'))
+        .map(k => {
+            const dbm = matches.find(m => m.key === k);
+            const p = pub.get(k);
+            const teams = (p?.teams) || [...(dbm?.red || []), ...(dbm?.blue || [])].map(String);
+            const known = teams.filter(t => gal[t]).length;
+            return {
+                key: k, teams,
+                published: !!p, curated: !!p?.curated,
+                exportedAt: p?.exportedAt ? Date.parse(p.exportedAt) : null,
+                custody: p?.meanCustody ?? null,
+                bundle: onRelay.get(`bundle:${k}`) || null,
+                answer: onRelay.get(`answer:${k}`) || null,
+                calib: onRelay.get(`calib:${k}`) || null,
+                known, total: teams.length,
+                n: dbm?.matchNumber ?? p?.matchNumber ?? 0,
+            };
+        })
+        .sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+
+    if (!rows.length) {
+        body.innerHTML = `<p>No matches for ${eventKey || 'any event'} yet.
+          Set an event key on the Home tab, or publish tracks to <code>public/tracks/</code>.</p>`;
+        return;
+    }
+
+    const relayNote = relay
+        ? (items ? `<span style="color:#22c55e;">relay reachable · ${items.length} item(s)</span>`
+                 : `<span style="color:#f59e0b;">relay not reachable — in-flight work will not show</span>`)
+        : `<span style="color:#f59e0b;">no relay configured — showing published tracks only</span>`;
+
+    const multiEvent = new Set(rows.map(r => r.key.split('_')[0])).size > 1;
+
+    const pill = (txt, col) =>
+        `<span style="display:inline-block;padding:2px 7px;border-radius:999px;font-size:0.72em;
+         font-weight:700;border:1px solid ${col};color:${col};white-space:nowrap;">${txt}</span>`;
+
+    const act = (txt, href, primary) =>
+        `<a href="${href}" target="_blank" rel="noopener" style="display:inline-block;
+          padding:5px 10px;border-radius:6px;font-size:0.78em;text-decoration:none;
+          border:1px solid ${primary ? '#2563eb' : '#334155'};
+          background:${primary ? '#2563eb' : 'transparent'};
+          color:${primary ? '#fff' : '#94a3b8'};font-weight:${primary ? 600 : 400};">${txt}</a>`;
+
+    const base = import.meta.env.BASE_URL;
+    const q = (page, idParam, id) =>
+        `${base}rtrack/${page}.html?relay=${encodeURIComponent(relay)}&${idParam}=${encodeURIComponent(id)}`;
+
+    body.innerHTML = `
+      <p style="font-size:0.82em;margin:0 0 10px;">${relayNote}</p>
+      <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
+        <tr style="color:#64748b;text-align:left;">
+          <th style="padding:6px 4px;">Match</th>
+          <th style="padding:6px 4px;">State</th>
+          <th style="padding:6px 4px;">Models</th>
+          <th style="padding:6px 4px;">Custody</th>
+          <th style="padding:6px 4px;text-align:right;">Actions</th>
+        </tr>
+        ${rows.map(r => {
+            // PUBLISHED IS TERMINAL unless an answer arrived after it was built.
+            // Answers are not deleted from the relay when consumed, so testing
+            // "an answer exists" first left finished matches reading "awaiting rerun"
+            // permanently. Compare timestamps instead: only a newer answer means work
+            // is outstanding. Missing timestamps fall back to trusting the publish,
+            // because a stale "pending" is more misleading than a stale "done" here.
+            const answerNewer = r.answer?.at && r.exportedAt
+                ? r.answer.at > r.exportedAt
+                : (!!r.answer && !r.published);
+            const state = answerNewer ? pill('curated · awaiting rerun', '#a78bfa')
+                        : r.published ? (r.curated ? pill('published · curated', '#22c55e')
+                                                   : pill('published · auto', '#60a5fa'))
+                        : r.bundle ? pill('NEEDS CURATION', '#f59e0b')
+                        : pill('no tracks', '#475569');
+            const models = r.total
+                ? `<span style="color:${r.known === r.total ? '#22c55e' : r.known ? '#f59e0b' : '#64748b'};">
+                     ${r.known}/${r.total}</span>`
+                : '—';
+            const acts = [
+                r.bundle ? act('Curate', q('curate', 'match', r.key), true) : '',
+                r.calib ? act('Calibrate', q('calibrate', 'video', r.key), !r.bundle) : '',
+                r.published ? `<a href="#" onclick="viewMatchDetail('${r.key}');return false;"
+                     style="display:inline-block;padding:5px 10px;border-radius:6px;font-size:0.78em;
+                     text-decoration:none;border:1px solid #334155;color:#94a3b8;">Routes</a>` : '',
+            ].filter(Boolean).join(' ');
+            // Show the event prefix whenever more than one event is on screen. Two
+            // different matches can share a suffix -- 2026necmp_f1m2 and
+            // 2026mawor_f1m2 both render as "f1m2" -- and two identical-looking rows
+            // with different numbers reads as a bug in the data rather than a bug in
+            // the label.
+            const label = multiEvent ? r.key : r.key.replace(/^[^_]+_/, '');
+            return `<tr style="border-top:1px solid #1e293b;">
+              <td style="padding:7px 4px;font-weight:600;">${label}</td>
+              <td style="padding:7px 4px;">${state}</td>
+              <td style="padding:7px 4px;">${models}</td>
+              <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
+              <td style="padding:7px 4px;text-align:right;white-space:nowrap;">${acts || '<span style="color:#475569;">—</span>'}</td>
+            </tr>`;
+        }).join('')}
+      </table>
+      <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
+        <b>Models</b> is how many of the match's teams the appearance gallery already knows.
+        At 6/6 the tracker labels the match ~84% correctly before anyone touches it; at 0/6
+        it is back to geometry alone and every robot needs naming.
+      </p>`;
+}
 
 // ── Field Drawing Tab ────────────────────────────────────────────────────────
 // Strokes: { pts: [{x,y}…] normalized to IMAGE rect (0–1), color }
@@ -8375,6 +8792,157 @@ function _fDrawLive() {
 
 window.fieldUndo  = () => { fieldStrokes.pop(); fieldRedraw(); };
 window.fieldErase = () => { fieldStrokes = []; fieldDrawing = false; fieldCurrentStroke = []; fieldRedraw(); };
+
+// ── Robot position tracks (rtrack-tracks v1) ─────────────────────────────────
+//
+// Produced offline by robot-tracker/ and published as public/tracks/<matchKey>.json.
+// Most matches will never have one, so every path here treats "absent" as normal and
+// silent — not an error state.
+//
+// The renderer deliberately mirrors the Field Drawing tab above: same canvas-over-image
+// composition, same normalized 0-1 coordinate space keyed to the image's LIVE bounding
+// rect (see _fPt), same sizing dance around the img load/complete race (see
+// _fSizeCanvas). That tab already solved the fullscreen and resize edge cases; this
+// reuses the shape rather than rediscovering them.
+
+// Three shades per alliance so three robots of one colour stay distinguishable,
+// matching the R1-R3 / B1-B3 intent of _FC above.
+const _TRACK_SHADES = {
+    red:  ['#ef4444', '#f87171', '#b91c1c'],
+    blue: ['#3b82f6', '#60a5fa', '#1d4ed8'],
+};
+window.trackColourFor = function (robot, i) {
+    const set = _TRACK_SHADES[robot.alliance] || ['#9aa0a6'];
+    return set[((robot.station ? robot.station - 1 : i) % set.length + set.length) % set.length];
+};
+
+// Field metres -> normalized 0-1 on the field image. The mapping ships INSIDE the track
+// file (fieldRectPx / pxPerMeter / imageSize) precisely so the app never needs anything
+// from robot-tracker/calib/, which is not deployed.
+function _trackNorm(doc) {
+    const f = doc.field, R = f.fieldRectPx, ppm = f.pxPerMeter;
+    const [W, H] = f.imageSize;
+    // image +y maps to field -y, hence (y1 - Y) rather than (y0 + Y)
+    return (x, y) => [(R.x0 + x * ppm) / W, (R.y1 - y * ppm) / H];
+}
+
+// Dexie first, network second. A miss is quiet and returns null.
+async function loadMatchTracks(matchKey) {
+    if (!matchKey) return null;
+    try {
+        const hit = await db.matchTracks.get(matchKey);
+        if (hit) return hit;
+    } catch { /* table may not exist on a stale schema; fall through to network */ }
+
+    const url = `${import.meta.env.BASE_URL}tracks/${matchKey}.json`;
+    try {
+        // HEAD-probe first, mirroring findArchiveUrl: a 404 page served as HTML would
+        // otherwise parse-fail noisily on every match that has no tracks.
+        const head = await fetch(url, { method: 'HEAD' });
+        const ct = head.headers.get('content-type') || '';
+        if (!head.ok || !ct.includes('json')) return null;
+        const resp = await fetch(url);
+        if (!resp.ok) return null;
+        const doc = await resp.json();
+        if (doc?.schemaVersion !== 1 || !Array.isArray(doc.robots)) return null;
+        doc.key = matchKey;
+        doc.eventKey = doc.match?.eventKey || matchKey.split('_')[0];
+        try {
+            await db.matchTracks.put(doc);
+            // A newly cached match changes what the team Routes tab should show, and
+            // that tab memoises by team number alone. Without this, opening a match and
+            // then the Routes tab shows the pre-cache result.
+            routesRenderedFor = null;
+        } catch {}
+        return doc;
+    } catch { return null; }
+}
+window.loadMatchTracks = loadMatchTracks;
+
+// Size a track canvas against its backing image. Same guards as _fSizeCanvas: the rect
+// can be zero while hidden, and the image may or may not have loaded yet.
+function _trackSizeCanvas(img, canvas) {
+    const r = img.getBoundingClientRect();
+    if (!r.width || !r.height) return false;
+    canvas.width  = Math.round(r.width);
+    canvas.height = Math.round(r.height);
+    return true;
+}
+
+/**
+ * Draw routes onto a canvas overlaying a field image.
+ * opts: { teams:Set|null (null = all), tNow:number|null, trailOnly:bool, dots:bool }
+ */
+// Auto ends at this many seconds after auto start. Exports carry it in
+// sampling.phases.autoEndT; older files predate that field, so fall back to the 2026
+// rulebook value rather than drawing nothing.
+const AUTO_END_DEFAULT = 20;
+function autoEndOf(doc) {
+    const v = doc?.sampling?.phases?.autoEndT;
+    return (typeof v === 'number' && v > 0) ? v : AUTO_END_DEFAULT;
+}
+
+function renderFieldRoutes(canvas, doc, opts = {}) {
+    if (!canvas || !doc) return;
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    if (!W || !H) return;
+
+    const N = _trackNorm(doc);
+    const only = opts.teams || null;
+    const tNow = (opts.tNow === undefined || opts.tNow === null) ? null : opts.tNow;
+    const trailOnly = !!opts.trailOnly;
+    const dots = opts.dots !== false;
+    // Sample times are relative to AUTO START, so the autonomous period is simply
+    // t <= autoEndT. Clipping here rather than filtering the doc keeps one source of
+    // truth for the routes and lets the caller toggle without re-fetching.
+    const tMax = (opts.tMax === undefined || opts.tMax === null) ? null : opts.tMax;
+
+    doc.robots.forEach((r, i) => {
+        if (only && !only.has(String(r.team))) return;
+        let pts = r.samples || [];
+        if (tMax !== null) pts = pts.filter(s => s.t <= tMax);
+        if (!pts.length) return;
+        const col = window.trackColourFor(r, i);
+        const gaps = r.gaps || [];
+        // Break the line across recorded gaps. Drawing straight through a stretch
+        // nobody observed invents a route that reads as real.
+        const spans = (a, b) => gaps.some(g => g.tStart <= a.t && b.t <= g.tEnd);
+
+        ctx.lineWidth = 2;
+        ctx.strokeStyle = col;
+        ctx.lineJoin = 'round';
+        ctx.lineCap = 'round';
+        ctx.globalAlpha = 0.85;
+        ctx.beginPath();
+        let started = false;
+        for (let k = 0; k < pts.length; k++) {
+            const p = pts[k];
+            if (trailOnly && tNow !== null && p.t > tNow) break;
+            const [nx, ny] = N(p.x, p.y);
+            const X = nx * W, Y = ny * H;
+            if (!started || (k && spans(pts[k - 1], p))) { ctx.moveTo(X, Y); started = true; }
+            else ctx.lineTo(X, Y);
+        }
+        if (started) ctx.stroke();
+
+        if (dots && tNow !== null) {
+            let cur = null;
+            for (const p of pts) { if (p.t <= tNow) cur = p; else break; }
+            if (cur) {
+                const [nx, ny] = N(cur.x, cur.y);
+                ctx.globalAlpha = 1;
+                ctx.beginPath();
+                ctx.arc(nx * W, ny * H, 6, 0, Math.PI * 2);
+                ctx.fillStyle = col; ctx.fill();
+                ctx.lineWidth = 2; ctx.strokeStyle = '#0f1115'; ctx.stroke();
+            }
+        }
+        ctx.globalAlpha = 1;
+    });
+}
+window.renderFieldRoutes = renderFieldRoutes;
 
 // ── Pick List ────────────────────────────────────────────────────────────────
 
@@ -10491,9 +11059,10 @@ window.switchDetailTab = async function (tab) {
         wlMatchesRenderedFor = null;
     }
     lastDetailTab = tab;
-    const tabs = ['overview', 'matches', 'data'];
+    const tabs = ['overview', 'matches', 'data', 'routes'];
     tabs.forEach(t => {
-        document.getElementById(`tab-${t}`).style.display = t === tab ? 'block' : 'none';
+        const el = document.getElementById(`tab-${t}`);
+        if (el) el.style.display = t === tab ? 'block' : 'none';
     });
     document.querySelectorAll('#teamDetailTabs .detail-tab-btn').forEach((btn, i) => {
         btn.classList.toggle('active', tabs[i] === tab);
@@ -10507,7 +11076,186 @@ window.switchDetailTab = async function (tab) {
     if (tab === 'data' && activeTeamData) {
         await switchDetailDataSubTab(lastDetailDataSubTab);
     }
+    if (tab === 'routes' && activeTeamData) {
+        // Lazily, on open only: a canvas cannot size itself while its pane is
+        // display:none -- the same reason performanceChart is deferred.
+        await renderTeamRoutesTab(activeTeamData.teamNumber);
+    }
 };
+
+let routesRenderedFor = null;
+// Off by default: routes belong to the event the user selected, same as every other
+// surface in the app. The toggle exists because the opposite failure is real too -- a
+// team whose only tracked match is at another event would otherwise show "no tracked
+// matches" and look like the pipeline lost it. Scoped by default, never hidden silently:
+// the count of what is being withheld is always on screen.
+let routesShowAllEvents = false;
+
+window.toggleRoutesAllEvents = function () {
+    routesShowAllEvents = !routesShowAllEvents;
+    routesRenderedFor = null;          // memo covers the toggle, so force a re-render
+    if (activeTeamData) renderTeamRoutesTab(activeTeamData.teamNumber);
+};
+
+// Auto only. The match-detail view has had this since the scrubber was built, but the
+// small-multiples grid on this tab is the surface where it actually earns its keep:
+// comparing one team's opening 20 s across every match at the event is the question
+// auto routes are FOR, and a full-match trace buries it under 140 s of teleop.
+//
+// Per-tab state rather than shared with the match view, because the two are looked at
+// for different reasons and a toggle that follows you between them is a surprise.
+let routesAutoOnly = false;
+
+window.toggleRoutesAuto = function () {
+    routesAutoOnly = !routesAutoOnly;
+    routesRenderedFor = null;
+    if (activeTeamData) renderTeamRoutesTab(activeTeamData.teamNumber);
+};
+let _tracksManifest = null;   // cached for the session
+
+/**
+ * What tracks exist, from public/tracks/index.json.
+ *
+ * This exists because the app has no other way to find them. `db.matches` holds
+ * QUALIFICATION MATCHES ONLY (main.js ~4173 skips comp_level !== 'qm'), so every
+ * playoff match is invisible to the schedule and to viewMatchDetail. The two matches
+ * published so far are finals, so without the manifest there is no route into them at
+ * all. The manifest also carries each match's team list, so this can filter by team
+ * before downloading anything.
+ */
+async function loadTracksManifest(force = false) {
+    if (_tracksManifest && !force) return _tracksManifest;
+    try {
+        const url = `${import.meta.env.BASE_URL}tracks/index.json`;
+        const head = await fetch(url, { method: 'HEAD' });
+        const ct = head.headers.get('content-type') || '';
+        if (!head.ok || !ct.includes('json')) return (_tracksManifest = { matches: [] });
+        const resp = await fetch(url);
+        if (!resp.ok) return (_tracksManifest = { matches: [] });
+        const doc = await resp.json();
+        _tracksManifest = (doc && Array.isArray(doc.matches)) ? doc : { matches: [] };
+    } catch { _tracksManifest = { matches: [] }; }
+    return _tracksManifest;
+}
+window.loadTracksManifest = loadTracksManifest;
+
+// Small-multiples: this team's route in every tracked match.
+async function renderTeamRoutesTab(teamNumber) {
+    const host = document.getElementById('tab-routes');
+    if (!host) return;
+    const team = String(teamNumber);
+    const evKey = (document.getElementById('eventKeyInput')?.value || '')
+        .trim().toLowerCase();
+    // The memo has to cover the event key and the toggle, not just the team: both change
+    // what this tab should show while the team stays the same.
+    const memo = `${team}|${evKey}|${routesShowAllEvents}|${routesAutoOnly}`;
+    if (routesRenderedFor === memo) return;   // memo, mirroring wlMatchesRenderedFor
+    // Set AFTER the loads below, not here: loadMatchTracks clears this memo whenever it
+    // caches a new match, so claiming it up front would have it cleared by our own
+    // fetches and the tab would re-render on every open.
+    host.innerHTML = `<p style="color:#94a3b8; margin-top:18px;">Loading…</p>`;
+
+    const man = await loadTracksManifest();
+    const forTeam = (man.matches || [])
+        .filter(r => (r.teams || []).map(String).includes(team))
+        .sort((a, b) => String(a.key).localeCompare(String(b.key)));
+    // Event comes from the match key's prefix when the manifest does not carry one --
+    // rtrack names every match <event>_<comp><n>, which is the same split export.py uses.
+    const evOf = r => String(r.eventKey || String(r.key).split('_')[0] || '');
+    const inEvent = evKey ? forTeam.filter(r => evOf(r) === evKey) : forTeam;
+    const elsewhere = forTeam.length - inEvent.length;
+    const want = (routesShowAllEvents || !evKey) ? forTeam : inEvent;
+
+    // Shown whenever another event has tracks for this team, in BOTH toggle states, so
+    // the tab never just looks empty and never silently mixes events either.
+    const allEventsBox = elsewhere > 0 ? `
+        <label style="display:inline-flex; align-items:center; gap:7px;
+                      color:#94a3b8; font-size:12px; cursor:pointer;">
+          <input type="checkbox" id="routesAllEvents" ${routesShowAllEvents ? 'checked' : ''}
+                 onchange="toggleRoutesAllEvents()" style="cursor:pointer;">
+          Show ${elsewhere} match${elsewhere === 1 ? '' : 'es'} from other events
+        </label>` : '';
+    // Always offered, even with nothing loaded yet, so the empty state still tells the
+    // reader the view exists.
+    const autoBox = `
+        <label style="display:inline-flex; align-items:center; gap:7px;
+                      color:#94a3b8; font-size:12px; cursor:pointer;">
+          <input type="checkbox" id="routesAutoOnly" ${routesAutoOnly ? 'checked' : ''}
+                 onchange="toggleRoutesAuto()" style="cursor:pointer;">
+          Auto only
+        </label>`;
+    const toggle = `<div style="display:flex; flex-wrap:wrap; gap:8px 18px;
+                                align-items:center; margin-top:14px;">
+                      ${autoBox}${allEventsBox}</div>`;
+
+    if (!want.length) {
+        host.innerHTML = `
+            <p style="color:#94a3b8; margin-top:18px;">
+              No tracked matches for ${team}${evKey ? ` at ${evKey}` : ''}.<br>
+              <span style="font-size:12px;">
+                ${elsewhere
+                  ? `${elsewhere} tracked match${elsewhere === 1 ? '' : 'es'} at other events.`
+                  : (man.matches || []).length
+                    ? `${man.matches.length} match(es) published, none with this team.`
+                    : 'Nothing published to public/tracks/ yet.'}
+              </span>
+            </p>${toggle}`;
+        routesRenderedFor = memo;
+        return;
+    }
+
+    const mine = (await Promise.all(want.map(r => loadMatchTracks(r.key))))
+        .filter(Boolean);
+    if (!mine.length) {
+        host.innerHTML = `<p style="color:#94a3b8; margin-top:18px;">
+            Tracks listed for ${team} but none could be loaded.</p>`;
+        return;
+    }
+
+    host.innerHTML = `
+        <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
+                    gap:14px; margin-top:16px;">
+          ${mine.map((d, i) => `
+            <div>
+              <div style="display:flex; gap:8px; align-items:baseline; margin-bottom:4px;">
+                <b style="font-size:13px;">${d.match?.key || d.key}</b>
+                <span style="font-size:11px; color:#94a3b8;">
+                  ${(d.robots.find(r => String(r.team) === team)?.alliance) || ''}
+                  · custody ${Math.round(100 * (d.robots.find(r => String(r.team) === team)?.custody || 0))}%
+                  ${routesAutoOnly ? `· <span style="color:#60a5fa;">first ${autoEndOf(d).toFixed(0)}s</span>` : ''}
+                </span>
+              </div>
+              <div style="position:relative; width:100%; border-radius:6px; overflow:hidden;">
+                <img class="trImg" data-i="${i}"
+                     src="${import.meta.env.BASE_URL}${d.field.imageRef}" alt="field"
+                     style="display:block; width:100%; height:auto;">
+                <canvas class="trCv" data-i="${i}"
+                        style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
+              </div>
+            </div>`).join('')}
+        </div>${toggle}`;
+
+    const only = new Set([team]);
+    host.querySelectorAll('.trCv').forEach(cv => {
+        const i = Number(cv.dataset.i);
+        const img = host.querySelector(`.trImg[data-i="${i}"]`);
+        const paint = () => {
+            if (_trackSizeCanvas(img, cv)) {
+                // autoEndOf reads sampling.phases.autoEndT from the export and falls
+                // back to the rulebook, so a doc written before that field existed
+                // still clips at the right place rather than silently showing the
+                // whole match under an "Auto only" heading.
+                renderFieldRoutes(cv, mine[i], {
+                    teams: only, tNow: null, dots: false,
+                    tMax: routesAutoOnly ? autoEndOf(mine[i]) : null,
+                });
+            }
+        };
+        if (img.complete && img.naturalWidth) paint();
+        else img.addEventListener('load', paint, { once: true });
+    });
+    routesRenderedFor = memo;   // claim the memo only once the render actually stands
+}
 
 window.switchDetailDataSubTab = async function (tab) {
     lastDetailDataSubTab = tab;
@@ -11944,8 +12692,21 @@ const bootApp = async () => {
 
 bootApp();
 
-// Automatically set the view to 'homeView' when the script finishes loading
+// Automatically set the view to 'homeView' when the script finishes loading.
+// A #view/tab deep link overrides that -- the curator's Back button uses #tools/tracks
+// to return to the queue it was launched from. This has to happen HERE rather than in
+// bootApp, because this handler unconditionally switches to homeView and would
+// otherwise undo it.
+const DEEP_LINKS = {
+    '#tools/tracks': () => { switchView('toolsView'); switchToolsTab('tracks'); },
+};
 document.addEventListener('DOMContentLoaded', () => {
+    const deep = DEEP_LINKS[location.hash];
+    if (deep) {
+        history.replaceState(null, '', location.pathname + location.search);
+        deep();
+        return;
+    }
     const homeBtn = document.querySelector('.nav-btn'); // Grabs the first button (Home)
     switchView('homeView', homeBtn);
 });

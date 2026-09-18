@@ -2,14 +2,14 @@
   "name": "Nashoba Robotics Scouting Hub",
   "short_name": "1768 Scout",
   "description": "FRC event scouting dashboard for Team 1768",
-  "start_url": "/1768Scouting/",
-  "scope": "/1768Scouting/",
+  "start_url": "/ScoutingApp/",
+  "scope": "/ScoutingApp/",
   "display": "standalone",
   "background_color": "#0f172a",
   "theme_color": "#0f172a",
   "orientation": "any",
   "icons": [
-    { "src": "/1768Scouting/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
-    { "src": "/1768Scouting/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
+    { "src": "/ScoutingApp/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "any" },
+    { "src": "/ScoutingApp/logo.png", "sizes": "512x512", "type": "image/png", "purpose": "maskable" }
   ]
 }

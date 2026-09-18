@@ -1,0 +1,948 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16181c">
+<title>rtrack curator</title>
+<!--
+  Remote curator. Served from the app's public/ (so GitHub Pages hosts it) and talks to
+  rtrack-relay, because the machine holding the video is behind a home NAT and the
+  person doing the work is in a venue with a phone.
+
+  MOBILE-FIRST, AND THAT CHANGES THE INTERACTION. robot-tracker/viewer/curate.html is a
+  desktop tool: full frame on screen, click a box, press 1-6. A phone has no number keys
+  and a 1600 px frame shrinks to ~400 px, which makes an 80 px robot 20 px wide -- too
+  small to identify, let alone tap accurately. So here: tap a box, get a ZOOMED CROP of
+  it above large team buttons. You judge the crop, not the frame.
+
+  Output is the same corrections shape the pipeline already consumes:
+      { labels: [ { f, xy: [x, y], team } | { f, xy, notrobot } | { f, xy, unknown } ] }
+  `xy` is in ORIGINAL video pixels, which is why corrections survive track renumbering.
+-->
+<style>
+  :root{
+    --bg:#16181c; --panel:#1e2126; --line:#2e323a; --fg:#e8eaed; --dim:#9aa0a6;
+    --red:#ef4444; --blue:#3b82f6; --ok:#22c55e; --warn:#f59e0b;
+    --safe: env(safe-area-inset-bottom, 0px);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--fg);overscroll-behavior:none;
+       font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:8px 12px;background:var(--panel);
+         border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+  h1{font-size:14px;margin:0;font-weight:600;white-space:nowrap}
+  .sp{flex:1}
+  button{background:#2a2e35;color:var(--fg);border:1px solid var(--line);border-radius:8px;
+         padding:9px 13px;font:inherit;cursor:pointer}
+  button:active{background:#3a4049}
+  button:disabled{opacity:.35}
+  .primary{background:#2563eb;border-color:#2563eb;font-weight:600}
+  input{background:#0f1115;color:var(--fg);border:1px solid var(--line);border-radius:8px;
+        padding:9px 11px;font:inherit;width:100%}
+  main{padding:10px 12px calc(12px + var(--safe))}
+  .setup{max-width:520px;margin:6vh auto}
+  .setup label{display:block;margin:14px 0 5px;color:var(--dim);font-size:13px}
+  .row{display:flex;gap:8px;align-items:center}
+  .msg{margin-top:12px;padding:10px;border-radius:8px;border:1px solid var(--line);
+       background:#0f1115;color:var(--dim);font-size:13px;white-space:pre-wrap}
+  .msg.err{border-color:#5b2626;color:#fca5a5}
+  .msg.ok{border-color:#1e4620;color:#86efac}
+  #wrap{position:relative;width:100%;background:#0f1115;border:1px solid var(--line);
+        border-radius:10px;overflow:hidden;touch-action:manipulation}
+  #frame{display:block;width:100%;height:auto}
+  #hit{position:absolute;inset:0;width:100%;height:100%}
+  .meta{display:flex;gap:10px;flex-wrap:wrap;color:var(--dim);font-size:12px;margin:8px 2px}
+  .meta b{color:var(--fg)}
+  /* position:relative so the confirmed tick can sit ON the crop. touch-action:pan-y
+     keeps the page scrollable vertically while horizontal drags reach the swipe
+     handler instead of being eaten by the browser's own gesture. */
+  #zoomWrap{margin-top:10px;display:none;position:relative;touch-action:pan-y}
+  #zoom{display:block;width:100%;max-height:34vh;object-fit:contain;background:#0b0d10;
+        border:2px solid var(--warn);border-radius:10px;image-rendering:auto}
+  /* CONFIRMED BY THE CURATOR, and only by the curator. The border turns green and a tick
+     lands in the corner, so "have I done this one" is answerable from the crop the eye is
+     already on -- without looking away to the hint line or the box outlines. A machine
+     guess deliberately gets neither: the whole point of the review pass is that its
+     answers do not look finished. */
+  #zoomWrap.done #zoom{border-color:#22c55e}
+  #tick{position:absolute;top:8px;right:8px;width:30px;height:30px;border-radius:50%;
+        background:#16803c;color:#fff;font-size:17px;line-height:30px;text-align:center;
+        font-weight:700;box-shadow:0 1px 6px #000a;pointer-events:none;display:none}
+  #zoomWrap.done #tick{display:block}
+  /* Swipe hint. Shown once per session, dismissed by the first successful swipe. */
+  #swipeHint{margin-top:6px;color:var(--dim);font-size:11px;text-align:center}
+  .teams{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:10px}
+  /* Best views. The box on screen is often not the clearest look at that robot -- on
+     qm10, 62% of boxes were not -- so the crops that CAN carry a bumper number are shown
+     alongside it. Timestamps are not decoration: a strip whose crops disagree is a track
+     that changed robot, and that is only visible if you can see they are far apart. */
+  /* Overlap warning. Loud enough to notice mid-sweep, quiet enough not to be swatted
+     away: an amber bar under the crop, only when two boxes actually sit on each other.
+     It was a sentence appended to the hint line and went unread. */
+  #ovl[hidden]{display:none}
+  #ovl{margin-top:8px;padding:9px 11px;border-radius:8px;
+       border:1px solid var(--warn);background:#2a2110;color:#fcd34d;font-size:13px;
+       display:flex;gap:9px;align-items:flex-start;line-height:1.4}
+  #ovl b{color:#fde68a}
+  #ovlIcon{flex:0 0 auto;font-size:15px;line-height:1.2}
+  #views{margin-top:8px}
+  .vlabel{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em;
+          margin-bottom:5px}
+  .vstrip{display:flex;gap:6px;overflow-x:auto;padding-bottom:4px}
+  .vstrip figure{margin:0;flex:0 0 auto;display:flex;flex-direction:column;gap:2px}
+  .vstrip img{height:112px;width:auto;display:block;border:1px solid var(--line);
+              border-radius:6px;background:#0b0d10}
+  .vstrip figcaption{color:var(--dim);font-size:10px;text-align:center}
+  .team{padding:14px 6px;border-radius:10px;border:1px solid var(--line);background:var(--panel);
+        font-size:18px;font-weight:700;letter-spacing:.3px;text-align:center}
+  .team.red{color:var(--red);border-color:#5b2626}
+  .team.blue{color:var(--blue);border-color:#23406e}
+  .team.taken{opacity:.30;text-decoration:line-through}
+  .flags{display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin-top:8px}
+  .flags button{font-size:13px;padding:11px 4px}
+  .nav{display:flex;gap:8px;align-items:center;margin-top:12px}
+  .pips{display:flex;gap:4px;flex:1;flex-wrap:wrap}
+  .pip{width:11px;height:11px;border-radius:50%;background:#333;border:1px solid #444}
+  .pip.done{background:var(--ok);border-color:var(--ok)}
+  .pip.cur{outline:2px solid var(--fg);outline-offset:1px}
+  .bar{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);
+       padding:10px 12px calc(10px + var(--safe));margin:12px -12px calc(-12px - var(--safe));
+       display:flex;gap:10px;align-items:center}
+  .hint{color:var(--dim);font-size:12px;margin-top:8px}
+  /* Long-press reference sheet. Bottom sheet rather than a centred modal: on a phone the
+     thumb is already at the team grid, which is exactly where this opens. */
+  /* [hidden] FIRST, and it is not optional. The `hidden` attribute works by applying
+     display:none from the UA stylesheet, so ANY author rule that sets `display` beats
+     it -- this sheet set display:flex and was therefore permanently on screen, dimming
+     the page, blocking every tap, and ignoring its own Close button (which only sets
+     hidden=true). Anything here that toggles via `hidden` needs this guard. */
+  #refSheet[hidden]{display:none}
+  #refSheet{position:fixed;inset:0;background:rgba(0,0,0,.62);z-index:50;
+            display:flex;align-items:flex-end}
+  #refPanel{width:100%;background:var(--panel);border-top:1px solid var(--line);
+            border-radius:14px 14px 0 0;padding:12px 12px calc(14px + var(--safe));
+            max-height:72vh;overflow-y:auto}
+  #refHead{display:flex;gap:10px;align-items:center;margin-bottom:10px}
+  .refGroup{margin-bottom:12px}
+  .refCap{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;
+          margin-bottom:6px}
+  .refRow{display:flex;gap:8px;overflow-x:auto;padding-bottom:4px}
+  .refRow figure{margin:0;flex:0 0 auto;display:flex;flex-direction:column;gap:3px}
+  .refRow img{height:190px;width:auto;display:block;border:1px solid var(--line);
+              border-radius:8px;background:#0b0d10}
+  .refRow figcaption{color:var(--dim);font-size:10px;text-align:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>rtrack curator</h1>
+  <span class="sp"></span>
+  <span id="hdr" style="color:var(--dim);font-size:12px"></span>
+  <button id="backBtn" style="padding:6px 10px" title="Back to the app">‹ Back</button>
+  <button id="cfgBtn" style="padding:6px 10px">⚙</button>
+</header>
+
+<main>
+  <!-- ── setup ─────────────────────────────────────────────────────────── -->
+  <section id="setup" class="setup">
+    <label for="relay">Relay URL</label>
+    <input id="relay" placeholder="https://rtrack-relay.<you>.workers.dev" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <!-- Hidden unless the relay actually asks for it. Answering is open by default
+         (see rtrack-relay/worker.js), so there is normally nothing to configure. -->
+    <div id="tokRow" hidden>
+      <label for="token">Device token <span style="color:#6b7280">(RTRACK_ANSWER_TOKEN)</span></label>
+      <input id="token" type="password" placeholder="RTRACK_ANSWER_TOKEN" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div style="color:#6b7280;font-size:12px;margin-top:5px">
+        This relay requires a token to accept answers. Ask whoever runs it — it is not
+        the home machine's RTRACK_TOKEN.
+      </div>
+    </div>
+    <label for="match">Match key</label>
+    <div class="row">
+      <input id="match" placeholder="2026mawor_qm1" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="load" class="primary" style="white-space:nowrap">Load</button>
+    </div>
+    <div class="row" style="margin-top:10px">
+      <button id="listBtn" style="flex:1">What's available?</button>
+    </div>
+    <div id="setupMsg" class="msg" hidden></div>
+  </section>
+
+  <!-- ── curation ──────────────────────────────────────────────────────── -->
+  <section id="work" hidden>
+    <div class="meta" id="info"></div>
+    <div id="wrap">
+      <img id="frame" alt="match frame">
+      <canvas id="hit"></canvas>
+    </div>
+    <div id="zoomWrap">
+      <canvas id="zoom"></canvas>
+      <div id="tick" aria-hidden="true">&#10003;</div>
+      <div id="swipeHint">swipe the image left or right to change box</div>
+    </div>
+    <div id="ovl" hidden><span id="ovlIcon">⚠</span><span id="ovlText"></span></div>
+    <div id="views" hidden>
+      <div class="vlabel">Clearest views of this robot</div>
+      <div class="vstrip" id="vstrip"></div>
+    </div>
+    <div class="teams" id="teams"></div>
+    <div class="flags">
+      <button data-flag="notrobot">not a robot</button>
+      <button data-flag="unknown">can't tell</button>
+      <button data-flag="clear">clear</button>
+    </div>
+    <div class="nav">
+      <button id="prev">‹</button>
+      <div class="pips" id="pips"></div>
+      <button id="next">›</button>
+    </div>
+    <p class="hint" id="hint">Tap a box in the frame, then tap who it is.</p>
+    <div id="doneBar" hidden style="margin-top:10px"></div>
+    <!-- ABOVE the bar. `.bar` is position:sticky;bottom:0, so anything after it renders
+         underneath the pinned bar and is unreachable on a phone. Success was survivable
+         here because the Back button also turns green -- but a FAILED send reported only
+         through this element, where it could not be seen. -->
+    <div id="workMsg" class="msg" hidden></div>
+    <div class="bar">
+      <span id="count" style="color:var(--dim);font-size:13px"></span>
+      <span class="sp"></span>
+      <button id="submit" class="primary">Submit</button>
+    </div>
+  </section>
+</main>
+
+<div id="refSheet" hidden>
+  <div id="refPanel">
+    <div id="refHead">
+      <b>Team <span id="refTeam"></span></b>
+      <span style="color:var(--dim);font-size:12px">confirmed in earlier matches</span>
+      <span class="sp"></span>
+      <button id="refClose" style="padding:6px 12px">Close</button>
+    </div>
+    <div id="refBody"></div>
+  </div>
+</div>
+
+<script>
+const $ = s => document.querySelector(s);
+const ID_PARAM = 'match', ID_FIELD = '#match';
+
+const LS = {
+  get url()   { return localStorage.getItem('rtrackRelay') || ''; },
+  set url(v)  { localStorage.setItem('rtrackRelay', v); },
+  get tok()   { return localStorage.getItem('rtrackToken') || ''; },
+  set tok(v)  { localStorage.setItem('rtrackToken', v); },
+  get match() { return localStorage.getItem('rtrackMatch') || ''; },
+  set match(v){ localStorage.setItem('rtrackMatch', v); },
+};
+
+let DOC = null, FI = 0, SEL = null, SENT = false;
+// answers: "f|x|y" -> { f, xy, team? , notrobot? , unknown? }
+let ANS = new Map();
+
+function needToken(msg) {
+  const r = document.getElementById('tokRow');
+  if (r) r.hidden = false;
+  document.getElementById('setup').hidden = false;
+  document.getElementById('work').hidden = true;
+  document.getElementById('token')?.focus();
+  return msg;
+}
+const say = (el, text, cls = '') => {
+  el.hidden = false; el.className = 'msg ' + cls; el.textContent = text;
+};
+const keyOf = (f, xy) => `${f}|${xy[0]}|${xy[1]}`;
+
+// ── setup ───────────────────────────────────────────────────────────────
+$('#relay').value = LS.url;
+$('#token').value = LS.tok;
+if ($('#token').value) $('#tokRow').hidden = false;
+$('#match').value = LS.match;
+// Always straight to the Tracks queue, which is the only place anyone arrives from and
+// the list you want next after finishing a match. history.back() was never right here:
+// the app opens this page with target="_blank", so the tab has its own fresh history and
+// the fallback fired instead -- landing on the app root, a tab and a scroll away from
+// the queue. '../' (not '../../') because this page lives at <base>rtrack/curate.html,
+// so one level up IS the app root under a project path like /ScoutingApp/.
+$('#backBtn').onclick = () => {
+  const dirty = ANS.size && !SENT;
+  if (dirty && !confirm('You have labels that have not been sent. Leave anyway?')) return;
+  location.href = '../#tools/tracks';
+};
+$('#cfgBtn').onclick = () => {
+  const s = $('#setup'), w = $('#work');
+  if (s.hidden) { s.hidden = false; w.hidden = true; } else if (DOC) { s.hidden = true; w.hidden = false; }
+};
+
+function cfg() {
+  const url = $('#relay').value.trim().replace(/\/+$/, '');
+  const tok = $('#token').value.trim();
+  LS.url = url; LS.tok = tok;
+  return { url, tok };
+}
+
+$('#listBtn').onclick = async () => {
+  const { url } = cfg();
+  if (!url) return say($('#setupMsg'), 'Enter the relay URL first.', 'err');
+  say($('#setupMsg'), 'Checking…');
+  try {
+    const r = await fetch(`${url}/index`);
+    const d = await r.json();
+    const b = (d.items || []).filter(i => i.kind === 'bundle');
+    say($('#setupMsg'), b.length
+      ? 'Bundles waiting:\n' + b.map(i => `  ${i.id}  (${Math.round((i.bytes || 0) / 1024)} KB)`).join('\n')
+      : 'No bundles on the relay yet.', b.length ? 'ok' : '');
+  } catch (e) { say($('#setupMsg'), 'Could not reach the relay:\n' + e.message, 'err'); }
+};
+
+$('#load').onclick = async () => {
+  const { url } = cfg();
+  const id = $('#match').value.trim();
+  if (!url || !id) return say($('#setupMsg'), 'Relay URL and match key are both needed.', 'err');
+  LS.match = id;
+  say($('#setupMsg'), 'Downloading bundle… (these run a few MB, so give it a moment on venue wifi)');
+  try {
+    const r = await fetch(`${url}/bundle/${encodeURIComponent(id)}`);
+    if (r.status === 404) return say($('#setupMsg'), `No bundle for "${id}" on the relay.`, 'err');
+    if (!r.ok) throw new Error(`HTTP ${r.status}`);
+    const doc = await r.json();
+    if (doc.schemaVersion !== 2) throw new Error(`schemaVersion ${doc.schemaVersion}, expected 2 (full-frame bundle)`);
+    start(doc);
+  } catch (e) { say($('#setupMsg'), 'Load failed:\n' + e.message, 'err'); }
+};
+
+// ── draft persistence ───────────────────────────────────────────────────
+// Curating a match is 15 minutes of irreplaceable human work held, until now, in a Map
+// that any reload destroyed silently. That is not a hypothetical: a dev-server reload
+// (Vite watches public/ and force-reloads on any edit) wiped a finished qm9 pass, and
+// nothing anywhere recorded that it had happened. A phone backgrounding the tab, an
+// accidental swipe, or a flaky relay send would all have done the same.
+//
+// So every answer is written through to localStorage the moment it is made, keyed by
+// match so two matches in flight cannot overwrite each other. Restored on load, cleared
+// only after the relay confirms the send. Wrapped in try/catch throughout because
+// private windows and blocked site data make these accessors throw rather than no-op,
+// and losing the draft must never take the curator down with it.
+const DRAFT = {
+  key: m => 'rtrackDraft_' + (m || 'unknown'),
+  save(m, ans) {
+    try { localStorage.setItem(this.key(m), JSON.stringify([...ans.entries()])); }
+    catch { /* full or blocked: the in-memory Map is still authoritative */ }
+  },
+  load(m) {
+    try {
+      const raw = localStorage.getItem(this.key(m));
+      return raw ? new Map(JSON.parse(raw)) : null;
+    } catch { return null; }
+  },
+  clear(m) { try { localStorage.removeItem(this.key(m)); } catch { } },
+};
+
+// ── curation ────────────────────────────────────────────────────────────
+function start(doc) {
+  DOC = doc; FI = 0; SEL = null; ANS = new Map();
+  const saved = DRAFT.load(doc.match);
+  if (saved && saved.size) {
+    ANS = saved;
+    const human = [...saved.values()].filter(a => a.src === 'human').length;
+    setTimeout(() => say($('#workMsg'),
+      `Restored ${saved.size} label(s) from an unsent draft (${human} yours).`, 'ok'), 0);
+  }
+  $('#setup').hidden = true; $('#work').hidden = false;
+  $('#hdr').textContent = doc.match || doc.video || '';
+  const teams = [...(doc.teams?.red || []), ...(doc.teams?.blue || [])];
+  $('#teams').innerHTML = teams.map(t => {
+    const red = (doc.teams?.red || []).map(String).includes(String(t));
+    return `<button class="team ${red ? 'red' : 'blue'}" data-team="${t}">${t}</button>`;
+  }).join('');
+  $('#teams').querySelectorAll('.team').forEach(b => {
+    b.onclick = () => assign({ team: b.dataset.team });
+    wireRefPress(b);
+  });
+  drawPips();
+  showFrame(0);
+}
+
+function frame() { return DOC.frames[FI]; }
+
+function showFrame(i) {
+  FI = Math.max(0, Math.min(DOC.frames.length - 1, i));
+  SEL = null;
+  const f = frame();
+  const img = $('#frame');
+  img.onload = () => { sizeHit(); paint(); };
+  img.src = f.img;
+  $('#info').innerHTML =
+    `<b>frame ${f.f}</b> · t=${(f.t ?? 0).toFixed(1)}s · ${f.dets.length} boxes · ${FI + 1}/${DOC.frames.length}`;
+  $('#zoomWrap').style.display = 'none'; $('#views').hidden = true; $('#ovl').hidden = true;
+  $('#doneBar').hidden = true;
+  // PRE-FILL from the machine's guess. rtrack.reid labels a match ~84% correctly once
+  // the event gallery knows its teams, so most of these are right and the curator's
+  // job becomes spotting the wrong ones.
+  //
+  // Provenance is kept: src='machine' until a human taps a team, then 'human'. That
+  // distinction is load-bearing, not bookkeeping -- these labels train the gallery that
+  // produces the NEXT match's guesses, so silently feeding accepted guesses back as
+  // human evidence would let one confident error entrench itself. It also measures
+  // gallery accuracy for free: the share of guesses a curator changes.
+  for (const d of f.dets) {
+    const k = keyOf(f.f, d.xy);
+    if (!ANS.has(k) && d.team) ANS.set(k, { f: f.f, xy: d.xy, team: String(d.team), src: 'machine' });
+  }
+  drawPips(); updateCount(); paint();
+  // Select the first unanswered box straight away. Every frame otherwise began with a
+  // tap that conveys nothing -- there is always a first box and it is always next.
+  // With pre-fill, the first box needing attention is usually none -- so select the
+  // first UNANSWERED box if one exists (a detection the solver could not name), else
+  // just show the frame and let the curator scan for dashed boxes.
+  // Prefer the first box the machine could NOT name -- that is the one actually needing
+  // a decision. But fall back to box 0: with pre-fill there is usually no unanswered box
+  // at all, and the frame would otherwise open with nothing selected, so reviewing the
+  // guesses began with a tap that conveys nothing.
+  const unanswered = f.dets.findIndex(d => !answerFor(d));
+  const first = unanswered >= 0 ? unanswered : (f.dets.length ? 0 : -1);
+  const go = () => {
+    sizeHit();
+    if (first >= 0) { SEL = first; beginBox(); showZoom(); }
+    paint(); markTaken(); frameDone();
+  };
+  if (img.complete && img.naturalWidth) go();
+  else img.addEventListener('load', go, { once: true });
+}
+
+function sizeHit() {
+  const img = $('#frame'), cv = $('#hit');
+  const r = img.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  cv.width = Math.round(r.width); cv.height = Math.round(r.height);
+  return true;
+}
+
+// Boxes are in the bundle's display space (frame.w x frame.h); the canvas is whatever
+// the phone gives us. One scale factor, recomputed on every paint so rotation works.
+function scale() {
+  const f = frame(), cv = $('#hit');
+  return { sx: cv.width / f.w, sy: cv.height / f.h };
+}
+
+function answerFor(d) { return ANS.get(keyOf(frame().f, d.xy)); }
+
+function paint() {
+  const cv = $('#hit'); if (!cv.width && !sizeHit()) return;
+  const ctx = cv.getContext('2d'), { sx, sy } = scale();
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  frame().dets.forEach((d, i) => {
+    const [x1, y1, x2, y2] = d.box;
+    const X = x1 * sx, Y = y1 * sy, W = (x2 - x1) * sx, H = (y2 - y1) * sy;
+    const a = answerFor(d);
+    let col = d.alliance === 'red' ? '#ef4444' : d.alliance === 'blue' ? '#3b82f6' : '#9aa0a6';
+    // Green = you said so. Cyan = the machine's guess, standing unless you change it.
+    if (a?.team) col = a.src === 'human' ? '#22c55e' : '#22d3ee';
+    else if (a?.notrobot) col = '#6b7280';
+    else if (a?.unknown) col = '#f59e0b';
+    if (a?.team && a.src === 'machine') ctx.setLineDash([6, 4]);
+    else ctx.setLineDash([]);
+    ctx.lineWidth = (SEL === i) ? 4 : 2;
+    ctx.strokeStyle = (SEL === i) ? '#facc15' : col;
+    ctx.strokeRect(X, Y, W, H);
+    ctx.setLineDash([]);
+    if (a?.team) {
+      ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center';
+      ctx.fillStyle = '#000'; ctx.fillText(a.team, X + W / 2 + 1, Y - 3);
+      ctx.fillStyle = col; ctx.fillText(a.team, X + W / 2, Y - 4);
+    }
+  });
+}
+
+// Nearest box centre wins, so a fat finger near a small robot still selects it.
+$('#hit').addEventListener('click', ev => {
+  const cv = $('#hit'), r = cv.getBoundingClientRect();
+  const px = ev.clientX - r.left, py = ev.clientY - r.top;
+  const { sx, sy } = scale();
+  let best = null, bd = 1e9;
+  frame().dets.forEach((d, i) => {
+    const [x1, y1, x2, y2] = d.box;
+    const cx = (x1 + x2) / 2 * sx, cy = (y1 + y2) / 2 * sy;
+    const dd = Math.hypot(px - cx, py - cy);
+    if (dd < bd) { bd = dd; best = i; }
+  });
+  if (best === null || bd > Math.max(cv.width, cv.height) * 0.22) { SEL = null; $('#zoomWrap').style.display = 'none'; $('#views').hidden = true; $('#ovl').hidden = true; paint(); return; }
+  SEL = best; beginBox(); showZoom(); paint();
+});
+
+// ── team reference crops ────────────────────────────────────────────────
+// Long-press a team to see confirmed crops of that robot from earlier curated matches.
+// The gallery already knows what each team looks like, but only as 48 grayscale numbers;
+// this is the same knowledge in the form a person can actually check against, which
+// matters most for the case the appearance model is worst at -- two robots on one
+// alliance that differ in a detail you cannot hold in your head between matches.
+//
+// LONG-PRESS, NOT A SEPARATE BUTTON, because the team grid is already the full width of a
+// phone and six more buttons would halve every target. The gesture is on the thing it
+// describes.
+const REF_HOLD_MS = 420;
+
+// ── difficulty, measured rather than asked ──────────────────────────────
+// The legibility score is tuned against "can't tell" labels, which is a contaminated
+// signal: it mixes genuinely illegible with occluded, with ambiguous-between-two-robots,
+// with gave-up, and its rate depends on how hard the curator happened to be trying.
+//
+// The obvious fix -- ask the curator to rate photo quality -- is worse, because it
+// competes with the label for their attention and would tune the selector toward pretty
+// crops over informative ones. So difficulty is inferred from what they DID: how long
+// the box took, and whether they needed the help that is on offer. Opening the best-views
+// strip or the reference sheet before answering is an admission that the box on screen
+// was not enough, which is exactly the thing the score is trying to predict.
+//
+// Costs the curator nothing and cannot corrupt the labels, because it rides alongside
+// them rather than replacing an answer.
+let BOX_T0 = 0;          // when the current box was selected
+let BOX_AID = null;      // helpers opened since then
+
+function beginBox() { BOX_T0 = Date.now(); BOX_AID = new Set(); }
+function noteAid(kind) { if (BOX_AID) BOX_AID.add(kind); }
+
+// Every box already assigned to this team in THIS match, from the crops the bundle
+// already ships. Free, always available -- including on an event's first match, where no
+// prior data exists -- and it answers the question a curator asks most while working:
+// "what else have I called 1768, and do they look like the same robot?" Machine guesses
+// are included but marked, because a consistent set of WRONG guesses is exactly the
+// pattern worth spotting.
+function inMatchCrops(team) {
+  const out = [];
+  for (const f of (DOC?.frames || [])) {
+    for (const d of f.dets) {
+      const a = answerFor(d);
+      if (a?.team && String(a.team) === String(team) && d.crop) {
+        out.push({ crop: d.crop, t: f.t, src: a.src, leg: d.leg ?? 0 });
+      }
+    }
+  }
+  out.sort((x, y) => (y.leg - x.leg));
+  return out.slice(0, 10);
+}
+
+function wireRefPress(btn) {
+  let timer = null, fired = false;
+  const team = btn.dataset.team;
+  const start = () => {
+    // Arm if there is anything at all to show, from either source.
+    if (!(DOC?.teamRefs || {})[team] && !inMatchCrops(team).length) return;
+    fired = false;
+    timer = setTimeout(() => { fired = true; showRefs(team); }, REF_HOLD_MS);
+  };
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  btn.addEventListener('touchstart', start, { passive: true });
+  btn.addEventListener('touchend', cancel);
+  btn.addEventListener('touchmove', cancel, { passive: true });
+  btn.addEventListener('touchcancel', cancel);
+  btn.addEventListener('mousedown', start);
+  btn.addEventListener('mouseup', cancel);
+  btn.addEventListener('mouseleave', cancel);
+  btn.addEventListener('contextmenu', e => e.preventDefault());
+  // The press already assigned by the time the long-press fires, so undo that: a hold is
+  // a request to LOOK, not to answer. Capture phase, because the click listener that
+  // assigns is registered directly on the button.
+  btn.addEventListener('click', e => {
+    if (fired) { e.preventDefault(); e.stopImmediatePropagation(); fired = false; }
+  }, true);
+}
+
+function showRefs(team) {
+  const mine = inMatchCrops(team);
+  const refs = (DOC?.teamRefs || {})[team] || [];
+  if (!mine.length && !refs.length) return;
+  if (navigator.vibrate) { try { navigator.vibrate(12); } catch { } }
+  $('#refTeam').textContent = team;
+  const strip = (items, cap) => items.length ? `
+    <div class="refGroup"><div class="refCap">${cap}</div><div class="refRow">${
+      items.map(r => `<figure><img src="${r.crop}" alt="crop of ${team}">
+        <figcaption>${r.label}</figcaption></figure>`).join('')
+    }</div></div>` : '';
+  $('#refBody').innerHTML =
+    strip(mine.map(r => ({
+      crop: r.crop,
+      // Machine guesses marked, since a consistent run of wrong ones is the thing to spot.
+      label: `t${r.t}s${r.src === 'machine' ? ' · guess' : ''}`,
+    })), `This match — ${mine.length} box${mine.length === 1 ? '' : 'es'} assigned`) +
+    strip(refs.map(r => ({
+      crop: r.crop,
+      label: `${String(r.match || '').split('_').pop()} · t${r.t}s`,
+    })), 'Confirmed in earlier matches');
+  noteAid('refs');
+  $('#refSheet').hidden = false;
+}
+$('#refClose').onclick = () => { $('#refSheet').hidden = true; };
+$('#refSheet').addEventListener('click', e => {
+  if (e.target.id === 'refSheet') $('#refSheet').hidden = true;
+});
+
+// Bundles built before best views simply have no det.views, so this hides itself and
+// the page behaves exactly as it did -- no version check needed.
+function renderViews(d) {
+  const box = $('#views'), strip = $('#vstrip');
+  const vs = d.views || [];
+  if (!vs.length) { box.hidden = true; strip.innerHTML = ''; return; }
+  strip.innerHTML = vs.map(v =>
+    `<figure><img src="${v.crop}" alt="clearer view of this robot at ${v.t}s">
+     <figcaption>t${v.t}s</figcaption></figure>`).join('');
+  box.hidden = false;
+  strip.scrollLeft = 0;
+  noteAid('views');
+}
+
+// The point of the whole page: an image big enough to actually identify the robot.
+// Prefers det.crop -- cut from the FULL-RESOLUTION frame by rtrack.curate -- and only
+// falls back to magnifying the shipped frame for older bundles that lack it. The
+// fallback is visibly worse: it enlarges pixels that were already thrown away.
+function showZoom() {
+  const d = frame().dets[SEL], z = $('#zoom');
+  const a = answerFor(d);
+  renderViews(d);
+  if (d.crop) {
+    const im = new Image();
+    im.onload = () => {
+      const W = Math.min(im.naturalWidth * 3, Math.round(window.innerWidth * 2));
+      z.width = W; z.height = Math.round(W * im.naturalHeight / im.naturalWidth);
+      const ctx = z.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(im, 0, 0, z.width, z.height);
+    };
+    im.src = d.crop;
+  } else {
+    const img = $('#frame'), f = frame();
+    const nx = img.naturalWidth / f.w, ny = img.naturalHeight / f.h;
+    const [x1, y1, x2, y2] = d.box;
+    const padX = (x2 - x1) * 0.45, padY = (y2 - y1) * 0.45;
+    const sx = Math.max(0, (x1 - padX) * nx), sy = Math.max(0, (y1 - padY) * ny);
+    const sw = Math.min(img.naturalWidth - sx, (x2 - x1 + 2 * padX) * nx);
+    const sh = Math.min(img.naturalHeight - sy, (y2 - y1 + 2 * padY) * ny);
+    const W = Math.min(900, Math.round(window.innerWidth * 2));
+    z.width = W; z.height = Math.round(W * sh / sw);
+    const ctx = z.getContext('2d');
+    ctx.imageSmoothingQuality = 'high';
+    ctx.drawImage(img, sx, sy, sw, sh, 0, 0, z.width, z.height);
+  }
+  $('#zoomWrap').style.display = 'block';
+  // Green border + tick for a CURATOR answer only. `a.src === 'human'` is the same test
+  // unreviewed() and markTaken() use, so the tick, the struck-out team and the done-bar
+  // count can never disagree about what has been confirmed.
+  $('#zoomWrap').classList.toggle('done', a?.src === 'human');
+  // Clear any "last box in this frame" note left by a swipe that hit the end, so it
+  // cannot outlive the box it was about.
+  swipeNote('');
+  const len = d.n ? `  ·  ${d.n} frames` : '';
+  $('#hint').textContent = (a
+    ? `Currently: ${a.team || (a.notrobot ? 'not a robot' : 'can’t tell')}`
+    : `Box ${SEL + 1} of ${frame().dets.length} — who is this?`) + len
+    + overlapNote(SEL);
+  markTaken();
+}
+
+// Two boxes sitting on ONE robot is the common confusing case: a long-lived track plus a
+// short fragment the detector spawned beside it. They are indistinguishable in a crop, so
+// name it outright rather than leaving the curator to guess.
+//
+// Containment, not IoU, because a small fragment box sitting INSIDE a big one scores low
+// IoU and high containment -- and that is exactly the shape this case takes.
+//
+// The recommended answer: the longer track gets the team (it carries the custody), the
+// other gets "not a robot". That flag is the only one that removes a track from grouping
+// (corrections.dropped); "can't tell" deliberately does not, so a duplicate left unknown
+// stays eligible and can be absorbed into a DIFFERENT team's group -- which both corrupts
+// that team's route and feeds its gallery entry the wrong robot's pixels.
+function overlapNote(i) {
+  const box = $('#ovl');
+  const ds = frame().dets, a = ds[i]?.box;
+  if (!a) { box.hidden = true; return ''; }
+  const area = b => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
+  let hit = null;
+  ds.forEach((o, j) => {
+    if (j === i || !o.box) return;
+    const b = o.box;
+    const iw = Math.min(a[2], b[2]) - Math.max(a[0], b[0]);
+    const ih = Math.min(a[3], b[3]) - Math.max(a[1], b[1]);
+    if (iw <= 0 || ih <= 0) return;
+    if ((iw * ih) / Math.max(1, Math.min(area(a), area(b))) < 0.45) return;
+    hit = j;
+  });
+  if (hit === null) { box.hidden = true; return ''; }
+  const mine = ds[i].n || 0, other = ds[hit].n || 0;
+  $('#ovlText').innerHTML = mine >= other
+    ? `<b>Two boxes on one robot.</b> This box lasts ${mine} frames, box ${hit + 1} only `
+      + `${other}. Give <b>this</b> one the team and mark box ${hit + 1} “not a robot”.`
+    : `<b>Two boxes on one robot.</b> Box ${hit + 1} lasts ${other} frames, this one only `
+      + `${mine}. Give <b>box ${hit + 1}</b> the team and mark this one “not a robot”.`;
+  box.hidden = false;
+  return '';       // the banner carries it now; the hint line stays about the question
+}
+
+// A team can only be in one place at a time, so grey out teams already used in THIS
+// frame. Mutual exclusion within a frame is the main thing the full-frame view buys.
+function markTaken() {
+  const used = new Set();
+  frame().dets.forEach((d, i) => {
+    const a = answerFor(d);
+    // HUMAN answers only. Striking a team out on the machine's say-so removes it from
+    // the curator's options before they have agreed the guess is right -- and if the
+    // guess is wrong, the correct team is the one that looks unavailable. Mutual
+    // exclusion is only a real constraint once a person has asserted it.
+    if (a?.team && a.src === 'human' && (SEL === null || i !== SEL)) used.add(String(a.team));
+  });
+  $('#teams').querySelectorAll('.team').forEach(b => {
+    b.classList.toggle('taken', used.has(b.dataset.team));
+  });
+}
+
+function assign(val) {
+  if (SEL === null) { $('#hint').textContent = 'Tap a box first.'; return; }
+  const d = frame().dets[SEL], k = keyOf(frame().f, d.xy);
+  if (val === 'clear') ANS.delete(k);
+  else ANS.set(k, {
+    f: frame().f, xy: d.xy, ...val, src: 'human',
+    // Difficulty, alongside the label and never instead of it. See beginBox().
+    ms: BOX_T0 ? Math.min(Date.now() - BOX_T0, 120000) : null,
+    aid: BOX_AID && BOX_AID.size ? [...BOX_AID] : undefined,
+  });
+  DRAFT.save(DOC?.match, ANS);   // write through on every tap; see DRAFT
+  paint(); drawPips(); updateCount(); markTaken();
+  // Advance to the next box THAT STILL NEEDS THE CURATOR -- unreviewed(), not
+  // unanswered. A machine guess counts as needing review, so a pre-filled frame still
+  // sweeps end to end at one tap per box; a box the curator has already confirmed is
+  // skipped, because there is nothing left to ask about it.
+  //
+  // This replaces a fallback to SEL+1, which stepped by INDEX once nothing was
+  // unanswered and so walked back over work already done. Pressing "Review N
+  // unconfirmed" then turned into a full extra lap of the frame: assign the unassigned,
+  // review the guesses, and then cycle through everything a third time. Selecting from
+  // unreviewed() subsumes that fallback entirely -- it was only ever there because
+  // "unanswered" was the wrong question.
+  // Clearing is not an answer, it is a retraction: stay on the box so the curator can
+  // give it a different one. Advancing off it would make "clear" read as "skip".
+  if (val === 'clear') { beginBox(); showZoom(); paint(); markTaken(); updateDoneBar(); return; }
+  // SEL was just answered by a human, so it is no longer in todo -- the wrap can take
+  // todo[0] unguarded, and -1 means the frame is genuinely finished.
+  const todo = unreviewed();
+  const next = todo.find(i => i > SEL) ?? todo[0] ?? -1;
+  if (next >= 0) {
+    SEL = next; beginBox(); showZoom(); paint(); markTaken();
+    updateDoneBar();     // keep the count live mid-sweep, without touching the hint
+  }
+  else {
+    // Frame complete. Drop the selection so markTaken has no "current" box to exempt
+    // -- otherwise the team just assigned is the one team that never strikes through,
+    // which reads as a missing answer rather than a finished frame.
+    SEL = null;
+    $('#zoomWrap').style.display = 'none'; $('#views').hidden = true; $('#ovl').hidden = true;
+    paint(); markTaken(); frameDone();
+  }
+}
+
+// Shown only when every box in the frame has an answer, so the common case needs no
+// hunting for a small arrow.
+function frameDone() {
+  const f = frame();
+  const guesses = f.dets.filter(d => answerFor(d)?.src === 'machine').length;
+  $('#hint').innerHTML = guesses
+    ? `<span style="color:#22d3ee">${guesses} still the machine's guess (dashed)</span>`
+      + ` — tap any that are wrong, then continue.`
+    : 'All confirmed by you.';
+  updateDoneBar();
+}
+
+// Split out of frameDone so it can run after EVERY assignment. frameDone also rewrites
+// the hint line, which showZoom has just set to the question about the selected box --
+// calling the whole thing mid-sweep would blank that. The bar's count has to stay live
+// though, or it goes on claiming "Review 5 unconfirmed" after four are done.
+function updateDoneBar() {
+  if (!DOC) return;
+  const last = FI >= DOC.frames.length - 1;
+  const bar = $('#doneBar');
+  bar.hidden = false;
+  const left = unreviewed();
+  // With boxes still unreviewed, REVIEWING is the primary action and accepting is the
+  // secondary one. It used to be a single "Accept N & next frame" button, which made
+  // taking the machine's word the easiest thing on screen and the default outcome of
+  // pressing the biggest button. Both paths are still one tap; only the emphasis moved.
+  if (left.length) {
+    bar.innerHTML =
+      `<button class="primary" id="dbReview" style="width:100%;padding:16px;font-size:17px;">`
+      + `Review ${left.length} unconfirmed ›</button>`
+      + `<button id="dbSkip" style="width:100%;padding:11px;margin-top:8px;font-size:14px;">`
+      + `${last ? `Accept them and send ${ANS.size} labels` : `Accept them and go to the next frame`}`
+      + `</button>`;
+    bar.querySelector('#dbReview').onclick = () => {
+      SEL = left[0]; beginBox(); showZoom(); paint(); markTaken();
+    };
+    bar.querySelector('#dbSkip').onclick = last ? () => $('#submit').click()
+                                                : () => showFrame(FI + 1);
+    return;
+  }
+  const label = last ? `Done — send ${ANS.size} labels` : `Next frame ›`;
+  bar.innerHTML = `<button class="primary" style="width:100%;padding:16px;font-size:17px;">${label}</button>`;
+  bar.querySelector('button').onclick = last ? () => $('#submit').click()
+                                             : () => showFrame(FI + 1);
+}
+
+$('#teams').addEventListener('click', () => {});
+document.querySelectorAll('.flags button').forEach(b => {
+  b.onclick = () => assign(b.dataset.flag === 'clear' ? 'clear' : { [b.dataset.flag]: true });
+});
+// Boxes the CURATOR has not decided on. A machine guess does not count: until the auto-ID
+// has earned trust, "unreviewed" and "answered" are different states and only the curator
+// can move a box from one to the other.
+function unreviewed() {
+  return frame().dets.reduce((acc, d, i) => {
+    const a = answerFor(d);
+    if (!a || a.src !== 'human') acc.push(i);
+    return acc;
+  }, []);
+}
+
+// Leaving a frame jumps to the first unreviewed box instead, ONCE. Pressing again goes
+// anyway -- this is a guard against skipping by accident, not a lock, and a curator who
+// means to leave a frame half-done is allowed to.
+let leaveArmed = -1;
+function tryLeave(to) {
+  const left = unreviewed();
+  if (left.length && leaveArmed !== FI) {
+    leaveArmed = FI;
+    SEL = left[0];
+    beginBox(); showZoom(); paint(); markTaken();
+    say($('#workMsg'),
+        `${left.length} box${left.length === 1 ? '' : 'es'} in this frame still `
+        + `${left.length === 1 ? 'has' : 'have'} only the machine's guess. `
+        + `Jumped to the first — press again to leave anyway.`, '');
+    return;
+  }
+  $('#workMsg').hidden = true;
+  showFrame(to);
+}
+
+// ── swipe ──────────────────────────────────────────────────────────────────────
+// Left = next box, right = previous. WITHIN THE FRAME ONLY. The sweep already advances
+// on its own after every answer, so this gesture exists for going BACK over something
+// -- and a casual flick that silently changed frames would lose the curator's place in
+// exactly the situation they reached for it. The Next/Prev frame buttons, which run
+// through tryLeave's unreviewed guard, stay the only way across that boundary.
+//
+// pointer events rather than touch, so it works from a laptop trackpad too; the page is
+// used on both. touch-action:pan-y on #zoomWrap (see CSS) leaves vertical scrolling to
+// the browser and gives horizontal drags to this.
+const SWIPE_MIN_PX = 45;        // shorter than this is a tap with a shaky thumb
+const SWIPE_MAX_OFF_AXIS = 45;  // more vertical than this is a scroll, not a swipe
+let swX = null, swY = null;
+let swipeShown = true;
+try { if (localStorage.getItem('rtrackSwipeSeen')) swipeShown = false; } catch { }
+
+function swipeNote(txt) {
+  const h = $('#swipeHint');
+  if (!h) return;
+  h.style.display = (txt || swipeShown) ? 'block' : 'none';
+  h.textContent = txt || 'swipe the image left or right to change box';
+}
+
+function selectBox(i) {
+  if (!DOC || !frame().dets.length) return;
+  SEL = Math.max(0, Math.min(frame().dets.length - 1, i));
+  beginBox(); showZoom(); paint(); markTaken(); updateDoneBar();
+}
+
+(function wireSwipe() {
+  const zw = $('#zoomWrap');
+  if (!zw) return;
+  zw.addEventListener('pointerdown', e => { swX = e.clientX; swY = e.clientY; });
+  zw.addEventListener('pointercancel', () => { swX = null; });
+  zw.addEventListener('pointerup', e => {
+    const x0 = swX, y0 = swY;
+    swX = swY = null;
+    if (x0 === null || SEL === null || !DOC) return;
+    const dx = e.clientX - x0, dy = e.clientY - y0;
+    if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dy) > SWIPE_MAX_OFF_AXIS) return;
+    const to = SEL + (dx < 0 ? 1 : -1);
+    if (to < 0 || to >= frame().dets.length) {
+      swipeNote(dx < 0 ? 'Last box in this frame — use “Next frame”.'
+                       : 'First box in this frame.');
+      return;
+    }
+    // Earned its keep once; stop taking up a line from here on.
+    if (swipeShown) {
+      swipeShown = false;
+      try { localStorage.setItem('rtrackSwipeSeen', '1'); } catch { }
+    }
+    swipeNote('');
+    selectBox(to);
+  });
+  swipeNote('');
+})();
+
+$('#prev').onclick = () => tryLeave(FI - 1);
+$('#next').onclick = () => tryLeave(FI + 1);
+addEventListener('resize', () => { if (DOC) { sizeHit(); paint(); } });
+
+function drawPips() {
+  if (!DOC) return;
+  $('#pips').innerHTML = DOC.frames.map((f, i) => {
+    const done = f.dets.every(d => ANS.has(keyOf(f.f, d.xy)));
+    return `<span class="pip ${done ? 'done' : ''} ${i === FI ? 'cur' : ''}" data-i="${i}"></span>`;
+  }).join('');
+  $('#pips').querySelectorAll('.pip').forEach(p => p.onclick = () => showFrame(Number(p.dataset.i)));
+}
+
+function updateCount() {
+  const total = DOC.frames.reduce((s, f) => s + f.dets.length, 0);
+  let human = 0;
+  for (const a of ANS.values()) if (a.src === 'human') human++;
+  $('#count').textContent = `${ANS.size}/${total} labelled · ${human} by you`;
+}
+
+$('#submit').onclick = async () => {
+  const { url, tok } = cfg();
+  const id = $('#match').value.trim();
+  if (!ANS.size) return say($('#workMsg'), 'Nothing labelled yet.', 'err');
+  const payload = {
+    schemaVersion: 1,
+    video: DOC.video, match: DOC.match,
+    createdAt: new Date().toISOString(),
+    labels: [...ANS.values()],
+  };
+  say($('#workMsg'), `Sending ${payload.labels.length} labels…`);
+  try {
+    const r = await fetch(`${url}/answer/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 401) {
+      return say($('#workMsg'), needToken(
+        'This relay requires a device token to accept answers. Enter it in setup, then send again.'), 'err');
+    }
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    SENT = true;
+    // The draft is only safe to drop once the relay has actually taken the answer, so
+    // this sits AFTER the status checks, never alongside the optimistic SENT flag.
+    DRAFT.clear(id);
+    say($('#workMsg'), `Sent ${payload.labels.length} labels for ${id}. You can keep editing and send again, or go Back.`, 'ok');
+    $('#backBtn').style.background = '#16803c';
+    $('#backBtn').style.borderColor = '#16803c';
+  } catch (e) { say($('#workMsg'), 'Send failed:\n' + e.message, 'err'); }
+};
+
+// ── deep link ───────────────────────────────────────────────────────────
+// The app links here with everything already filled in, so a curator never types a
+// relay URL or a match key. Params win over localStorage; localStorage is the fallback
+// for someone who opened the page directly.
+(function deepLink() {
+  const q = new URLSearchParams(location.search || location.hash.replace(/^#/, '?'));
+  const relay = q.get('relay'), token = q.get('token'), id = q.get(ID_PARAM);
+  if (relay) { $('#relay').value = relay; localStorage.setItem('rtrackRelay', relay); }
+  if (token) { $('#token').value = token; localStorage.setItem('rtrackToken', token);
+               $('#tokRow').hidden = false; }
+  if (id) { $(ID_FIELD).value = id; }
+  if (relay && id) $('#load').click();     // straight to work
+})();
+</script>
+</body>
+</html>

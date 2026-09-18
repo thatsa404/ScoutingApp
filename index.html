@@ -2531,6 +2531,7 @@
             <button class="detail-tab-btn active" onclick="switchToolsTab('picklist')">Pick List</button>
             <button class="detail-tab-btn" onclick="switchToolsTab('draft')">Draft</button>
             <button class="detail-tab-btn" onclick="switchToolsTab('alliances')">Alliances</button>
+            <button class="detail-tab-btn" onclick="switchToolsTab('tracks')">Tracks</button>
             <button class="detail-tab-btn" onclick="switchToolsTab('dev')">Dev</button>
         </div>
 
@@ -2559,6 +2560,10 @@
 
         <div id="tools-tab-field" style="display:none;"></div>
         <div id="tools-tab-alliances" style="display:none;"></div>
+        <!-- Robot-tracking work queue: which matches have tracks, which need curating,
+             and whether the appearance gallery knows each match's teams. Rendered by
+             renderTracksTab(). -->
+        <div id="tools-tab-tracks" style="display:none;"></div>
         <div id="tools-tab-dev" style="display:none;"></div>
 
         <div id="tools-tab-draft" style="display:none;">
@@ -2656,7 +2661,12 @@
             <button class="detail-tab-btn active" onclick="switchDetailTab('overview')">Overview</button>
             <button class="detail-tab-btn" onclick="switchDetailTab('matches')">Matches</button>
             <button class="detail-tab-btn" onclick="switchDetailTab('data')">Data</button>
+            <button class="detail-tab-btn" onclick="switchDetailTab('routes')">Routes</button>
         </div>
+
+        <!-- Rendered lazily by renderTeamRoutesTab() on first open: a canvas cannot
+             size itself while this pane is display:none. -->
+        <div id="tab-routes" class="detail-tab-content" style="display:none;"></div>
 
         <div id="tab-overview" class="detail-tab-content">
             <div id="overviewContent" style="margin-top:20px;"></div>
@@ -2786,6 +2796,10 @@
                 <p style="color: #94a3b8; font-style: italic;">Detailed scoring breakdown coming in next update...</p>
             </div>
             <div id="matchVideoSection" style="margin-top:20px;"></div>
+            <!-- Populated by renderMatchTracks() when public/tracks/<matchKey>.json
+                 exists; stays empty and silent otherwise. Cleared in closeMatchDetail
+                 so the canvas and its resize listener do not survive the close. -->
+            <div id="matchTracksSection"></div>
         </div>
     </div>
 

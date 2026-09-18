@@ -1,0 +1,44 @@
+﻿[identify] 2026necmp_f1m3: red [6201, 3467, 6329]  blue [9644, 1768, 5687]
+[identify] 32 tracks, 2436 crops over 1650 unique frames -- single sequential pass
+    200/1650 frames, 343 crops
+    400/1650 frames, 624 crops
+    600/1650 frames, 893 crops
+    800/1650 frames, 1167 crops
+    1000/1650 frames, 1441 crops
+    1200/1650 frames, 1725 crops
+    1400/1650 frames, 2061 crops
+    1600/1650 frames, 2380 crops
+track  10:  1124 dets,   2/96 votes ->  6201 (100%) {'6201': 2}
+track   1:  1089 dets,   5/96 votes ->  5687 (60%) {'6201': 1, '5687': 3, '3467': 1}  <-- IDENTITY SWITCH
+track   3:   927 dets,  14/96 votes ->  1768 (50%) {'5687': 6, '1768': 7, '9644': 1}  <-- IDENTITY SWITCH
+track  17:   887 dets,  10/96 votes ->  1768 (70%) {'1768': 7, '5687': 1, '6201': 2}  <-- IDENTITY SWITCH
+track  12:   867 dets,   9/96 votes ->  3467 (67%) {'3467': 6, '6201': 3}  <-- IDENTITY SWITCH
+track  15:   784 dets,   4/96 votes ->  9644 (50%) {'9644': 2, '6201': 1, '6329': 1}  <-- IDENTITY SWITCH
+track   8:   726 dets,  33/96 votes ->  9644 (52%) {'6329': 9, '6201': 4, '9644': 17, '3467': 3}  <-- IDENTITY SWITCH
+track  22:   656 dets,  13/96 votes ->  9644 (85%) {'9644': 11, '3467': 2}
+track   7:   628 dets,   2/96 votes ->  6329 (50%) {'6329': 1, '1768': 1}  <-- IDENTITY SWITCH
+track  23:   581 dets,  11/96 votes ->  1768 (55%) {'5687': 2, '1768': 6, '9644': 2, '3467': 1}  <-- IDENTITY SWITCH
+track  26:   521 dets,  15/91 votes ->  6329 (67%) {'9644': 3, '6329': 10, '6201': 1, '3467': 1}  <-- IDENTITY SWITCH
+track   5:   493 dets,   5/96 votes ->  3467 (60%) {'1768': 1, '3467': 3, '5687': 1}
+track  16:   491 dets,   7/95 votes ->  6329 (43%) {'6201': 2, '5687': 1, '6329': 3, '3467': 1}  <-- IDENTITY SWITCH
+track   6:   416 dets,   0/88 votes ->  None (0%) {}
+track   9:   241 dets,   0/87 votes ->  None (0%) {}
+track  31:   184 dets,   6/73 votes ->  5687 (50%) {'5687': 3, '3467': 1, '6201': 1, '1768': 1}
+track  25:   180 dets,   4/81 votes ->  3467 (75%) {'3467': 3, '6201': 1}
+track  18:   176 dets,   5/76 votes ->  3467 (60%) {'9644': 1, '3467': 3, '5687': 1}  <-- IDENTITY SWITCH
+track  30:   171 dets,   3/79 votes ->  6201 (33%) {'6201': 1, '9644': 1, '1768': 1}  <-- IDENTITY SWITCH
+track  14:   163 dets,   7/92 votes ->  9644 (57%) {'5687': 1, '3467': 1, '9644': 4, '6201': 1}  <-- IDENTITY SWITCH
+track   2:   152 dets,  18/96 votes ->  6329 (89%) {'6329': 16, '3467': 1, '6201': 1}
+track  29:   145 dets,   4/78 votes ->  9644 (50%) {'9644': 2, '6329': 1, '1768': 1}  <-- IDENTITY SWITCH
+track  27:   133 dets,   6/64 votes ->  6329 (67%) {'9644': 1, '6201': 1, '6329': 4}
+track  19:   104 dets,   2/58 votes ->  3467 (50%) {'3467': 1, '6201': 1}  <-- IDENTITY SWITCH
+track   4:    99 dets,   0/95 votes ->  None (0%) {}
+track  28:    96 dets,   3/96 votes ->  6201 (33%) {'6201': 1, '1768': 1, '3467': 1}  <-- IDENTITY SWITCH
+track  11:    31 dets,   4/31 votes ->  9644 (50%) {'9644': 2, '6201': 2}  <-- IDENTITY SWITCH
+track  13:    31 dets,   2/31 votes ->  3467 (50%) {'3467': 1, '9644': 1}  <-- IDENTITY SWITCH
+track  21:    27 dets,   0/27 votes ->  None (0%) {}
+track  24:    24 dets,   6/24 votes ->  1768 (50%) {'1768': 3, '5687': 2, '6201': 1}
+track  20:    12 dets,   1/12 votes ->  3467 (100%) {'3467': 1}
+track  32:     6 dets,   0/6 votes ->  None (0%) {}
+
+-> C:\Users\James\Documents\GitHub\ScoutingApp\robot-tracker\out\stage3\GSxbsE42o5o_identity.json

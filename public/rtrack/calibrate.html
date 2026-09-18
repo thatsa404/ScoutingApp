@@ -1,0 +1,495 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#16181c">
+<title>rtrack calibrator</title>
+<!--
+  Remote calibrator. Collects clicked correspondences and posts them; it does NOT solve
+  anything. rtrack.calibrate already accepts `--points '[[vx,vy,fx,fy], ...]'`, so the
+  lens model, the plumb-line constraint, RANSAC and the reprojection overlay all stay in
+  Python on the machine that has the video. This page's only job is producing that array.
+
+  PRECISION IS THE WHOLE PROBLEM ON A PHONE. A calibration point that is 10 px out puts
+  the field boundary metres off at the far end, and a fingertip covers ~40 px. So a tap
+  never commits a point: it opens a LOUPE -- a magnified view around the tap with a
+  crosshair -- and you drag to nudge before confirming. Drag distance in the loupe is
+  divided by the zoom factor, so a 4 px finger movement moves the point 1 px.
+
+  Point rules that matter more than the UI (from robot-tracker/README.md):
+    * 8+ points, not 4 -- RANSAC needs redundancy to identify a bad click
+    * spread across all four quadrants; clustering near the camera fits only there
+    * FLOOR-PLANE features only: tape crossings, carpet seams, guardrail BASE corners
+    * never anything with height -- a point 1 m up silently wrecks the fit
+-->
+<style>
+  :root{
+    --bg:#16181c; --panel:#1e2126; --line:#2e323a; --fg:#e8eaed; --dim:#9aa0a6;
+    --ok:#22c55e; --warn:#f59e0b; --hot:#facc15;
+    --safe: env(safe-area-inset-bottom, 0px);
+  }
+  *{box-sizing:border-box; -webkit-tap-highlight-color:transparent}
+  body{margin:0;background:var(--bg);color:var(--fg);overscroll-behavior:none;
+       font:15px/1.45 system-ui,-apple-system,"Segoe UI",Roboto,sans-serif}
+  header{display:flex;gap:10px;align-items:center;padding:8px 12px;background:var(--panel);
+         border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
+  h1{font-size:14px;margin:0;font-weight:600;white-space:nowrap}
+  .sp{flex:1}
+  button{background:#2a2e35;color:var(--fg);border:1px solid var(--line);border-radius:8px;
+         padding:9px 13px;font:inherit;cursor:pointer}
+  button:active{background:#3a4049}
+  button:disabled{opacity:.35}
+  .primary{background:#2563eb;border-color:#2563eb;font-weight:600}
+  .go{background:#16803c;border-color:#16803c;font-weight:600}
+  input{background:#0f1115;color:var(--fg);border:1px solid var(--line);border-radius:8px;
+        padding:9px 11px;font:inherit;width:100%}
+  main{padding:10px 12px calc(12px + var(--safe))}
+  .setup{max-width:520px;margin:6vh auto}
+  .setup label{display:block;margin:14px 0 5px;color:var(--dim);font-size:13px}
+  .row{display:flex;gap:8px;align-items:center}
+  .msg{margin-top:12px;padding:10px;border-radius:8px;border:1px solid var(--line);
+       background:#0f1115;color:var(--dim);font-size:13px;white-space:pre-wrap}
+  .msg.err{border-color:#5b2626;color:#fca5a5}
+  .msg.ok{border-color:#1e4620;color:#86efac}
+  .stage{margin-bottom:6px;padding:8px 10px;border-radius:8px;border:1px solid var(--line);
+         background:var(--panel);font-size:13px}
+  .stage b{color:var(--hot)}
+  .pane{position:relative;width:100%;background:#0f1115;border:1px solid var(--line);
+        border-radius:10px;overflow:hidden;touch-action:none}
+  .pane.active{border-color:var(--hot)}
+  .pane img{display:block;width:100%;height:auto}
+  .pane canvas{position:absolute;inset:0;width:100%;height:100%}
+  /* FIXED to the bottom, not inline. Inline, the loupe sat below two full-width image
+     panes, so every point cost a scroll down to nudge and confirm and a scroll back up
+     to tap the next one -- on a phone that is most of the work of calibrating. Pinned,
+     the sequence is tap, nudge, confirm, without the page moving. It hides itself on
+     both Cancel and Place point, so it needs no dismissal of its own. */
+  #loupeWrap{display:none;position:fixed;left:0;right:0;bottom:0;z-index:40;
+             background:var(--panel);border-top:1px solid var(--line);
+             box-shadow:0 -8px 24px rgba(0,0,0,.45);
+             padding:10px 12px calc(10px + var(--safe))}
+  #loupeStage{color:var(--dim);font-size:12px;margin-bottom:6px}
+  #loupeStage b{color:var(--hot)}
+  /* Shorter than the old 40vh: the sheet now competes with the panes for the screen,
+     and seeing where you are placing matters as much as the magnified view. */
+  #loupe{display:block;width:100%;max-height:30vh;object-fit:contain;background:#0b0d10;
+         border:2px solid var(--hot);border-radius:10px;touch-action:none}
+  .loupeBar{display:flex;gap:8px;margin-top:8px}
+  .loupeBar button{flex:1}
+  /* Last fit, sent back with the bundle. The numbers matter less than the overlay:
+     a lower residual can be the WORSE fit when RANSAC has dropped a region's only
+     constraint, so what confirms a calibration is seeing the lines sit on the field. */
+  #fit[hidden]{display:none}
+  #fit{margin-top:10px;padding:10px;border-radius:8px;border:1px solid var(--line);
+       background:var(--panel)}
+  #fit.good{border-color:#1e4620}
+  #fit.warn{border-color:#5b4a20}
+  #fitHead{display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;font-size:13px}
+  #fitHead b{font-size:15px}
+  #fitNote{color:var(--dim);font-size:11.5px;margin-top:4px;line-height:1.45}
+  #fitImg{display:block;width:100%;margin-top:8px;border-radius:8px;
+          border:1px solid var(--line);background:#0b0d10}
+  .tbl{width:100%;border-collapse:collapse;font-size:12px;margin-top:10px}
+  .tbl td,.tbl th{border-bottom:1px solid var(--line);padding:5px 4px;text-align:right}
+  .tbl th{color:var(--dim);font-weight:600}
+  .tbl td:first-child,.tbl th:first-child{text-align:left}
+  .bar{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);
+       padding:10px 12px calc(10px + var(--safe));margin:12px -12px calc(-12px - var(--safe));
+       display:flex;gap:10px;align-items:center}
+</style>
+</head>
+<body>
+<header>
+  <h1>rtrack calibrator</h1>
+  <span class="sp"></span>
+  <span id="hdr" style="color:var(--dim);font-size:12px"></span>
+  <button id="backBtn" style="padding:6px 10px" title="Back to the app">‹ Back</button>
+  <button id="cfgBtn" style="padding:6px 10px">⚙</button>
+</header>
+
+<main>
+  <section id="setup" class="setup">
+    <label for="relay">Relay URL</label>
+    <input id="relay" placeholder="https://rtrack-relay.<you>.workers.dev" autocapitalize="off" autocorrect="off" spellcheck="false">
+    <!-- Hidden unless the relay actually asks for it. Answering is open by default
+         (see rtrack-relay/worker.js), so there is normally nothing to configure. -->
+    <div id="tokRow" hidden>
+      <label for="token">Device token <span style="color:#6b7280">(RTRACK_ANSWER_TOKEN)</span></label>
+      <input id="token" type="password" placeholder="RTRACK_ANSWER_TOKEN" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <div style="color:#6b7280;font-size:12px;margin-top:5px">
+        This relay requires a token to accept answers. Ask whoever runs it — it is not
+        the home machine's RTRACK_TOKEN.
+      </div>
+    </div>
+    <label for="vid">Video id</label>
+    <div class="row">
+      <input id="vid" placeholder="2026mawor_qm1" autocapitalize="off" autocorrect="off" spellcheck="false">
+      <button id="load" class="primary" style="white-space:nowrap">Load</button>
+    </div>
+    <div class="row" style="margin-top:10px"><button id="listBtn" style="flex:1">What's available?</button></div>
+    <div id="setupMsg" class="msg" hidden></div>
+  </section>
+
+  <section id="work" hidden>
+    <div class="stage" id="stage"></div>
+
+    <div class="pane" id="vPane">
+      <img id="vImg" alt="video frame">
+      <canvas id="vCv"></canvas>
+    </div>
+    <div style="height:8px"></div>
+    <div class="pane" id="fPane">
+      <img id="fImg" alt="field">
+      <canvas id="fCv"></canvas>
+    </div>
+
+    <div id="loupeWrap">
+      <div id="loupeStage"></div>
+      <canvas id="loupe"></canvas>
+      <div class="loupeBar">
+        <button id="lCancel">Cancel</button>
+        <button id="lOk" class="go">Place point</button>
+      </div>
+      <p style="color:var(--dim);font-size:12px;margin:8px 2px 0">
+        Drag inside the loupe to nudge — movement is divided by the zoom, so it is fine control.
+      </p>
+    </div>
+
+    <div id="fit" hidden>
+      <div id="fitHead"></div>
+      <div id="fitNote"></div>
+      <img id="fitImg" alt="reprojection overlay from the last fit">
+    </div>
+
+    <table class="tbl" id="tbl"></table>
+
+    <!-- ABOVE the bar, not below it. `.bar` is position:sticky;bottom:0, so anything
+         after it in the DOM renders underneath the pinned bar and is unreachable on a
+         phone. Every result this page reports -- sent, rejected, too few points, relay
+         unreachable -- went there, which made a working Submit button indistinguishable
+         from a dead one. -->
+    <div id="workMsg" class="msg" hidden></div>
+    <div class="bar">
+      <span id="count" style="color:var(--dim);font-size:13px"></span>
+      <span class="sp"></span>
+      <button id="undo">Undo</button>
+      <button id="submit" class="primary">Submit</button>
+    </div>
+  </section>
+</main>
+
+<script>
+const $ = s => document.querySelector(s);
+const ID_PARAM = 'video', ID_FIELD = '#vid';
+
+const ZOOM = 6;                       // loupe magnification
+let DOC = null;
+let PAIRS = [];                       // [[vx,vy,fx,fy], ...] in SOURCE pixels
+let SENT = false;                     // points reached the relay; gates the Back warning
+let pending = null;                   // {vx,vy} once the video point is placed
+let loupe = null;                     // {which:'v'|'f', x, y, drag:{...}}
+
+function needToken(msg) {
+  const r = document.getElementById('tokRow');
+  if (r) r.hidden = false;
+  document.getElementById('setup').hidden = false;
+  document.getElementById('work').hidden = true;
+  document.getElementById('token')?.focus();
+  return msg;
+}
+const say = (el, t, cls = '') => { el.hidden = false; el.className = 'msg ' + cls; el.textContent = t; };
+
+$('#relay').value = localStorage.getItem('rtrackRelay') || '';
+$('#token').value = localStorage.getItem('rtrackToken') || '';
+if ($('#token').value) $('#tokRow').hidden = false;
+$('#vid').value   = localStorage.getItem('rtrackCalibVid') || '';
+// Straight to the Tracks queue, like the curator. history.back() is no use: the app opens
+// this page with target="_blank", so the tab has no history of its own. '../' (not
+// '../../') because this page lives at <base>rtrack/calibrate.html, so one level up IS
+// the app root under a project path like /ScoutingApp/.
+$('#backBtn').onclick = () => {
+  const dirty = PAIRS.length && !SENT;
+  if (dirty && !confirm(`${PAIRS.length} point(s) have not been sent. Leave anyway?`)) return;
+  location.href = '../#tools/tracks';
+};
+$('#cfgBtn').onclick = () => {
+  const s = $('#setup'), w = $('#work');
+  if (s.hidden) { s.hidden = false; w.hidden = true; } else if (DOC) { s.hidden = true; w.hidden = false; }
+};
+function cfg() {
+  const url = $('#relay').value.trim().replace(/\/+$/, '');
+  const tok = $('#token').value.trim();
+  localStorage.setItem('rtrackRelay', url); localStorage.setItem('rtrackToken', tok);
+  return { url, tok };
+}
+
+$('#listBtn').onclick = async () => {
+  const { url } = cfg();
+  if (!url) return say($('#setupMsg'), 'Enter the relay URL first.', 'err');
+  say($('#setupMsg'), 'Checking…');
+  try {
+    const d = await (await fetch(`${url}/index`)).json();
+    const c = (d.items || []).filter(i => i.kind === 'calib');
+    say($('#setupMsg'), c.length ? 'Frames waiting:\n' + c.map(i => '  ' + i.id).join('\n')
+                                 : 'No calibration frames on the relay yet.', c.length ? 'ok' : '');
+  } catch (e) { say($('#setupMsg'), 'Could not reach the relay:\n' + e.message, 'err'); }
+};
+
+$('#load').onclick = async () => {
+  const { url } = cfg();
+  const id = $('#vid').value.trim();
+  if (!url || !id) return say($('#setupMsg'), 'Relay URL and video id are both needed.', 'err');
+  localStorage.setItem('rtrackCalibVid', id);
+  say($('#setupMsg'), 'Loading frame…');
+  try {
+    const r = await fetch(`${url}/calib/${encodeURIComponent(id)}`);
+    if (r.status === 404) return say($('#setupMsg'), `No calibration frame for "${id}".`, 'err');
+    const doc = await r.json();
+    if (!doc.img) throw new Error('payload has no frame image');
+    start(doc);
+  } catch (e) { say($('#setupMsg'), 'Load failed:\n' + e.message, 'err'); }
+};
+
+// The result of the LAST fit, so the person who placed the points can judge them here
+// rather than on the machine. Absent on a camera that has never been fitted, which is
+// the first-run case -- the panel simply stays hidden.
+function showFit(fit, shot) {
+  const box = $('#fit');
+  if (!fit || !fit.reprojErrorM) { box.hidden = true; return; }
+  const mean = fit.reprojErrorM.mean, max = fit.reprojErrorM.max;
+  // 0.10 m is the mean this project has achieved on other cameras; past ~0.15 m a robot
+  // lands a body-width from where it really was, which is where routes stop being worth
+  // plotting. Not a pass/fail — a prompt to look at the picture below it.
+  const good = mean <= 0.10;
+  box.className = good ? 'good' : 'warn';
+  $('#fitHead').innerHTML =
+    `<b>${mean.toFixed(3)} m</b> mean &nbsp;·&nbsp; ${max.toFixed(3)} m worst`
+    + `&nbsp;·&nbsp; ${fit.inliers ?? '?'}/${fit.pointCount ?? '?'} points used`;
+  const worst = Array.isArray(fit.perPointErrorM) && fit.perPointErrorM.length
+    ? fit.perPointErrorM.indexOf(Math.max(...fit.perPointErrorM)) + 1 : null;
+  const notes = [];
+  if (worst) notes.push(`Point ${worst} is the worst at ${max.toFixed(3)} m.`);
+  if (fit.cornersOutsideFrame?.length) {
+    notes.push(`Field corners outside this camera's view: `
+      + `${fit.cornersOutsideFrame.join(', ')} — robots there cannot be tracked at all.`);
+  }
+  notes.push('Check the lines sit on the field below. A lower number is not always the '
+    + 'better fit — dropping a point can strip a whole region of its only constraint.');
+  $('#fitNote').textContent = notes.join(' ');
+  if (shot) { $('#fitImg').src = shot; $('#fitImg').hidden = false; }
+  else $('#fitImg').hidden = true;
+  box.hidden = false;
+}
+
+function start(doc) {
+  DOC = doc; pending = null; SENT = false;
+  // Points already fitted for this camera come back with the bundle, so a calibration can
+  // be ADDED TO rather than restarted. You cannot tell a point is missing until the
+  // reprojection comes back from the machine, and that is precisely the moment when
+  // re-clicking all twelve is most unwelcome.
+  PAIRS = Array.isArray(doc.points) ? doc.points.map(p => p.slice()) : [];
+  $('#setup').hidden = true; $('#work').hidden = false;
+  if (PAIRS.length) {
+    setTimeout(() => say($('#workMsg'),
+      `Loaded ${PAIRS.length} existing point(s). Add to them and send again — `
+      + `the machine refits from the whole set.`, 'ok'), 0);
+  }
+  showFit(doc.fit, doc.reproject);
+  $('#hdr').textContent = doc.videoId || '';
+  $('#vImg').onload = () => { size('v'); paint('v'); };
+  $('#vImg').src = doc.img;
+  // The field image ships with the app, so it is same-origin and needs no relay round trip.
+  $('#fImg').onload = () => { size('f'); paint('f'); };
+  $('#fImg').src = doc.fieldImage || '../field/2026-field.png';
+  stage(); render();
+}
+
+const P = w => ({ img: $(w === 'v' ? '#vImg' : '#fImg'),
+                  cv:  $(w === 'v' ? '#vCv'  : '#fCv'),
+                  pane:$(w === 'v' ? '#vPane': '#fPane') });
+
+function size(w) {
+  const { img, cv } = P(w);
+  const r = img.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  cv.width = Math.round(r.width); cv.height = Math.round(r.height);
+  return true;
+}
+
+// source px -> canvas px
+function sc(w) {
+  const { img, cv } = P(w);
+  return { k: cv.width / (img.naturalWidth || 1), h: cv.height / (img.naturalHeight || 1) };
+}
+
+function paint(w) {
+  const { cv } = P(w);
+  if (!cv.width && !size(w)) return;
+  const ctx = cv.getContext('2d'), { k, h } = sc(w);
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  PAIRS.forEach((p, i) => {
+    const x = (w === 'v' ? p[0] : p[2]) * k, y = (w === 'v' ? p[1] : p[3]) * h;
+    ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 7, 0, Math.PI * 2); ctx.stroke();
+    ctx.beginPath(); ctx.moveTo(x - 11, y); ctx.lineTo(x + 11, y);
+    ctx.moveTo(x, y - 11); ctx.lineTo(x, y + 11); ctx.stroke();
+    ctx.fillStyle = '#22c55e'; ctx.font = 'bold 12px system-ui';
+    ctx.fillText(String(i + 1), x + 10, y - 10);
+  });
+  if (pending && w === 'v') {
+    const x = pending.vx * k, y = pending.vy * h;
+    ctx.strokeStyle = '#facc15'; ctx.lineWidth = 2;
+    ctx.beginPath(); ctx.arc(x, y, 8, 0, Math.PI * 2); ctx.stroke();
+  }
+}
+
+function stage() {
+  const need = pending ? 'field' : 'video';
+  $('#stage').innerHTML = pending
+    ? `Now tap the SAME spot on the <b>field diagram</b> (lower image).`
+    : `Tap a floor feature in the <b>video frame</b> (upper image). Tape crossings, carpet seams, guardrail base corners — nothing with height.`;
+  $('#vPane').classList.toggle('active', !pending);
+  $('#fPane').classList.toggle('active', !!pending);
+}
+
+for (const w of ['v', 'f']) {
+  P(w).cv.addEventListener('pointerdown', ev => {
+    if (w === 'v' && pending) return;          // video point already placed
+    if (w === 'f' && !pending) return;         // need the video point first
+    const r = P(w).cv.getBoundingClientRect();
+    const { k, h } = sc(w);
+    openLoupe(w, (ev.clientX - r.left) / k, (ev.clientY - r.top) / h);
+  });
+}
+
+function openLoupe(which, x, y) {
+  loupe = { which, x, y };
+  drawLoupe();
+  // The sheet covers the panes, so it has to say which one this point belongs to --
+  // placing a video point onto the field diagram is the one mistake here that produces
+  // a plausible-looking pair rather than an obvious error.
+  $('#loupeStage').innerHTML = which === 'v'
+    ? 'Placing on the <b>video frame</b>'
+    : 'Placing on the <b>field diagram</b>';
+  $('#loupeWrap').style.display = 'block';
+  // No scrollIntoView: the sheet is fixed, so scrolling would only move the panes out
+  // from under it.
+}
+
+function drawLoupe() {
+  const { which, x, y } = loupe;
+  const img = P(which).img, z = $('#loupe');
+  const W = Math.min(880, Math.round(window.innerWidth * 2));
+  z.width = W; z.height = Math.round(W * 0.62);
+  const sw = z.width / ZOOM, sh = z.height / ZOOM;
+  const sx = Math.max(0, Math.min(img.naturalWidth - sw, x - sw / 2));
+  const sy = Math.max(0, Math.min(img.naturalHeight - sh, y - sh / 2));
+  const ctx = z.getContext('2d');
+  ctx.imageSmoothingEnabled = false;           // show real pixels, not a blur
+  ctx.clearRect(0, 0, z.width, z.height);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, z.width, z.height);
+  const cx = (x - sx) * ZOOM, cy = (y - sy) * ZOOM;
+  ctx.strokeStyle = '#facc15'; ctx.lineWidth = 1.5;
+  ctx.beginPath(); ctx.moveTo(cx - 40, cy); ctx.lineTo(cx - 6, cy);
+  ctx.moveTo(cx + 6, cy); ctx.lineTo(cx + 40, cy);
+  ctx.moveTo(cx, cy - 40); ctx.lineTo(cx, cy - 6);
+  ctx.moveTo(cx, cy + 6); ctx.lineTo(cx, cy + 40); ctx.stroke();
+  ctx.beginPath(); ctx.arc(cx, cy, 3, 0, Math.PI * 2); ctx.stroke();
+  $('#stage').querySelector('b')?.classList;
+}
+
+// Drag inside the loupe nudges the point at 1/ZOOM the finger speed.
+let lDrag = null;
+$('#loupe').addEventListener('pointerdown', e => { lDrag = { px: e.clientX, py: e.clientY }; $('#loupe').setPointerCapture(e.pointerId); });
+$('#loupe').addEventListener('pointermove', e => {
+  if (!lDrag || !loupe) return;
+  const r = $('#loupe').getBoundingClientRect();
+  const s = $('#loupe').width / r.width;        // canvas px per CSS px
+  loupe.x -= (e.clientX - lDrag.px) * s / ZOOM;
+  loupe.y -= (e.clientY - lDrag.py) * s / ZOOM;
+  const img = P(loupe.which).img;
+  loupe.x = Math.max(0, Math.min(img.naturalWidth, loupe.x));
+  loupe.y = Math.max(0, Math.min(img.naturalHeight, loupe.y));
+  lDrag = { px: e.clientX, py: e.clientY };
+  drawLoupe();
+});
+$('#loupe').addEventListener('pointerup', () => { lDrag = null; });
+
+$('#lCancel').onclick = () => { loupe = null; $('#loupeWrap').style.display = 'none'; };
+$('#lOk').onclick = () => {
+  if (!loupe) return;
+  const { which, x, y } = loupe;
+  if (which === 'v') { pending = { vx: Math.round(x * 10) / 10, vy: Math.round(y * 10) / 10 }; }
+  else if (pending) {
+    PAIRS.push([pending.vx, pending.vy, Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
+    pending = null;
+  }
+  loupe = null; $('#loupeWrap').style.display = 'none';
+  stage(); render();
+};
+
+$('#undo').onclick = () => {
+  if (pending) pending = null; else PAIRS.pop();
+  stage(); render();
+};
+
+function render() {
+  paint('v'); paint('f');
+  const n = PAIRS.length;
+  $('#count').textContent = `${n} point${n === 1 ? '' : 's'}` + (n < 8 ? ` — need ${8 - n} more` : ' ✓');
+  $('#count').style.color = n >= 8 ? '#86efac' : '#9aa0a6';
+  $('#tbl').innerHTML = n === 0 ? '' :
+    '<tr><th>#</th><th>video x,y</th><th>field x,y</th></tr>' +
+    PAIRS.map((p, i) => `<tr><td>${i + 1}</td><td>${p[0]}, ${p[1]}</td><td>${p[2]}, ${p[3]}</td></tr>`).join('');
+}
+
+addEventListener('resize', () => { if (DOC) { size('v'); size('f'); render(); } });
+
+$('#submit').onclick = async () => {
+  const { url, tok } = cfg();
+  const id = $('#vid').value.trim();
+  if (PAIRS.length < 4) return say($('#workMsg'), 'A homography needs at least 4 points; 8+ is strongly recommended.', 'err');
+  if (PAIRS.length < 8) say($('#workMsg'), `Sending only ${PAIRS.length} points — RANSAC cannot identify a bad click with so few.`, '');
+  const payload = { schemaVersion: 1, videoId: DOC.videoId || id,
+                    frame: DOC.frame ?? null, createdAt: new Date().toISOString(),
+                    points: PAIRS };
+  try {
+    const r = await fetch(`${url}/points/${encodeURIComponent(id)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok },
+      body: JSON.stringify(payload),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (r.status === 401) {
+      return say($('#workMsg'), needToken(
+        'This relay requires a device token to accept points. Enter it in setup, then send again.'), 'err');
+    }
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    // A second signal in the sticky bar itself, which is the one place guaranteed to be
+    // on screen when you press Submit. A message alone is not enough feedback for an
+    // action whose whole result is "something happened somewhere else".
+    SENT = true;
+    $('#submit').textContent = `Sent ${PAIRS.length} ✓`;
+    $('#submit').style.background = '#16803c';
+    $('#submit').style.borderColor = '#16803c';
+    say($('#workMsg'), `Sent ${PAIRS.length} points for ${id}. The home machine will solve and report the reprojection error.`, 'ok');
+  } catch (e) { say($('#workMsg'), 'Send failed:\n' + e.message, 'err'); }
+};
+
+// ── deep link ───────────────────────────────────────────────────────────
+// The app links here with everything already filled in, so a curator never types a
+// relay URL or a match key. Params win over localStorage; localStorage is the fallback
+// for someone who opened the page directly.
+(function deepLink() {
+  const q = new URLSearchParams(location.search || location.hash.replace(/^#/, '?'));
+  const relay = q.get('relay'), token = q.get('token'), id = q.get(ID_PARAM);
+  if (relay) { $('#relay').value = relay; localStorage.setItem('rtrackRelay', relay); }
+  if (token) { $('#token').value = token; localStorage.setItem('rtrackToken', token);
+               $('#tokRow').hidden = false; }
+  if (id) { $(ID_FIELD).value = id; }
+  if (relay && id) $('#load').click();     // straight to work
+})();
+</script>
+</body>
+</html>

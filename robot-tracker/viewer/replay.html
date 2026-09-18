@@ -1,0 +1,267 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtrack replay</title>
+<!--
+  Stage 3 verification gate. Drag an rtrack-tracks v1 file (out/stage3/<matchKey>.json)
+  onto the page, scrub, and check that THE DOTS MOVE THE WAY THE ROBOTS MOVE IN THE
+  VIDEO. No metric substitutes for that check; it is what Stage 4 was gated on.
+
+  Standalone on purpose -- no build step, no server, same as curate.html. It borrows the
+  field image from the parent repo rather than copying it, which is the convention the
+  rest of robot-tracker uses for public/field/2026-field.png.
+
+  This does NOT share code with the app's renderer. robot-tracker/README.md states the
+  invariant that nothing here is imported by the Vite app, so the small duplication is
+  deliberate: this file's job is to validate the EXPORT before any app code exists.
+-->
+<style>
+  :root{
+    --bg:#16181c; --panel:#1e2126; --line:#2e323a; --fg:#e8eaed; --dim:#9aa0a6;
+    --red:#ef4444; --blue:#3b82f6; --ok:#22c55e;
+  }
+  *{box-sizing:border-box}
+  body{margin:0;background:var(--bg);color:var(--fg);
+       font:14px/1.45 system-ui,-apple-system,Segoe UI,Roboto,sans-serif}
+  header{display:flex;align-items:center;gap:14px;padding:10px 16px;flex-wrap:wrap;
+         border-bottom:1px solid var(--line);background:var(--panel)}
+  h1{font-size:15px;margin:0;font-weight:600}
+  .sp{flex:1}
+  button{background:#2a2e35;color:var(--fg);border:1px solid var(--line);
+         border-radius:6px;padding:7px 12px;font:inherit;cursor:pointer}
+  button:hover{background:#343942}
+  .primary{background:#2563eb;border-color:#2563eb}
+  #drop{margin:10% auto;max-width:640px;border:2px dashed var(--line);
+        border-radius:12px;padding:48px 32px;text-align:center;color:var(--dim)}
+  #drop.hot{border-color:#2563eb;color:var(--fg)}
+  code{background:#0f1115;padding:2px 6px;border-radius:4px;font-size:12.5px}
+  main{padding:14px;max-width:1400px;margin:0 auto}
+  .meta{display:flex;gap:16px;flex-wrap:wrap;color:var(--dim);font-size:12.5px;
+        margin-bottom:10px;align-items:baseline}
+  .meta b{color:var(--fg);font-size:15px}
+  .warn{color:#f59e0b}
+  #wrap{position:relative;width:100%;background:#0f1115;border:1px solid var(--line);
+        border-radius:8px;overflow:hidden}
+  #bg{display:block;width:100%;height:auto}
+  #cv{position:absolute;inset:0;width:100%;height:100%}
+  .ctl{display:flex;gap:12px;align-items:center;margin-top:12px;flex-wrap:wrap}
+  input[type=range]{flex:1;min-width:260px}
+  .teams{display:flex;gap:8px;flex-wrap:wrap;margin-top:12px}
+  .team{padding:8px 12px;border-radius:8px;border:1px solid var(--line);
+        background:var(--panel);cursor:pointer;min-width:118px;text-align:left}
+  .team b{display:block;font-size:17px;letter-spacing:.4px}
+  .team small{color:var(--dim);font-size:11px}
+  .team.off{opacity:.32}
+  .swatch{display:inline-block;width:10px;height:10px;border-radius:2px;
+          margin-right:6px;vertical-align:middle}
+  .t{font-variant-numeric:tabular-nums}
+</style>
+</head>
+<body>
+<header>
+  <h1>rtrack replay</h1>
+  <span class="sp"></span>
+  <span id="hdr" class="meta" style="margin:0"></span>
+  <button id="load">Open file…</button>
+</header>
+
+<div id="drop">
+  <p style="font-size:16px;margin:0 0 8px">Drop an <code>rtrack-tracks v1</code> file here</p>
+  <p style="margin:0">e.g. <code>out/stage3/2026necmp_f1m3.json</code></p>
+</div>
+
+<main id="app" hidden>
+  <div class="meta" id="info"></div>
+  <div id="wrap">
+    <img id="bg" alt="field">
+    <canvas id="cv"></canvas>
+  </div>
+  <div class="ctl">
+    <button id="play" class="primary">▶ Play</button>
+    <input type="range" id="scrub" min="0" max="1000" value="0">
+    <span class="t" id="clock">t = 0.0 s</span>
+    <span class="t" id="vclock" style="color:var(--dim)"></span>
+  </div>
+  <div class="ctl">
+    <label><input type="checkbox" id="trails" checked> full routes</label>
+    <label><input type="checkbox" id="fade"> trail behind dot only</label>
+    <span class="sp"></span>
+    <span style="color:var(--dim);font-size:12px">click a team to hide it</span>
+  </div>
+  <div class="teams" id="teams"></div>
+</main>
+
+<input type="file" id="file" accept="application/json" hidden>
+
+<script>
+const $ = s => document.querySelector(s);
+let DOC = null, HIDDEN = new Set(), T = 0, TMIN = 0, TMAX = 1, playing = false, raf = 0;
+
+// Three shades per alliance so three robots of one colour stay distinguishable.
+const SHADES = {
+  red:  ['#ef4444', '#f87171', '#b91c1c'],
+  blue: ['#3b82f6', '#60a5fa', '#1d4ed8'],
+};
+const colourFor = (r, i) => (SHADES[r.alliance] || ['#9aa0a6'])[(r.station ? r.station - 1 : i) % 3];
+
+// Field metres -> normalized 0..1 on the field IMAGE. The mapping ships inside the
+// file precisely so this page needs nothing from calib/.
+function normFor(doc) {
+  const f = doc.field, R = f.fieldRectPx, ppm = f.pxPerMeter;
+  const [W, H] = f.imageSize;
+  // image +y maps to field -y, hence y1 - Y rather than y0 + Y
+  return (x, y) => [(R.x0 + x * ppm) / W, (R.y1 - y * ppm) / H];
+}
+
+function sizeCanvas() {
+  const img = $('#bg'), cv = $('#cv');
+  const r = img.getBoundingClientRect();
+  if (!r.width || !r.height) return false;
+  cv.width = Math.round(r.width); cv.height = Math.round(r.height);
+  return true;
+}
+
+function draw() {
+  const cv = $('#cv'), ctx = cv.getContext('2d');
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  if (!DOC) return;
+  const N = normFor(DOC), W = cv.width, H = cv.height;
+  const showAll = $('#trails').checked, behind = $('#fade').checked;
+
+  DOC.robots.forEach((r, i) => {
+    if (HIDDEN.has(r.team)) return;
+    const col = colourFor(r, i);
+    const pts = r.samples;
+    if (!pts.length) return;
+
+    // Break the polyline across recorded gaps rather than drawing a straight line
+    // through a stretch nobody observed -- an invented segment reads as a real route.
+    const gaps = r.gaps || [];
+    const inGap = (a, b) => gaps.some(g => g.tStart <= a.t && b.t <= g.tEnd);
+
+    ctx.lineWidth = 2; ctx.strokeStyle = col; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+    ctx.globalAlpha = 0.85;
+    let started = false;
+    ctx.beginPath();
+    for (let k = 0; k < pts.length; k++) {
+      const p = pts[k];
+      if (!showAll) break;
+      if (behind && p.t > T) break;
+      const [nx, ny] = N(p.x, p.y);
+      const X = nx * W, Y = ny * H;
+      if (!started || (k && inGap(pts[k - 1], p))) { ctx.moveTo(X, Y); started = true; }
+      else ctx.lineTo(X, Y);
+    }
+    if (started) ctx.stroke();
+
+    // current position: nearest sample at or before T
+    let cur = null;
+    for (const p of pts) { if (p.t <= T) cur = p; else break; }
+    if (cur) {
+      const [nx, ny] = N(cur.x, cur.y);
+      ctx.globalAlpha = 1;
+      ctx.beginPath(); ctx.arc(nx * W, ny * H, 7, 0, Math.PI * 2);
+      ctx.fillStyle = col; ctx.fill();
+      ctx.lineWidth = 2; ctx.strokeStyle = '#0f1115'; ctx.stroke();
+      ctx.fillStyle = '#fff'; ctx.font = 'bold 10px system-ui';
+      ctx.textAlign = 'center'; ctx.textBaseline = 'middle';
+      ctx.fillText(r.team, nx * W, ny * H - 14);
+    }
+    ctx.globalAlpha = 1;
+  });
+}
+
+function setT(t) {
+  T = Math.max(TMIN, Math.min(TMAX, t));
+  $('#scrub').value = String(Math.round((T - TMIN) / (TMAX - TMIN) * 1000));
+  $('#clock').textContent = `t = ${T.toFixed(1)} s`;
+  const vs = (DOC?.source?.matchStartVideoSec ?? 0) + T;
+  $('#vclock').textContent = `video ${vs.toFixed(1)} s`;
+  draw();
+}
+
+function tick(prev) {
+  if (!playing) return;
+  const now = performance.now();
+  setT(T + (now - prev) / 1000);
+  if (T >= TMAX) { playing = false; $('#play').textContent = '▶ Play'; return; }
+  raf = requestAnimationFrame(() => tick(now));
+}
+
+function load(doc) {
+  if (doc.schemaVersion !== 1) alert(`schemaVersion ${doc.schemaVersion}, expected 1`);
+  DOC = doc; HIDDEN.clear();
+  const all = doc.robots.flatMap(r => r.samples.map(s => s.t));
+  TMIN = Math.min(...all); TMAX = Math.max(...all);
+
+  $('#bg').src = `../../public/${doc.field.imageRef}`;
+  $('#drop').hidden = true; $('#app').hidden = false;
+
+  const q = doc.quality || {}, c = doc.calibration || {};
+  $('#hdr').innerHTML = `<b>${doc.match.key}</b>`;
+  $('#info').innerHTML = [
+    `<b>${doc.match.key}</b>`,
+    `${doc.robots.length} robots`,
+    `${q.samplesOut} samples @ ${doc.sampling.outputHz} Hz`,
+    `custody ${(100 * (q.meanCustody || 0)).toFixed(0)}%`,
+    c.reprojErrorM ? `calib ${c.reprojErrorM.mean.toFixed(2)} m` : '',
+    q.curated ? `<span style="color:var(--ok)">curated (${q.curatorLabels})</span>`
+              : `<span class="warn">NOT curated</span>`,
+    q.custodyConflicts ? `<span class="warn">${q.custodyConflicts} conflicts</span>` : '',
+    q.offField ? `<span class="warn">${q.offField} off-field</span>` : '',
+  ].filter(Boolean).join(' · ');
+
+  $('#teams').innerHTML = doc.robots.map((r, i) => `
+    <button class="team" data-team="${r.team}">
+      <b><span class="swatch" style="background:${colourFor(r, i)}"></span>${r.team}</b>
+      <small>${r.alliance} ${r.station ? 's' + r.station : ''} ·
+             custody ${(100 * (r.custody || 0)).toFixed(0)}% ·
+             ${r.samples.length} pts</small>
+    </button>`).join('');
+  $('#teams').querySelectorAll('.team').forEach(b => b.onclick = () => {
+    const t = b.dataset.team;
+    if (HIDDEN.has(t)) { HIDDEN.delete(t); b.classList.remove('off'); }
+    else { HIDDEN.add(t); b.classList.add('off'); }
+    draw();
+  });
+
+  const go = () => { sizeCanvas(); setT(TMIN); };
+  if ($('#bg').complete && $('#bg').naturalWidth) go();
+  else $('#bg').addEventListener('load', go, { once: true });
+}
+
+// ---- wiring -------------------------------------------------------------
+$('#scrub').oninput = e => {
+  if (playing) { playing = false; $('#play').textContent = '▶ Play'; }
+  setT(TMIN + (e.target.value / 1000) * (TMAX - TMIN));
+};
+$('#play').onclick = () => {
+  playing = !playing;
+  $('#play').textContent = playing ? '❚❚ Pause' : '▶ Play';
+  if (playing) { if (T >= TMAX) setT(TMIN); raf = requestAnimationFrame(() => tick(performance.now())); }
+  else cancelAnimationFrame(raf);
+};
+$('#trails').onchange = draw;
+$('#fade').onchange = draw;
+$('#load').onclick = () => $('#file').click();
+$('#file').onchange = e => { const f = e.target.files[0]; if (f) readFile(f); };
+addEventListener('resize', () => { if (DOC && sizeCanvas()) draw(); });
+
+function readFile(f) {
+  const fr = new FileReader();
+  fr.onload = () => { try { load(JSON.parse(fr.result)); }
+                      catch (err) { alert('Could not parse: ' + err.message); } };
+  fr.readAsText(f);
+}
+for (const ev of ['dragenter', 'dragover']) addEventListener(ev, e => {
+  e.preventDefault(); $('#drop').classList.add('hot');
+});
+for (const ev of ['dragleave', 'drop']) addEventListener(ev, e => {
+  e.preventDefault(); $('#drop').classList.remove('hot');
+});
+addEventListener('drop', e => { const f = e.dataTransfer.files[0]; if (f) readFile(f); });
+</script>
+</body>
+</html>

@@ -1,0 +1,53 @@
+[project]
+name = "rtrack"
+version = "0.1.0"
+description = "FRC robot position tracking from match video"
+requires-python = "==3.12.*"
+dependencies = [
+    "torch>=2.6",
+    "torchvision>=0.21",
+    "ultralytics>=8.3.60",
+    "lap>=0.5.12",  # ultralytics tracking dep; it AutoUpdates this in if absent
+    "supervision>=0.25",
+    # NOT opencv-python-headless: calibrate.py and seed.py need cv2.imshow
+    "opencv-python>=4.10",
+    "yt-dlp>=2025.1.1",
+    "numpy>=2.0",
+    "pandas>=2.2",
+    "matplotlib>=3.9",
+    "scipy>=1.14",
+    # CP-SAT, for the global track->team assignment in rtrack.solve. Chosen over a
+    # scipy/HiGHS MILP because it is boolean-native and, more importantly, can
+    # enumerate near-optimal solutions -- which is how we report WHICH assignments
+    # are uncertain instead of just returning a confident-looking answer.
+    "ortools>=9.10",
+    "tqdm",
+    "python-dotenv",
+    "requests",
+]
+
+[project.optional-dependencies]
+apriltag = ["pupil-apriltags>=1.0.4"]  # Stage 2 stretch experiment only
+live = ["streamlink>=7.0"]             # Stage 4 only
+# There was an `ocr` extra (easyocr) for reading bumper numbers. Removed: measured,
+# it identified 35% of tracks / 57% of detections, cost 3m16s of the ~6 min pipeline,
+# and changed NOTHING downstream once curator corrections were loaded. See OCR_PLAN.md.
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/rtrack"]
+
+# Force torch/torchvision from the CUDA index. Without this, resolution falls back
+# to PyPI, which on Windows serves the CPU-ONLY build -- the pipeline then runs at
+# ~3 fps with the 3060 completely idle, and nothing warns you.
+[[tool.uv.index]]
+name = "pytorch-cu126"
+url = "https://download.pytorch.org/whl/cu126"
+explicit = true
+
+[tool.uv.sources]
+torch = { index = "pytorch-cu126" }
+torchvision = { index = "pytorch-cu126" }

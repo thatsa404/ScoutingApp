@@ -1,0 +1,31 @@
+# TrackTrack (CVPR 2025) tuned for FRC broadcast footage.
+# Ultralytics 8.4's default tracker; the plan predates it. Benchmark against
+# botsort_frc.yaml rather than assuming either wins.
+tracker_type: tracktrack
+
+track_high_thresh: 0.50   # below stock 0.6 -- far robots score low
+track_low_thresh: 0.20
+new_track_thresh: 0.60
+track_buffer: 60          # ~2 s at 30 fps
+match_thresh: 0.70
+
+# The stock comment says to raise this above match_thresh for long-occlusion scenes.
+# Stage 0 found robots vanish behind the two mid-field Hub structures for a second or
+# more, which is exactly that case.
+lost_match_thr: 0.90
+
+iou_weight: 0.5
+reid_weight: 0.5          # falls back to HMIoU while with_reid is False
+conf_weight: 0.1
+angle_weight: 0.05
+
+penalty_p: 0.2
+penalty_q: 0.4
+reduce_step: 0.05
+
+tai_thr: 0.55
+min_track_len: 3          # 3 frames at 15 fps = 0.2 s before a track is confirmed
+
+gmc_method: none          # locked-off camera; see botsort_frc.yaml
+with_reid: False
+model: auto

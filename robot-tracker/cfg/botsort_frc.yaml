@@ -1,0 +1,31 @@
+# BoT-SORT tuned for FRC broadcast footage. Rationale is inline below.
+tracker_type: botsort
+
+track_high_thresh: 0.30   # below stock 0.25->0.5 range: far robots score low
+track_low_thresh: 0.10
+new_track_thresh: 0.50    # above stock: suppresses phantom tracks from crowd/staff
+track_buffer: 60          # 60 PROCESSED frames = 4 s at stride 2. Measured: every
+                          # observed handoff gap was <= 27 frames, so the buffer was
+                          # never the binding constraint.
+# Raised from 0.80. The real failure is Kalman drift: while a robot is occluded the
+# filter extrapolates its velocity, the predicted box walks off, and on reappearance
+# IoU is near zero. A permissive gate recovers some of those (27 -> 21 ids over 400
+# frames). It cannot recover IoU == 0, which is what rtrack.stitch is for.
+match_thresh: 0.95
+fuse_score: True
+
+# Stage 0 measured this camera at 0.04 px median translation and 1.0000 scale over
+# the whole 177 s match. There is no camera motion to compensate, so GMC can only
+# add noise and cost. Set back to sparseOptFlow for any handheld or panning source.
+gmc_method: none
+
+# MEASURED, not assumed: ReID is actively harmful here. FRC robots are close to a
+# worst case for it -- six objects, two visual classes, near-identical within an
+# alliance. Enabling it with the IoU gate lowered (proximity_thresh 0.0) drops the id
+# count to a flattering 9, but the kinematic check exposes 1190 physically impossible
+# jumps, up to 1041 px/frame against a 60 px/frame limit: ids teleporting between
+# robots. Zero clean tracks. Leave this off.
+proximity_thresh: 0.5
+appearance_thresh: 0.8
+with_reid: False
+model: auto

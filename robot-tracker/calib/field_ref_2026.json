@@ -1,0 +1,32 @@
+{
+  "year": 2026,
+  "game": "rebuilt",
+  "image": "public/field/2026-field.png",
+  "imageSize": [3901, 1583],
+
+  "fieldSizeM": [16.5410, 8.0690],
+  "_fieldSizeSource": "WPILib AprilTagField.k2026RebuiltWelded via robotpy-apriltag 2026.2.2. NOT the 54x27 ft figure quoted in general sources -- that gives 16.4592 x 8.2296 and an aspect of 2.0000, where the authoritative layout is 2.0499. The width differs by 2%, which is enough to matter.",
+
+  "fieldRectPx": {
+    "x0": 504.2,
+    "y0": 86.0,
+    "x1": 3394.8,
+    "y1": 1496.0
+  },
+  "pxPerMeter": 174.74,
+
+  "_method": "The horizontal rails are thin (17-20 px) and unambiguous, so the y bounds are taken from their centres: 86.0 and 1496.0, giving 1410 px for 8.0690 m = 174.74 px/m. The x bounds follow from that scale, centred on the detected centre line (x=1949.5). Both implied x edges land INSIDE the 67 px-thick alliance-wall structures at 457-523 and 3376-3442, which is consistent -- the wall has thickness and the field boundary lies within it.",
+
+  "_warning": "An earlier version of this file FORCED width = 2 x height from a 54x27 ft assumption, then 'verified' that the implied edges landed near structures. That verification was circular and the result was wrong. Do not re-derive this from a nominal field size; use the WPILib layout.",
+
+  "_displayOnly": "This mapping is for RENDERING onto the field image. It is an illustration and is not guaranteed metrically exact. Metric truth for robot positions comes from the AprilTag-derived camera pose (data/field/2026-apriltag-layout.json), which is in true WPILib metres. Any inaccuracy here affects where a dot is drawn, never the recorded position.",
+
+  "units": "meters",
+  "convention": "WPILib 2026: origin at the field corner, +x along the 16.5410 m axis, +y along the 8.0690 m axis, z up. Image +x maps to field +x; image +y maps to field -y (image rows increase downward).",
+
+  "landmarksPx": {
+    "centerLineX": 1949.5,
+    "railTopY": 86.0,
+    "railBottomY": 1496.0
+  }
+}
