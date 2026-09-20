@@ -1,6 +1,6 @@
 """Stage 4 -- notice curator answers as they arrive and finish those matches.
 
-    uv run -m rtrack.watch --event 2026mawor --calib-from WFj_FsFQRkM
+    uv run -m rtrack.watch --event 2026mawor --calib-from 2026mawor
 
 Polls the relay. When an answer turns up that is newer than the corrections already on
 disk, it pulls it, re-solves, projects, exports, publishes and folds the match into the

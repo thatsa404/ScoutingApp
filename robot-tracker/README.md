@@ -214,7 +214,7 @@ pass must redo the solve and everything below it and nothing above it.
 ```powershell
 # Slice the match out of an event archive, then run it
 uv run -m rtrack.replay   2026mawor --match qm9
-uv run -m rtrack.pipeline 2026mawor_qm9 --match 2026mawor_qm9 --calib-from WFj_FsFQRkM
+uv run -m rtrack.pipeline 2026mawor_qm9 --match 2026mawor_qm9 --calib-from 2026mawor
 ```
 
 That is: track → stitch → appear → reid votes → robots (CP-SAT) → curate bundle →

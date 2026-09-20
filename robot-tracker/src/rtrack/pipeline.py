@@ -1,7 +1,7 @@
 """Stage 4 -- run one match end to end, optionally round-tripping a curator.
 
     uv run -m rtrack.pipeline 2026mawor_qm1 --match 2026mawor_qm1 \\
-        --calib-from WFj_FsFQRkM --relay --wait 1800
+        --calib-from 2026mawor --relay --wait 1800
 
 Sequences what already exists rather than reimplementing any of it:
 

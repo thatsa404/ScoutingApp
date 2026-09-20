@@ -4,7 +4,7 @@
     uv run -m rtrack.relay wait-answer 2026mawor_qm1 --timeout 900
     uv run -m rtrack.relay push-calib 2026mawor_qm1
     uv run -m rtrack.relay wait-points 2026mawor_qm1
-    uv run -m rtrack.relay wait-occl WFj_FsFQRkM            # occluders drawn on a phone
+    uv run -m rtrack.relay wait-occl 2026mawor              # occluders drawn on a phone
 
 The home machine has the GPU, the video and the pipeline; the human is at an event with
 a phone. Neither can reach the other -- residential NAT one side, venue wifi the other --
