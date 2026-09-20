@@ -138,13 +138,14 @@
     1137,
     938
    ],
-   "notrobot": true,
    "src": "human",
    "was": "230",
    "ms": 3345,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "230"
   },
   {
    "f": 3858,
@@ -688,13 +689,14 @@
     1134,
     813
    ],
-   "notrobot": true,
    "src": "human",
    "was": "5000",
    "ms": 1857,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "230"
   },
   {
    "f": 5182,
@@ -850,13 +852,14 @@
     1718,
     596
    ],
-   "notrobot": true,
    "src": "human",
    "was": "5000",
    "ms": 1967,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "230"
   },
   {
    "f": 6334,
@@ -1017,13 +1020,14 @@
     342,
     502
    ],
-   "notrobot": true,
    "src": "human",
    "was": "2170",
    "ms": 2963,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "2079"
   },
   {
    "f": 6726,
@@ -1081,13 +1085,14 @@
     735,
     749
    ],
-   "notrobot": true,
    "src": "human",
    "was": null,
    "ms": 4614,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "2067"
   },
   {
    "f": 6886,

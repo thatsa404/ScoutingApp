@@ -68,13 +68,14 @@
     1731,
     613
    ],
-   "notrobot": true,
    "src": "human",
    "was": "3654",
    "ms": 5438,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "4925"
   },
   {
    "f": 2358,
@@ -540,13 +541,14 @@
     1392,
     708
    ],
-   "notrobot": true,
    "src": "human",
    "was": null,
    "ms": 4487,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "1729"
   },
   {
    "f": 3854,
@@ -928,13 +930,14 @@
     213,
     703
    ],
-   "notrobot": true,
    "src": "human",
    "was": "4925",
    "ms": 4196,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "5813"
   },
   {
    "f": 5234,
@@ -1053,13 +1056,14 @@
     61,
     773
    ],
-   "notrobot": true,
    "src": "human",
    "was": "5813",
    "ms": 2044,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "151"
   },
   {
    "f": 5648,

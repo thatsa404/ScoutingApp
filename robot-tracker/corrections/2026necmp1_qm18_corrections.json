@@ -666,13 +666,14 @@
     368,
     909
    ],
-   "notrobot": true,
    "src": "human",
    "was": "2170",
    "ms": 2091,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "131"
   },
   {
    "f": 5524,
@@ -897,13 +898,14 @@
     1410,
     604
    ],
-   "notrobot": true,
    "src": "human",
    "was": "5687",
    "ms": 2526,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "5687"
   },
   {
    "f": 6324,

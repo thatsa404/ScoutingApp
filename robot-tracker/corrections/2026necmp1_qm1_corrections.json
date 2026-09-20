@@ -104,13 +104,14 @@
     266,
     766
    ],
-   "notrobot": true,
    "src": "human",
    "was": "10254",
    "ms": 2644,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "10254"
   },
   {
    "f": 1342,
@@ -157,13 +158,14 @@
     267,
     766
    ],
-   "notrobot": true,
    "src": "human",
    "was": "10254",
    "ms": 889,
    "aid": [
     "views"
-   ]
+   ],
+   "wasNotrobot": true,
+   "team": "10254"
   },
   {
    "f": 1482,
