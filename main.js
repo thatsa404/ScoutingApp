@@ -8558,10 +8558,18 @@ async function renderTracksTab() {
             const answerNewer = r.answer?.at && r.exportedAt
                 ? r.answer.at > r.exportedAt
                 : (!!r.answer && !r.published);
+            // A BUNDLE OUTRANKS A PUBLISH. Published-ness used to win outright, so a
+            // match that had been curated once showed "published · curated" with no
+            // hint that a fresh bundle was sitting on the relay waiting for another
+            // pass -- and since the Curate action keys off r.bundle while this pill
+            // did not, the row read as finished while offering a button that said
+            // otherwise. Re-curation is a normal operation (the paradigm changed once
+            // already), so say when there is work waiting regardless of history.
             const state = answerNewer ? pill('curated · awaiting rerun', '#a78bfa')
+                        : r.bundle ? (r.published ? pill('bundle waiting · re-curate', '#f59e0b')
+                                                  : pill('NEEDS CURATION', '#f59e0b'))
                         : r.published ? (r.curated ? pill('published · curated', '#22c55e')
                                                    : pill('published · auto', '#60a5fa'))
-                        : r.bundle ? pill('NEEDS CURATION', '#f59e0b')
                         : pill('no tracks', '#475569');
             const models = r.total
                 ? `<span style="color:${r.known === r.total ? '#22c55e' : r.known ? '#f59e0b' : '#64748b'};">
