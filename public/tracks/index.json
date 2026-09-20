@@ -1,45 +1,7 @@
 {
  "schemaVersion": 1,
- "updatedAt": "2026-09-19T11:45:40Z",
+ "updatedAt": "2026-09-20T23:07:42Z",
  "gallery": {
-  "2026mawor": {
-   "10254": 771,
-   "1027": 745,
-   "10393": 477,
-   "1100": 534,
-   "11483": 609,
-   "1474": 786,
-   "157": 673,
-   "1740": 271,
-   "1757": 597,
-   "1768": 714,
-   "190": 643,
-   "2079": 728,
-   "2168": 749,
-   "2262": 250,
-   "237": 713,
-   "2370": 622,
-   "3467": 836,
-   "348": 705,
-   "3634": 180,
-   "4048": 1461,
-   "4628": 683,
-   "467": 741,
-   "5112": 718,
-   "5347": 911,
-   "5422": 799,
-   "5491": 225,
-   "5494": 829,
-   "6762": 1316,
-   "716": 1327,
-   "7760": 1386,
-   "8544": 737,
-   "8567": 156,
-   "8724": 1508,
-   "9644": 592,
-   "97": 1052,
-   "999": 745
-  },
   "2026necmp": {
    "1768": 588,
    "3467": 633,
@@ -121,7 +83,7 @@
    "meanCustody": 0.755,
    "bytes": 177165,
    "exportedAt": "2026-09-14T23:46:21Z",
-   "galleryKnown": 5,
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -140,10 +102,54 @@
     "716"
    ],
    "curated": true,
-   "meanCustody": 0.8393,
-   "bytes": 177638,
-   "exportedAt": "2026-09-15T00:06:23Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.8614,
+   "bytes": 177102,
+   "exportedAt": "2026-09-20T22:23:29Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm10",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 10,
+   "videoId": "2026mawor_qm10",
+   "teams": [
+    "1768",
+    "1027",
+    "10254",
+    "5491",
+    "5112",
+    "11483"
+   ],
+   "curated": true,
+   "meanCustody": 0.8665,
+   "bytes": 174204,
+   "exportedAt": "2026-09-20T23:03:44Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm11",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 11,
+   "videoId": "2026mawor_qm11",
+   "teams": [
+    "2370",
+    "3467",
+    "10393",
+    "2262",
+    "3634",
+    "157"
+   ],
+   "curated": true,
+   "meanCustody": 0.8822,
+   "bytes": 177628,
+   "exportedAt": "2026-09-20T23:07:10Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -162,10 +168,10 @@
     "190"
    ],
    "curated": true,
-   "meanCustody": 0.8386,
-   "bytes": 167740,
-   "exportedAt": "2026-09-15T01:31:39Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.8613,
+   "bytes": 172722,
+   "exportedAt": "2026-09-20T22:30:24Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -184,10 +190,10 @@
     "8567"
    ],
    "curated": true,
-   "meanCustody": 0.8751,
-   "bytes": 54722,
-   "exportedAt": "2026-09-15T01:32:08Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.7744,
+   "bytes": 54885,
+   "exportedAt": "2026-09-20T22:34:50Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -206,10 +212,10 @@
     "2370"
    ],
    "curated": true,
-   "meanCustody": 0.8576,
-   "bytes": 171780,
-   "exportedAt": "2026-09-15T01:32:45Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.8539,
+   "bytes": 170694,
+   "exportedAt": "2026-09-20T22:39:35Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -228,10 +234,10 @@
     "10393"
    ],
    "curated": true,
-   "meanCustody": 0.8333,
-   "bytes": 175497,
-   "exportedAt": "2026-09-15T01:52:54Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.8356,
+   "bytes": 170893,
+   "exportedAt": "2026-09-20T22:42:10Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -250,10 +256,10 @@
     "8544"
    ],
    "curated": true,
-   "meanCustody": 0.8469,
-   "bytes": 174589,
-   "exportedAt": "2026-09-15T01:58:40Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.8318,
+   "bytes": 170117,
+   "exportedAt": "2026-09-20T22:46:50Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
@@ -272,10 +278,32 @@
     "8724"
    ],
    "curated": true,
-   "meanCustody": 0.8718,
-   "bytes": 174236,
-   "exportedAt": "2026-09-15T03:22:20Z",
-   "galleryKnown": 6,
+   "meanCustody": 0.8776,
+   "bytes": 175698,
+   "exportedAt": "2026-09-20T22:49:37Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm9",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 9,
+   "videoId": "2026mawor_qm9",
+   "teams": [
+    "348",
+    "467",
+    "5347",
+    "2168",
+    "237",
+    "8567"
+   ],
+   "curated": true,
+   "meanCustody": 0.8514,
+   "bytes": 182650,
+   "exportedAt": "2026-09-20T22:59:15Z",
+   "galleryKnown": 0,
    "galleryTotal": 6
   },
   {
