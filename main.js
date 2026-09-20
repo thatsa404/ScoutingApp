@@ -8578,6 +8578,11 @@ async function renderTracksTab() {
             const acts = [
                 r.bundle ? act('Curate', q('curate', 'match', r.key), true) : '',
                 r.calib ? act('Calibrate', q('calibrate', 'video', r.key), !r.bundle) : '',
+                // OCCLUDERS, gated on the same calib frame Calibrate uses -- the page
+                // pulls that frame to draw on, so without one there is nothing to show.
+                // Never primary: occluders are drawn ONCE PER CAMERA, not per match, so
+                // a prominent button on every row would misrepresent the job as routine.
+                r.calib ? act('Occluders', q('occluders', 'video', r.key), false) : '',
                 r.published ? `<a href="#" onclick="viewMatchDetail('${r.key}');return false;"
                      style="display:inline-block;padding:5px 10px;border-radius:6px;font-size:0.78em;
                      text-decoration:none;border:1px solid #334155;color:#94a3b8;">Routes</a>` : '',
@@ -8598,6 +8603,12 @@ async function renderTracksTab() {
         }).join('')}
       </table>
       <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
+        <b>Calibrate</b> and <b>Occluders</b> appear when a frame has been pushed with
+        <code>rtrack.relay push-calib</code>. Both describe the CAMERA, not the match, so
+        they are done once per camera and reused: a calibration maps pixels to field
+        metres, occluders mark what robots disappear behind. Occluders come back with
+        <code>rtrack.relay wait-occl &lt;camera&gt;</code>.
+        <br><br>
         <b>Models</b> is how many of the match's teams the appearance gallery already knows.
         At 6/6 the tracker labels the match ~84% correctly before anyone touches it; at 0/6
         it is back to geometry alone and every robot needs naming.

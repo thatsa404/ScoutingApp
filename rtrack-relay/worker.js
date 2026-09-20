@@ -17,6 +17,13 @@
 //   GET  /calib/<videoId>        relay -> phone
 //   POST /points/<videoId>       phone -> relay   [[vx,vy,fx,fy], ...]
 //   GET  /points/<videoId>       relay -> home
+//   POST /occl/<cameraId>        phone -> relay   occluder regions (JSON)
+//   GET  /occl/<cameraId>        relay -> home
+//
+// `occl` rides the same path as `points`: the phone draws on a frame the home machine
+// posted to /calib, and the drawing comes back up. It was a file DOWNLOAD before, which
+// works on a laptop and not at all on the phone the tool is designed for -- the file
+// lands in Downloads on a device that cannot reach robot-tracker/calib/.
 //   GET  /index                  what is available right now
 //   DELETE /<kind>/<id>          clear one entry (token required)
 //
@@ -66,7 +73,7 @@
 // each, so an event day is nowhere near it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const KINDS = new Set(['bundle', 'answer', 'calib', 'points']);
+const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl']);
 
 // KV caps values at 25 MiB. Curation bundles are ~1.8-7 MB depending on how many
 // frames and what JPEG quality rtrack.curate was told to use, so this is headroom
@@ -155,7 +162,7 @@ export default {
     const kvKey = `${kind}:${id}`;
 
     // Paths a curator's device is allowed to write. Everything else is home-machine only.
-    const DEVICE_WRITABLE = new Set(['answer', 'points']);
+    const DEVICE_WRITABLE = new Set(['answer', 'points', 'occl']);
 
     // Returns 'full' | 'device' | null.
     const level = () => {

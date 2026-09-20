@@ -133,9 +133,12 @@
 
     <div class="card">
       <h2>Save</h2>
-      <p class="msg dim">Writes <code>&lt;id&gt;_occluders.json</code>. Put it in
-         <code>robot-tracker/calib/</code> beside the calibration.</p>
-      <p><button id="save" class="primary">Download JSON</button>
+      <p class="msg dim">Send goes to the relay, where
+         <code>rtrack.relay wait-occl</code> picks it up into
+         <code>robot-tracker/calib/</code>. Download is the fallback when there is no
+         relay -- on a phone the file lands somewhere the pipeline cannot reach.</p>
+      <p><button id="send" class="primary">Send to relay</button>
+         <button id="save">Download JSON</button>
          <button id="loadJson">Load JSON…</button>
          <input type="file" id="jsonIn" accept="application/json" hidden></p>
       <p id="saveMsg" class="msg"></p>
@@ -350,11 +353,26 @@ function sync() {
 // ---- save / load -------------------------------------------------------------
 $('#save').onclick = () => {
   if (!REGIONS.length) return say($('#saveMsg'), 'Nothing to save yet.', 'err');
-  const id = $('#vid').value.trim() || 'camera';
-  const doc = {
+  const doc = buildDoc();
+  const id = doc.camera;
+  const blob = new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${id}_occluders.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  say($('#saveMsg'), `Saved ${REGIONS.length} region(s) as ${a.download}.`, 'ok');
+};
+
+// ONE document, two destinations. The download and the relay send must not be able to
+// drift apart -- a region list that serialises differently depending on which button was
+// pressed is the kind of bug that only shows up as a pipeline that silently sees no
+// occluders at all.
+function buildDoc() {
+  return {
     schemaVersion: 1,
     kind: 'occluders',
-    camera: id,
+    camera: $('#vid').value.trim() || 'camera',
     // Normalised 0-1 against the frame; frameSize records what they were drawn on so a
     // consumer can scale to pixels and tell whether the source resolution changed.
     coordinates: 'normalised-image',
@@ -368,13 +386,32 @@ $('#save').onclick = () => {
       points: r.pts.map(p => [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]),
     })),
   };
-  const blob = new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' });
-  const a = document.createElement('a');
-  a.href = URL.createObjectURL(blob);
-  a.download = `${id}_occluders.json`;
-  a.click();
-  URL.revokeObjectURL(a.href);
-  say($('#saveMsg'), `Saved ${REGIONS.length} region(s) as ${a.download}.`, 'ok');
+}
+
+// POST /occl/<camera>. Device-writable on the worker, like /points -- this is drawn on
+// the same phone that clicks calibration points, and for the same reason.
+$('#send').onclick = async () => {
+  if (!REGIONS.length) return say($('#saveMsg'), 'Nothing to send yet.', 'err');
+  const url = $('#relay').value.trim().replace(/\/+$/, '');
+  if (!url) return say($('#saveMsg'), 'Enter the relay URL first.', 'err');
+  const doc = buildDoc();
+  const tok = (localStorage.getItem('rtrackToken') || '').trim();
+  say($('#saveMsg'), 'Sending…');
+  try {
+    const r = await fetch(`${url}/occl/${encodeURIComponent(doc.camera)}`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok },
+      body: JSON.stringify(doc),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
+    say($('#saveMsg'),
+        `Sent ${doc.regions.length} region(s) for ${doc.camera}.\n`
+        + `On the home machine: uv run -m rtrack.relay wait-occl ${doc.camera}`, 'ok');
+  } catch (e) {
+    say($('#saveMsg'), 'Send failed:\n' + e.message
+        + '\nUse "Download JSON" and copy it to robot-tracker/calib/ instead.', 'err');
+  }
 };
 
 $('#loadJson').onclick = () => $('#jsonIn').click();

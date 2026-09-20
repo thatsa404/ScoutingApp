@@ -4,6 +4,7 @@
     uv run -m rtrack.relay wait-answer 2026mawor_qm1 --timeout 900
     uv run -m rtrack.relay push-calib 2026mawor_qm1
     uv run -m rtrack.relay wait-points 2026mawor_qm1
+    uv run -m rtrack.relay wait-occl WFj_FsFQRkM            # occluders drawn on a phone
 
 The home machine has the GPU, the video and the pipeline; the human is at an event with
 a phone. Neither can reach the other -- residential NAT one side, venue wifi the other --
@@ -108,7 +109,8 @@ def main(argv=None) -> int:
         p.add_argument("ident", help="match key, or video id for calib")
         p.add_argument("--file", type=Path, default=None)
 
-    for name, kind in (("wait-answer", "answer"), ("wait-points", "points")):
+    for name, kind in (("wait-answer", "answer"), ("wait-points", "points"),
+                       ("wait-occl", "occl")):
         p = sub.add_parser(name, help=f"block until {kind} come back")
         p.add_argument("ident")
         p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
@@ -158,16 +160,24 @@ def main(argv=None) -> int:
                   f"fewer --frames, or lower FRAME_W/FRAME_Q in rtrack.curate.")
         return 0
 
-    kind = "answer" if args.cmd == "wait-answer" else "points"
+    kind = {"wait-answer": "answer", "wait-points": "points",
+            "wait-occl": "occl"}[args.cmd]
     doc = wait(kind, args.ident, args.timeout)
     if doc is None:
         return 1
-    out = args.out or (C.REPO_ROOT / "robot-tracker" / "corrections"
-                       / f"{args.ident}_corrections.json" if kind == "answer"
-                       else C.STAGE3_DIR / f"{args.ident}_points.json")
+    # Where each kind belongs on disk. `occl` lands in calib/ next to the calibration it
+    # was drawn against -- rtrack.occluders.path_for looks for exactly this name, and
+    # robots.py picks it up from the calibration stem without being asked.
+    dests = {
+        "answer": C.REPO_ROOT / "robot-tracker" / "corrections"
+                  / f"{args.ident}_corrections.json",
+        "points": C.STAGE3_DIR / f"{args.ident}_points.json",
+        "occl":   C.CALIB_DIR / f"{args.ident}_occluders.json",
+    }
+    out = args.out or dests[kind]
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
-    n = len(doc.get("labels") or doc.get("points") or [])
+    n = len(doc.get("labels") or doc.get("points") or doc.get("regions") or [])
     print(f"[relay] {n} item(s) -> {out}")
     return 0
 
