@@ -586,8 +586,9 @@
     1444,
     608
    ],
-   "notrobot": true,
-   "src": "human"
+   "src": "human",
+   "wasNotrobot": true,
+   "team": "237"
   },
   {
    "f": 8224,

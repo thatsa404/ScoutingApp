@@ -118,8 +118,9 @@
     438,
     598
    ],
-   "notrobot": true,
-   "src": "human"
+   "src": "human",
+   "wasNotrobot": true,
+   "team": "7760"
   },
   {
    "f": 4876,
@@ -685,8 +686,9 @@
     1190,
     529
    ],
-   "notrobot": true,
-   "src": "human"
+   "src": "human",
+   "wasNotrobot": true,
+   "team": "716"
   },
   {
    "f": 9992,
