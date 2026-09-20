@@ -37,6 +37,14 @@ ask the pipeline for different things:
     notrobot   this is not a robot at all -- field element, ball pile, a person
                -> drop from grouping AND record it, because it is a detector false
                   positive and we want to be able to count them.
+               NOT the way to resolve two boxes on ONE robot. It is a TRACK-level
+                  verdict: pins_from subtracts the flagged tid from the pins, so it
+                  discards every team label on that track, in any frame, silently.
+                  For a duplicate box, label BOTH boxes with the same team and let
+                  merge_duplicates fuse them -- it keeps the longer timeline, and
+                  robots.geometric_duplicates finds the same pairs unaided. The old
+                  curate.html recommended notrobot here and it cost 15 of qm24's 16
+                  errors; report() now names any track carrying both answers.
     unknown    I looked and cannot tell which team this is
                -> change nothing. The solver still decides; this only records that a
                   human could not, which is what separates "hard" from "not yet asked".
@@ -440,6 +448,36 @@ def report(resolved: list[dict], pins: dict[int, str], flags: dict[int, str],
     tally = Counter(flags.values())
     extra = "".join(f", {n} {k}" for k, n in sorted(tally.items()))
     print(f"[corrections] {len(pins)} track(s) pinned{extra}")
+
+    # CONTRADICTORY TRACKS, said out loud. pins_from subtracts `blocked` from the pins,
+    # so a track carrying BOTH a team label and a notrobot/mixed flag loses the team --
+    # every label on it, not just the flagged box. That is silent, and it was the single
+    # largest source of error measured on this event: 70 notrobot labels across 18
+    # correction files, 46 of them on tracks with 200+ detections. Re-curating qm24
+    # without the flag took it from 84% to 99% agreement with its curator.
+    #
+    # The old curate.html told the curator to do this -- it recommended notrobot as the
+    # way to resolve two boxes on one robot. It no longer does (label both with the same
+    # team; merge_duplicates fuses them), but the correction files written under that
+    # instruction are still on disk, so the contradiction is reported rather than assumed
+    # gone. Not auto-resolved: which answer the curator meant is not knowable from here.
+    teamed = defaultdict(set)
+    for r in resolved:
+        if r["ok"] and r.get("team") and not flag_of(r):
+            teamed[r["tid"]].add(str(r["team"]))
+    clash = sorted(t for t, f in flags.items()
+                   if f in ("mixed", "notrobot") and t in teamed)
+    if clash:
+        print(f"[corrections] {len(clash)} track(s) flagged not-a-robot that ALSO carry "
+              f"team labels -- the flag wins and those labels are discarded. If these "
+              f"were duplicate boxes, re-curate giving both the same team instead:")
+        for t in clash[:12]:
+            n = sum(1 for r in resolved if r["ok"] and r["tid"] == t
+                    and r.get("team") and not flag_of(r))
+            print(f"[corrections]   track {t}: {n} label(s) for "
+                  f"{'/'.join(sorted(teamed[t]))} dropped by '{flags[t]}'")
+        if len(clash) > 12:
+            print(f"[corrections]   ... and {len(clash) - 12} more")
     for r in bad:
         print(f"[corrections]   UNRESOLVED f{r['f']} at {r['xy']} "
               f"(nearest detection {r['dist']:.0f} px away)"

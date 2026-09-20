@@ -1941,20 +1941,26 @@ def main(argv=None) -> int:
                          "fewer cuts to catch the same switches. Threshold scales are "
                          "NOT comparable between them -- see --appear-thresh.")
     ap.add_argument("--occluders", default=None, metavar="CAMERA",
-                    help="rejoin tracks that stop and restart at a structure marked in "
+                    help="camera stem whose drawn occluders to use. Defaults to the "
+                         "calibration stem when calib/<stem>_occluders.json exists, so "
+                         "a camera someone has drawn is used without being asked for. "
+                         "Also rejoins tracks that stop and restart at a structure "
                          "public/rtrack/occluders.html, choosing the predecessor by "
                          "APPEARANCE. Geometry finds these pairs but cannot resolve "
                          "them -- several robots use one structure over a match; see "
                          "occluder_rebind.")
-    ap.add_argument("--no-join-check", action="store_true",
-                    help="do NOT re-open stitch joins whose two sides look like "
-                         "different robots. See split_chimeric_joins.")
+    ap.add_argument("--join-check", action="store_true",
+                    help="re-open stitch joins whose two sides look like different "
+                         "robots. OFF by default: measured on curated qm21 it cost 5 "
+                         "accuracy points, because the 0.89 threshold is calibrated on "
+                         "whole-track pairs and these are cut points. See "
+                         "split_chimeric_joins.")
     ap.add_argument("--app-weight", type=int, default=0, metavar="PTS",
                     help="reward two adjacent tracks sharing a team when they LOOK "
                          "like one robot, and penalise it when they do not. 0 = off. "
                          "The solver has never had an appearance term; see "
                          "solve.APP_SAME for the calibration and what it costs.")
-    ap.add_argument("--hold-weight", type=int, default=0, metavar="PTS",
+    ap.add_argument("--hold-weight", type=int, default=600, metavar="PTS",
                     help="penalty for giving a team to a visible track while that team "
                          "is presumed behind a structure it vanished into. 0 = off. "
                          "Needs --occluders. See occlusion_holds.")
@@ -1976,12 +1982,12 @@ def main(argv=None) -> int:
     ap.add_argument("--kin-weight", type=int, default=120, metavar="PTS",
                     help="penalty per unit of kinematic impossibility when pairing two "
                          "tracks onto one robot.")
-    ap.add_argument("--kin-cap", type=float, default=3.0, metavar="MULT",
+    ap.add_argument("--kin-cap", type=float, default=30.0, metavar="MULT",
                     help="the penalty stops growing past this multiple of the distance "
                          "budget. At the default, ANY violation costs at most "
                          "kin-weight*3 = 360, which vote evidence outweighs 13:1 at "
                          "--vote-weight 200.")
-    ap.add_argument("--kin-hard", type=float, default=0.0, metavar="MULT",
+    ap.add_argument("--kin-hard", type=float, default=1.5, metavar="MULT",
                     help="FORBID pairing two tracks whose separation exceeds this "
                          "multiple of the physical distance budget, rather than pricing "
                          "it. 0 = off. A robot cannot be in two places; past some "
@@ -2027,7 +2033,7 @@ def main(argv=None) -> int:
     ap.add_argument("--alli-weight", type=float, default=250.0,
                     help="cost of assigning a track to a team on the other alliance "
                          "(cpsat only); see the note above before raising it")
-    ap.add_argument("--vote-weight", type=int, default=10, metavar="PTS",
+    ap.add_argument("--vote-weight", type=int, default=200, metavar="PTS",
                     help="points per identity vote. Measured on qm21: at the default "
                          "10 the vote terms are 8.7%% of the objective magnitude "
                          "against 87%% for pair+park, and even a PERFECT descriptor "
@@ -2070,6 +2076,17 @@ def main(argv=None) -> int:
              else {"video": stem, "tracks": {}})
     pp = args.positions or (C.STAGE2_DIR / f"{stem}_positions.json")
     positions = json.loads(pp.read_text(encoding="utf-8")) if pp.exists() else None
+
+    # Use the camera's drawn occluders when they exist. The watcher and the pipeline
+    # pass neither this nor the weights, so anything left opt-in is effectively off in
+    # the one path that matters -- a curator's answer coming back and being re-solved
+    # unattended. Everything defaulted here was measured against curator labels.
+    if args.occluders is None:
+        from .occluders import path_for as _occ_path
+        _cam = args.calib_from or stem
+        if _occ_path(_cam).exists():
+            args.occluders = _cam
+            print(f"[robots] using drawn occluders for {_cam}")
 
     m = tba_mod.match_by_key(args.match)
     red, blue = [str(t) for t in m["red"]], [str(t) for t in m["blue"]]
@@ -2142,7 +2159,7 @@ def main(argv=None) -> int:
 
     # Undo bad stitch joins BEFORE anything else reasons about these tracks: a chimera
     # left whole poisons the descriptors, the votes and the assignment alike.
-    if not args.no_join_check:
+    if args.join_check:
         from .embed import load_head as _lh3
         rows, n_j = split_chimeric_joins(
             rows, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",

@@ -99,7 +99,7 @@ def _main(argv=None) -> int:
                     help="solve identity WITHOUT appearance votes even though a "
                          "gallery exists. Normally a votes failure is fatal; this is "
                          "the deliberate override, not a routine flag.")
-    ap.add_argument("--appearance", choices=("hist", "cnn"), default="hist",
+    ap.add_argument("--appearance", choices=("hist", "cnn"), default="cnn",
                     help="descriptor backend for identity votes. 'hist' is the tuned "
                          "48-d histogram; 'cnn' is the learned embedding, which scores "
                          "90.6%% within-alliance against 55.1%% leave-one-match-out "

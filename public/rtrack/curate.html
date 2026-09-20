@@ -89,6 +89,11 @@
        display:flex;gap:9px;align-items:flex-start;line-height:1.4}
   #ovl b{color:#fde68a}
   #ovlIcon{flex:0 0 auto;font-size:15px;line-height:1.2}
+  /* The amber banner explains a confusing picture. The red one says a tap is about to
+     throw away answers already given, which is a different kind of thing and should not
+     look like the note the curator has learned to read past. */
+  #ovl.stop{border-color:#ef4444;background:#2d1414;color:#fca5a5}
+  #ovl.stop b{color:#fecaca}
   #views{margin-top:8px}
   .vlabel{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.06em;
           margin-bottom:5px}
@@ -803,13 +808,29 @@ function showZoom() {
 // Containment, not IoU, because a small fragment box sitting INSIDE a big one scores low
 // IoU and high containment -- and that is exactly the shape this case takes.
 //
-// The recommended answer: the longer track gets the team (it carries the custody), the
-// other gets "not a robot". That flag is the only one that removes a track from grouping
-// (corrections.dropped); "can't tell" deliberately does not, so a duplicate left unknown
-// stays eligible and can be absorbed into a DIFFERENT team's group -- which both corrupts
-// that team's route and feeds its gallery entry the wrong robot's pixels.
+// THE ANSWER IS TO LABEL BOTH WITH THE SAME TEAM. This used to read "give the longer one
+// the team and mark the other 'not a robot'", and that advice was actively harmful:
+// notrobot is a TRACK-level verdict (corrections.tracks puts the tid in `blocked`, and
+// `blocked` is subtracted from the pins), so flagging one box discards every team label
+// the curator gave that track anywhere else in the bundle, without saying so. Measured on
+// 2026necmp1: 70 notrobot labels across 18 correction files, 46 of them on tracks with
+// 200+ detections -- real robots, deconflicted by the old instruction and then silently
+// dropped. Re-curating qm24 without it took the match from 84% to 99% agreement.
+//
+// Labelling both is not a workaround, it is the supported path. corrections.merge_duplicates
+// fuses two tracks the curator pinned to one team when their centres sit within 1.0 box
+// widths for 2+ shared frames, keeping the longer track's timeline; robots.geometric_duplicates
+// finds the same pairs from geometry alone and keeps the LOWER box, because only a box whose
+// bottom edge is on the floor projects to the right field position. Both run before
+// split_conflicts, which is what would otherwise read a same-team co-detection as curator
+// error. And if the two boxes turn out to be two real robots after all, split_conflicts
+// demotes the weaker pin to a preference -- a recoverable outcome, unlike a dropped track.
+//
+// "not a robot" now means only what it says: a referee, a field element, a ball pile.
+let OVL_STICKY = false;
 function overlapNote(i) {
   const box = $('#ovl');
+  if (OVL_STICKY) { OVL_STICKY = false; return ''; }
   const ds = frame().dets, a = ds[i]?.box;
   if (!a) { box.hidden = true; return ''; }
   const area = b => Math.max(0, b[2] - b[0]) * Math.max(0, b[3] - b[1]);
@@ -825,11 +846,12 @@ function overlapNote(i) {
   });
   if (hit === null) { box.hidden = true; return ''; }
   const mine = ds[i].n || 0, other = ds[hit].n || 0;
-  $('#ovlText').innerHTML = mine >= other
-    ? `<b>Two boxes on one robot.</b> This box lasts ${mine} frames, box ${hit + 1} only `
-      + `${other}. Give <b>this</b> one the team and mark box ${hit + 1} “not a robot”.`
-    : `<b>Two boxes on one robot.</b> Box ${hit + 1} lasts ${other} frames, this one only `
-      + `${mine}. Give <b>box ${hit + 1}</b> the team and mark this one “not a robot”.`;
+  box.classList.remove('stop');
+  $('#ovlText').innerHTML =
+    `<b>Two boxes on one robot.</b> Give <b>both</b> the same team — this one `
+    + `(${mine} frames) and box ${hit + 1} (${other}). The solver fuses boxes you name `
+    + `as one team while both are on screen. Do <b>not</b> use “not a robot” here; `
+    + `it drops the whole track, team labels included.`;
   box.hidden = false;
   return '';       // the banner carries it now; the hint line stays about the question
 }
@@ -873,6 +895,20 @@ function assign(val) {
     ms: BOX_T0 ? Math.min(Date.now() - BOX_T0, 120000) : null,
     aid: BOX_AID && BOX_AID.size ? [...BOX_AID] : undefined,
   });
+  if (val !== 'clear' && val.team) {
+    const stale = notrobotKeysOnTrack(d.tid);
+    if (stale.length) {
+      stale.forEach(sk => ANS.delete(sk));
+      const box = $('#ovl');
+      box.classList.add('stop');
+      $('#ovlText').innerHTML =
+        `<b>Cleared ${stale.length} earlier “not a robot” on this track.</b> `
+        + `That flag applies to the whole track, so keeping it would have thrown away `
+        + `the team you just gave. If this really is not a robot, flag it again.`;
+      box.hidden = false;
+      OVL_STICKY = true;       // survive the showZoom() that follows this assignment
+    }
+  }
   DRAFT.save(DOC?.match, ANS);   // write through on every tap; see DRAFT
   TIMER.tick(DOC?.match);        // and charge the time it took; see TIMER
   paint(); drawPips(); updateCount(); markTaken(); paintClock();
@@ -903,7 +939,11 @@ function assign(val) {
     // -- otherwise the team just assigned is the one team that never strikes through,
     // which reads as a missing answer rather than a finished frame.
     SEL = null;
-    $('#zoomWrap').style.display = 'none'; $('#views').hidden = true; $('#ovl').hidden = true;
+    $('#zoomWrap').style.display = 'none'; $('#views').hidden = true;
+    // Keep a banner this assignment just wrote. The frame being finished is not a reason
+    // to withdraw the notice that the assignment cleared an earlier flag -- that is the
+    // only place the curator is told it happened.
+    if (OVL_STICKY) OVL_STICKY = false; else $('#ovl').hidden = true;
     paint(); markTaken(); frameDone();
   }
 }
@@ -955,8 +995,75 @@ function updateDoneBar() {
 }
 
 $('#teams').addEventListener('click', () => {});
+
+// Every HUMAN team label already given to the SAME TRACK, anywhere in the bundle. ANS is
+// keyed by (frame, point) and carries no tid, so the walk back to the track goes through
+// DOC.frames -- which is also the only place the tid lives.
+function teamLabelsOnTrack(tid) {
+  const t = Number(tid);
+  if (!DOC || !Number.isFinite(t) || t < 0) return [];
+  const out = [];
+  (DOC.frames || []).forEach(fr => (fr.dets || []).forEach(d => {
+    if (Number(d.tid) !== t) return;
+    const a = ANS.get(keyOf(fr.f, d.xy));
+    if (a && a.src === 'human' && a.team) out.push(String(a.team));
+  }));
+  return out;
+}
+
+// The same walk, for the answers that have to be REMOVED rather than counted.
+function notrobotKeysOnTrack(tid) {
+  const t = Number(tid);
+  if (!DOC || !Number.isFinite(t) || t < 0) return [];
+  const out = [];
+  (DOC.frames || []).forEach(fr => (fr.dets || []).forEach(d => {
+    if (Number(d.tid) !== t) return;
+    const k = keyOf(fr.f, d.xy), a = ANS.get(k);
+    if (a && a.src === 'human' && a.notrobot) out.push(k);
+  }));
+  return out;
+}
+
+// THE GUARD. notrobot is the only answer that is not local to the box it is tapped on:
+// corrections.tracks() puts the tid in `blocked`, and `blocked` is subtracted from the
+// pins, so the flag deletes every team label on that track. A curator has no way to see
+// that from here -- the other boxes are in other frames, and they go on showing their
+// green ticks afterwards.
+//
+// So it asks once, naming what would be lost, and a second tap goes through. This is the
+// same shape as leaveArmed: a guard against doing it by accident, not a lock. A curator
+// who genuinely means "that long track is a referee" is still one extra tap away.
+let flagArmed = null;          // tid currently warned about, as a string, or null
 document.querySelectorAll('.flags button').forEach(b => {
-  b.onclick = () => assign(b.dataset.flag === 'clear' ? 'clear' : { [b.dataset.flag]: true });
+  b.onclick = () => {
+    const flag = b.dataset.flag;
+    if (flag !== 'notrobot') {
+      flagArmed = null;
+      assign(flag === 'clear' ? 'clear' : { [flag]: true });
+      return;
+    }
+    if (SEL === null) { $('#hint').textContent = 'Tap a box first.'; return; }
+    const d = frame().dets[SEL];
+    const had = teamLabelsOnTrack(d.tid);
+    if (had.length && flagArmed !== String(d.tid)) {
+      flagArmed = String(d.tid);
+      const teams = [...new Set(had)];
+      const box = $('#ovl');
+      box.classList.add('stop');
+      $('#ovlText').innerHTML =
+        `<b>This would delete ${had.length} answer${had.length > 1 ? 's' : ''} you `
+        + `already gave.</b> Box ${SEL + 1} belongs to a track you labelled `
+        + `<b>${teams.join(' / ')}</b> elsewhere. “Not a robot” applies to the `
+        + `whole track, so those labels go with it.<br>`
+        + `If this is a second box on a robot you have already named, give it that team `
+        + `instead — the solver merges duplicates. Tap “not a robot” again `
+        + `only if it really is a referee or a field element.`;
+      box.hidden = false;
+      return;
+    }
+    flagArmed = null;
+    assign({ notrobot: true });
+  };
 });
 // Boxes the CURATOR has not decided on. A machine guess does not count: until the auto-ID
 // has earned trust, "unreviewed" and "answered" are different states and only the curator
