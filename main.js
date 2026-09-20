@@ -8419,6 +8419,36 @@ window.switchToolsTab = function (tab) {
 
 const RELAY_KEY = 'rtrackRelay';
 
+// Baked default last, matching the precedence in public/rtrack/*.html. main.js is
+// bundled so it can read import.meta.env directly; the standalone curator pages cannot,
+// and get the same value through the generated rtrack/relay.js.
+function relayUrl() {
+    return ((localStorage.getItem(RELAY_KEY)
+             || import.meta.env.VITE_RTRACK_RELAY || '')).trim().replace(/\/+$/, '');
+}
+
+// The index is one small GET, but loadMatchTracks runs once per match and the team
+// Routes tab loads a whole event at a time -- 25 matches would be 25 identical
+// requests. Memoised for a few seconds, which is long enough to cover one render and
+// short enough that a freshly published match shows up on the next interaction.
+let _relayIdx = null, _relayIdxAt = 0;
+const RELAY_IDX_TTL_MS = 8000;
+
+async function relayTracksIndex() {
+    const url = relayUrl();
+    if (!url) return new Map();
+    if (_relayIdx && Date.now() - _relayIdxAt < RELAY_IDX_TTL_MS) return _relayIdx;
+    const items = await _relayIndex(url);
+    const m = new Map();
+    for (const it of items || []) {
+        if (it.kind === 'tracks' && it.id) m.set(it.id, it.at || 0);
+    }
+    // A failed fetch caches an EMPTY map for the TTL rather than retrying per match.
+    // Falling back to git on a flaky relay is correct; hammering it is not.
+    _relayIdx = m; _relayIdxAt = Date.now();
+    return m;
+}
+
 async function _relayIndex(url) {
     if (!url) return null;
     try {
@@ -8432,11 +8462,7 @@ async function _relayIndex(url) {
 async function renderTracksTab() {
     const host = document.getElementById('tools-tab-tracks');
     if (!host) return;
-    // Baked default last, matching the precedence in public/rtrack/*.html. main.js is
-    // bundled so it can read import.meta.env directly; the standalone curator pages
-    // cannot, and get the same value through the generated rtrack/relay.js.
-    const relay = ((localStorage.getItem(RELAY_KEY)
-                    || import.meta.env.VITE_RTRACK_RELAY || '')).trim().replace(/\/+$/, '');
+    const relay = relayUrl();
     const eventKey = (document.getElementById('eventKeyInput')?.value || '').trim().toLowerCase();
 
     host.innerHTML = `
@@ -8558,16 +8584,27 @@ async function renderTracksTab() {
             const answerNewer = r.answer?.at && r.exportedAt
                 ? r.answer.at > r.exportedAt
                 : (!!r.answer && !r.published);
-            // A BUNDLE OUTRANKS A PUBLISH. Published-ness used to win outright, so a
-            // match that had been curated once showed "published · curated" with no
-            // hint that a fresh bundle was sitting on the relay waiting for another
-            // pass -- and since the Curate action keys off r.bundle while this pill
-            // did not, the row read as finished while offering a button that said
-            // otherwise. Re-curation is a normal operation (the paradigm changed once
-            // already), so say when there is work waiting regardless of history.
+            // A bundle only means WORK WAITING if it is newer than the last publish
+            // AND has not already been answered. Bundles outlive their own usefulness:
+            // they sit on the relay for the full 24 h TTL, so after a curator answers
+            // one and the watcher republishes, the bundle is still there -- and a
+            // naive "bundle exists" test then shows every finished match as needing
+            // re-curation, which it did for all eleven 2026mawor matches at once.
+            //
+            // Two clocks settle it. A bundle pushed AFTER the last publish is a
+            // genuine new pass (that is exactly how these were rebuilt). An answer
+            // arriving after that bundle means the pass is done, whatever the bundle's
+            // continued presence suggests.
+            const bundleIsNew = r.bundle?.at && r.exportedAt
+                ? r.bundle.at > r.exportedAt
+                : !!r.bundle && !r.published;
+            const answeredIt = r.answer?.at && r.bundle?.at
+                ? r.answer.at > r.bundle.at
+                : !!r.answer;
+            const outstanding = bundleIsNew && !answeredIt;
             const state = answerNewer ? pill('curated · awaiting rerun', '#a78bfa')
-                        : r.bundle ? (r.published ? pill('bundle waiting · re-curate', '#f59e0b')
-                                                  : pill('NEEDS CURATION', '#f59e0b'))
+                        : outstanding ? (r.published ? pill('bundle waiting · re-curate', '#f59e0b')
+                                                     : pill('NEEDS CURATION', '#f59e0b'))
                         : r.published ? (r.curated ? pill('published · curated', '#22c55e')
                                                    : pill('published · auto', '#60a5fa'))
                         : pill('no tracks', '#475569');
@@ -8576,7 +8613,7 @@ async function renderTracksTab() {
                      ${r.known}/${r.total}</span>`
                 : '—';
             const acts = [
-                r.bundle ? act('Curate', q('curate', 'match', r.key), true) : '',
+                r.bundle ? act('Curate', q('curate', 'match', r.key), outstanding) : '',
                 r.calib ? act('Calibrate', q('calibrate', 'video', r.key), !r.bundle) : '',
                 // OCCLUDERS, gated on the same calib frame Calibrate uses -- the page
                 // pulls that frame to draw on, so without one there is nothing to show.
@@ -8894,6 +8931,29 @@ function _trackNorm(doc) {
 }
 
 // Dexie first, network second. A miss is quiet and returns null.
+// Pull one match's routes from the relay and cache them. Same validation as the git
+// path -- a doc that fails it is not cached and not returned, so a malformed relay entry
+// degrades to the git copy instead of poisoning IndexedDB.
+async function _fetchRelayTracks(matchKey, relayAt) {
+    const url = relayUrl();
+    if (!url) return null;
+    try {
+        const r = await fetch(`${url}/tracks/${encodeURIComponent(matchKey)}`,
+                              { cache: 'no-store' });
+        if (!r.ok) return null;
+        const doc = await r.json();
+        if (doc?.schemaVersion !== 1 || !Array.isArray(doc.robots)) return null;
+        doc.key = matchKey;
+        doc.eventKey = doc.match?.eventKey || matchKey.split('_')[0];
+        doc._relayAt = relayAt;
+        try {
+            await db.matchTracks.put(doc);
+            routesRenderedFor = null;
+        } catch {}
+        return doc;
+    } catch { return null; }
+}
+
 async function loadMatchTracks(matchKey) {
     if (!matchKey) return null;
 
@@ -8907,6 +8967,28 @@ async function loadMatchTracks(matchKey) {
     // The manifest carries `exportedAt` per match and the doc carries the identical
     // stamp at generator.createdAt, so "is my copy current" is one string compare with
     // no extra request. A cached doc with no stamp predates this and is refetched once.
+    // THE RELAY IS THE LIVE PATH AND WINS WHEN IT HAS THE MATCH. rtrack.export posts
+    // routes there as it publishes, so a match reaches the app the moment the watcher
+    // finishes it -- no commit, no deploy. git stays the DURABLE path: the relay holds
+    // a week, past events and their archives live in public/tracks/ forever.
+    //
+    // Revalidated on the relay's own push timestamp rather than generator.createdAt,
+    // because those answer different questions: createdAt is when the export was built,
+    // `at` is when this copy was posted. Re-pushing an unchanged export still means the
+    // app should take it.
+    let relayAt = 0;
+    try { relayAt = (await relayTracksIndex()).get(matchKey) || 0; } catch {}
+    if (relayAt) {
+        try {
+            const hit = await db.matchTracks.get(matchKey);
+            if (hit && hit._relayAt === relayAt) return hit;
+        } catch {}
+        const doc = await _fetchRelayTracks(matchKey, relayAt);
+        if (doc) return doc;
+        // Fetch failed despite the index listing it: fall through to git rather than
+        // showing nothing. An expired entry between index and GET does exactly this.
+    }
+
     let want = null;
     try {
         const man = await loadTracksManifest();

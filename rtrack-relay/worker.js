@@ -19,6 +19,15 @@
 //   GET  /points/<videoId>       relay -> home
 //   POST /occl/<cameraId>        phone -> relay   occluder regions (JSON)
 //   GET  /occl/<cameraId>        relay -> home
+//   POST /tracks/<matchKey>      home  -> relay   exported routes (JSON)
+//   GET  /tracks/<matchKey>      relay -> app
+//
+// `tracks` is the one kind the APP reads rather than a curator. Routes used to reach
+// the app only through git: rtrack.export wrote public/tracks/ on the home machine and
+// GitHub Pages served whatever had been committed, so a match could be curated, solved,
+// projected and exported and still be invisible until someone remembered to commit.
+// Ten matches sat like that. Now the export posts here and the app caches to IndexedDB;
+// git remains the durable path for past events and their archives.
 //
 // `occl` rides the same path as `points`: the phone draws on a frame the home machine
 // posted to /calib, and the drawing comes back up. It was a file DOWNLOAD before, which
@@ -73,7 +82,7 @@
 // each, so an event day is nowhere near it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl']);
+const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl', 'tracks']);
 
 // KV caps values at 25 MiB. Curation bundles are ~1.8-7 MB depending on how many
 // frames and what JPEG quality rtrack.curate was told to use, so this is headroom
@@ -81,6 +90,14 @@ const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl']);
 // alternative is a silently truncated bundle that renders as a broken page.
 const MAX_BYTES = 24 * 1024 * 1024;
 const TTL_S = 86400;   // one event day
+
+// PER-KIND OVERRIDES. A curation bundle is worthless the day after the event, but
+// ROUTES are the deliverable -- an app that cached nothing on day one should still find
+// day one's routes on day three. They are also small (a 5 Hz export is ~170 KB against a
+// bundle's 4 MB), so a longer life costs almost nothing. Anything absent here gets
+// TTL_S.
+const TTL_BY_KIND = { tracks: 7 * 86400 };
+const ttlFor = kind => TTL_BY_KIND[kind] ?? TTL_S;
 
 // THE INDEX IS A KEY, NOT A list() CALL, and that is a hard requirement rather than an
 // optimisation. KV list() is capped at 1000 operations PER DAY on the free plan --
@@ -102,7 +119,8 @@ const INDEX_KEY = 'idx:manifest';
 async function touchIndex(env, kind, id, meta) {
   let m = {};
   try { m = (await env.RTRACK_KV.get(INDEX_KEY, 'json')) || {}; } catch { m = {}; }
-  m[`${kind}:${id}`] = { kind, id, ...meta, expires: Math.floor(Date.now() / 1000) + TTL_S };
+  m[`${kind}:${id}`] = { kind, id, ...meta,
+                         expires: Math.floor(Date.now() / 1000) + ttlFor(kind) };
   await env.RTRACK_KV.put(INDEX_KEY, JSON.stringify(m));
 }
 
@@ -191,7 +209,7 @@ export default {
       try { JSON.parse(body); } catch { return json({ ok: false, error: 'invalid JSON' }, 400); }
       const at = Date.now();
       await env.RTRACK_KV.put(kvKey, body, {
-        expirationTtl: TTL_S,
+        expirationTtl: ttlFor(kind),
         metadata: { bytes: body.length, at },
       });
       // After the value is stored, never before: a manifest entry for a value that failed

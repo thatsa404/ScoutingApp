@@ -104,7 +104,8 @@ def main(argv=None) -> int:
     sub = ap.add_subparsers(dest="cmd", required=True)
 
     for name, helptext in (("push-bundle", "upload a curation bundle"),
-                           ("push-calib", "upload a calibration frame")):
+                           ("push-calib", "upload a calibration frame"),
+                           ("push-tracks", "upload exported routes for the app")):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("ident", help="match key, or video id for calib")
         p.add_argument("--file", type=Path, default=None)
@@ -144,10 +145,16 @@ def main(argv=None) -> int:
         print(f"[relay] {r.status_code} {r.text[:120]}")
         return 0
 
-    if args.cmd in ("push-bundle", "push-calib"):
-        kind = "bundle" if args.cmd == "push-bundle" else "calib"
-        default = (C.STAGE3_DIR / f"{args.ident}_curate_frames.json" if kind == "bundle"
-                   else C.STAGE3_DIR / f"{args.ident}_calib_frame.json")
+    if args.cmd in ("push-bundle", "push-calib", "push-tracks"):
+        kind = {"push-bundle": "bundle", "push-calib": "calib",
+                "push-tracks": "tracks"}[args.cmd]
+        # Same shape as the wait-* destination table, and for the same reason: three
+        # kinds through a two-way ternary is where a wrong default would hide.
+        default = {
+            "bundle": C.STAGE3_DIR / f"{args.ident}_curate_frames.json",
+            "calib":  C.STAGE3_DIR / f"{args.ident}_calib_frame.json",
+            "tracks": C.STAGE3_DIR / f"{args.ident}.json",
+        }[kind]
         src = args.file or default
         if not src.exists():
             raise SystemExit(f"[relay] {src} not found")

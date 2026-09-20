@@ -286,6 +286,11 @@ def main(argv=None) -> int:
                          "(see build(); this published wrong routes once already)")
     ap.add_argument("--calib-from", default=None, metavar="VIDEO",
                     help="reuse another video's calibration (same camera)")
+    ap.add_argument("--no-relay", action="store_true",
+                    help="publish to public/tracks/ only, skipping the relay push. The "
+                         "relay is how routes reach the app without a commit; this is "
+                         "the escape hatch for rebuilding a back catalogue without "
+                         "filling it.")
     ap.add_argument("--publish", action="store_true",
                     help="also copy into ../public/tracks/ so the app can fetch it")
     args = ap.parse_args(argv)
@@ -315,6 +320,24 @@ def main(argv=None) -> int:
         print(f"[export] published -> {dest}")
         n = write_manifest(dest.parent)
         print(f"[export] manifest lists {n} match(es)")
+
+        # AND TO THE RELAY, because writing public/tracks/ only reaches an app someone
+        # has since committed and deployed. The watcher runs unattended: it curated,
+        # solved, projected and exported ten 2026mawor matches that stayed invisible in
+        # the app for exactly that reason. Pushing here makes the live path automatic
+        # and leaves git as the durable one for past events and their archives.
+        #
+        # Never fatal. A relay that is unreachable, unconfigured or full must not fail
+        # an export whose real output is already safely on disk.
+        if not args.no_relay:
+            try:
+                from . import relay as _relay
+                res = _relay.put("tracks", args.match, doc)
+                print(f"[export] relay -> tracks/{args.match} "
+                      f"({res.get('bytes', 0) / 1024:.0f} KB)")
+            except Exception as e:
+                print(f"[export] relay push skipped ({type(e).__name__}: {e}); "
+                      f"public/tracks/ still needs committing for this one")
     return 1 if problems else 0
 
 
