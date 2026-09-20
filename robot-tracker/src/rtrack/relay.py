@@ -58,6 +58,12 @@ def _env() -> tuple[str, str]:
     return url.rstrip("/"), tok
 
 
+# Every kind the worker accepts; keep in step with KINDS in rtrack-relay/worker.js.
+# Enumerated here ONCE so a new kind cannot be creatable but not clearable, which is
+# exactly what happened when occl and tracks were added.
+KINDS = ("bundle", "answer", "calib", "points", "occl", "tracks")
+
+
 def put(kind: str, ident: str, doc: dict) -> dict:
     url, tok = _env()
     body = json.dumps(doc, separators=(",", ":"))
@@ -119,7 +125,7 @@ def main(argv=None) -> int:
 
     p = sub.add_parser("index", help="what the relay currently holds")
     p = sub.add_parser("clear", help="delete one entry")
-    p.add_argument("kind", choices=["bundle", "answer", "calib", "points"])
+    p.add_argument("kind", choices=list(KINDS))
     p.add_argument("ident")
 
     args = ap.parse_args(argv)
