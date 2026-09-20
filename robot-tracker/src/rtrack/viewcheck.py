@@ -1,6 +1,6 @@
 """Stage 2a -- is the camera still in the pose the homography was fitted to?
 
-    uv run -m rtrack.viewcheck 2026necmp1_qm1 --calib-from 2026necmp1_qm1
+    uv run -m rtrack.viewcheck 2026necmp1_qm1 --calib-from 2026necmp1
 
 WHY THIS EXISTS. A static homography is a statement about ONE camera pose. The moment
 the broadcast cuts to a corner camera, zooms, or pans to follow a robot, every position

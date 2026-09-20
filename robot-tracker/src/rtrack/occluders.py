@@ -1,6 +1,15 @@
 """Field structures that HIDE robots, drawn once per camera in public/rtrack/occluders.html.
 
-    uv run -m rtrack.occluders --camera 2026necmp1_qm1 --check
+    uv run -m rtrack.occluders --camera 2026necmp1 --overlay <frame.png> --out check.png
+
+Drawn on a phone and returned through the relay:
+
+    uv run -m rtrack.relay push-calib 2026necmp1      # stage a frame to draw on
+    uv run -m rtrack.relay wait-occl 2026necmp1       # pull the drawing back here
+
+The camera name IS the calibration stem: rtrack.robots derives this filename from
+--calib-from and picks the regions up without being asked, so a drawing saved under any
+other name is silently ignored.
 
 WHAT THE FILE CONTAINS, and why it is shaped this way.
 

@@ -1,7 +1,7 @@
 {
  "schemaVersion": 1,
  "kind": "occluders",
- "camera": "2026necmp1_qm1",
+ "camera": "2026necmp1",
  "coordinates": "normalised-image",
  "frameSize": [
   1920,
@@ -125,5 +125,6 @@
     ]
    ]
   }
- ]
+ ],
+ "renamedFrom": "2026necmp1_qm1"
 }
