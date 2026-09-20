@@ -8571,7 +8571,10 @@ async function renderTracksTab() {
     const cams = (items || []).filter(it => it.kind === 'calib').map(it => it.id).sort();
     const occlOn = new Set((items || []).filter(it => it.kind === 'occl').map(it => it.id));
     const cameraBlock = cams.length ? `
-      <h4 style="margin:18px 0 6px;font-size:0.9em;color:#94a3b8;">Cameras</h4>
+      <div style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
+      <h4 style="margin:0 0 2px;font-size:0.9em;color:#e2e8f0;">Cameras</h4>
+      <p style="margin:0 0 8px;font-size:0.76em;color:#64748b;">
+        Done once per camera, then reused by every match shot on it.</p>
       <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
         <tr style="color:#64748b;text-align:left;">
           <th style="padding:6px 4px;">Camera</th>
@@ -8588,10 +8591,11 @@ async function renderTracksTab() {
             ${act('Occluders', q('occluders', 'video', id), false)}
           </td>
         </tr>`).join('')}
-      </table>` : '';
+      </table></div>` : '';
 
     body.innerHTML = `
       <p style="font-size:0.82em;margin:0 0 10px;">${relayNote}</p>
+      ${cameraBlock}
       <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
         <tr style="color:#64748b;text-align:left;">
           <th style="padding:6px 4px;">Match</th>
@@ -8665,7 +8669,6 @@ async function renderTracksTab() {
             </tr>`;
         }).join('')}
       </table>
-      ${cameraBlock}
       <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
         <b>Cameras</b> lists every camera the relay holds a frame for, pushed with
         <code>rtrack.relay push-calib &lt;camera&gt;</code>. Both tools describe the
