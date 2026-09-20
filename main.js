@@ -8564,6 +8564,32 @@ async function renderTracksTab() {
     const q = (page, idParam, id) =>
         `${base}rtrack/${page}.html?relay=${encodeURIComponent(relay)}&${idParam}=${encodeURIComponent(id)}`;
 
+    // Camera-level work, listed on its own and deliberately NOT event-filtered: a
+    // camera id is whatever the calibration was named after, often a bare video id, and
+    // filtering these by event prefix is what hid 2026mawor's only camera. Anything the
+    // relay holds a calib frame for can be calibrated or have occluders drawn on it.
+    const cams = (items || []).filter(it => it.kind === 'calib').map(it => it.id).sort();
+    const occlOn = new Set((items || []).filter(it => it.kind === 'occl').map(it => it.id));
+    const cameraBlock = cams.length ? `
+      <h4 style="margin:18px 0 6px;font-size:0.9em;color:#94a3b8;">Cameras</h4>
+      <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
+        <tr style="color:#64748b;text-align:left;">
+          <th style="padding:6px 4px;">Camera</th>
+          <th style="padding:6px 4px;">Occluders</th>
+          <th style="padding:6px 4px;text-align:right;">Actions</th>
+        </tr>
+        ${cams.map(id => `<tr style="border-top:1px solid #1e293b;">
+          <td style="padding:7px 4px;font-weight:600;">${id}</td>
+          <td style="padding:7px 4px;">${occlOn.has(id)
+              ? pill('sent · pull with wait-occl', '#22c55e')
+              : '<span style="color:#64748b;">not drawn</span>'}</td>
+          <td style="padding:7px 4px;text-align:right;white-space:nowrap;">
+            ${act('Calibrate', q('calibrate', 'video', id), false)}
+            ${act('Occluders', q('occluders', 'video', id), false)}
+          </td>
+        </tr>`).join('')}
+      </table>` : '';
+
     body.innerHTML = `
       <p style="font-size:0.82em;margin:0 0 10px;">${relayNote}</p>
       <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
@@ -8639,12 +8665,17 @@ async function renderTracksTab() {
             </tr>`;
         }).join('')}
       </table>
+      ${cameraBlock}
       <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
-        <b>Calibrate</b> and <b>Occluders</b> appear when a frame has been pushed with
-        <code>rtrack.relay push-calib</code>. Both describe the CAMERA, not the match, so
-        they are done once per camera and reused: a calibration maps pixels to field
-        metres, occluders mark what robots disappear behind. Occluders come back with
-        <code>rtrack.relay wait-occl &lt;camera&gt;</code>.
+        <b>Cameras</b> lists every camera the relay holds a frame for, pushed with
+        <code>rtrack.relay push-calib &lt;camera&gt;</code>. Both tools describe the
+        CAMERA, not the match, so they are done once and reused across every match shot
+        on it: a calibration maps pixels to field metres, occluders mark what robots
+        disappear behind. Drawn occluders come back with
+        <code>rtrack.relay wait-occl &lt;camera&gt;</code>, which writes
+        <code>calib/&lt;camera&gt;_occluders.json</code> -- the name the solver looks for
+        on its own. Keep the camera id in the tool EXACTLY as listed here, or the file
+        lands under a name nothing reads.
         <br><br>
         <b>Models</b> is how many of the match's teams the appearance gallery already knows.
         At 6/6 the tracker labels the match ~84% correctly before anyone touches it; at 0/6
