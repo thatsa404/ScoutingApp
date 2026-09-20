@@ -1563,12 +1563,17 @@ async function renderMatchTracks(matchKey) {
         </div>
         <div id="mtTeams" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
         <div style="margin-top:8px;">
+          <button id="mtFull" title="Open this route view full screen"
+                  style="padding:4px 11px; font-size:12px; border-radius:6px;
+                         border:1px solid #334155; background:transparent; color:#94a3b8;
+                         cursor:pointer;">⛶ Full screen</button>
           <button id="mtAuto" style="padding:4px 11px; font-size:12px; border-radius:6px;
                   cursor:pointer; border:1px solid #334155; background:transparent;
                   color:#94a3b8; font-weight:600;">Auto only</button>
           <span id="mtAutoNote" style="color:#64748b; font-size:11px; margin-left:8px;"></span>
         </div>`;
 
+    applyFieldOrientation(document.getElementById('mtWrap'), doc);
     const img = document.getElementById('mtImg');
     const cv  = document.getElementById('mtCanvas');
     const shown = new Set(doc.robots.map(r => String(r.team)));
@@ -1605,6 +1610,13 @@ async function renderMatchTracks(matchKey) {
         };
     });
 
+    const fullBtn = document.getElementById('mtFull');
+    if (fullBtn) fullBtn.onclick = () => window.openRoutesFull(doc, {
+        // Hand over the CURRENT view, not a default one: whatever teams are shown and
+        // whether auto-only is on should survive the jump to full screen.
+        teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
+        tMax: autoOnly ? autoEnd : null,
+    });
     const autoBtn = document.getElementById('mtAuto');
     const autoNote = document.getElementById('mtAutoNote');
     const syncAuto = () => {
@@ -8420,7 +8432,11 @@ async function _relayIndex(url) {
 async function renderTracksTab() {
     const host = document.getElementById('tools-tab-tracks');
     if (!host) return;
-    const relay = (localStorage.getItem(RELAY_KEY) || '').trim().replace(/\/+$/, '');
+    // Baked default last, matching the precedence in public/rtrack/*.html. main.js is
+    // bundled so it can read import.meta.env directly; the standalone curator pages
+    // cannot, and get the same value through the generated rtrack/relay.js.
+    const relay = ((localStorage.getItem(RELAY_KEY)
+                    || import.meta.env.VITE_RTRACK_RELAY || '')).trim().replace(/\/+$/, '');
     const eventKey = (document.getElementById('eventKeyInput')?.value || '').trim().toLowerCase();
 
     host.innerHTML = `
@@ -8819,6 +8835,38 @@ window.trackColourFor = function (robot, i) {
 // Field metres -> normalized 0-1 on the field image. The mapping ships INSIDE the track
 // file (fieldRectPx / pxPerMeter / imageSize) precisely so the app never needs anything
 // from robot-tracker/calib/, which is not deployed.
+// The field PNG is drawn with y=0 at the BOTTOM. When the camera sat behind the y=FW
+// touchline instead -- which is the case on 2026necmp1 -- everything in the plot is
+// upside-down relative to what anyone watching the video saw, and reading a route means
+// mentally inverting it.
+//
+// `cameraSide` comes from which half of the field the camera CANNOT fully see: a side
+// camera loses its own corners to the edge of its field of view, not the far ones.
+// See project.visible_region for the two measurements that establish it.
+//
+// A 180-DEGREE ROTATION, NOT A VERTICAL FLIP. Flipping y alone puts the camera's side
+// at the bottom but mirrors left and right, so a robot that went right on screen goes
+// left in the plot -- worse than leaving it alone, because it looks correct. Rotating
+// maps (x,y) -> (FL-x, FW-y) and preserves handedness as seen from behind the camera.
+//
+// `cameraSide` is derived per calibration (see project.visible_region); which end a
+// camera sits at is a property of the venue, not of the sport. Null means unknown, and
+// unknown must draw as-is rather than guess.
+// ROTATE THE WHOLE COMPOSITE, NOT THE COORDINATES. Transforming field metres before
+// projection was the first attempt and it is wrong: the PNG depicts fixed red and blue
+// ends, so rotating only the points draws every robot at the opposite alliance's end of
+// a field that did not move. The image and the overlay have to turn together, which is
+// one CSS transform on the element that contains both -- and the canvas needs no change
+// at all. It is also why nothing here draws text: rotated labels would be upside down,
+// and the team names live in chips outside the canvas.
+function _trackFlip(doc) {
+    return doc?.field?.cameraSide === 'high-y';
+}
+// Applied to the wrapper holding the field <img> and its <canvas>.
+function applyFieldOrientation(el, doc) {
+    if (!el) return;
+    el.style.transform = _trackFlip(doc) ? 'rotate(180deg)' : '';
+}
 function _trackNorm(doc) {
     const f = doc.field, R = f.fieldRectPx, ppm = f.pxPerMeter;
     const [W, H] = f.imageSize;
@@ -8829,9 +8877,25 @@ function _trackNorm(doc) {
 // Dexie first, network second. A miss is quiet and returns null.
 async function loadMatchTracks(matchKey) {
     if (!matchKey) return null;
+
+    // REVALIDATE, DO NOT JUST CACHE. This used to return any cached doc outright, which
+    // was correct while a match was exported once and never again. It is wrong now: the
+    // relay watcher republishes a match every time its curation improves, and a browser
+    // that had cached the first version would show those stale routes forever -- across
+    // reloads, because Dexie persists. The symptom is silent and looks like the
+    // pipeline failing to publish.
+    //
+    // The manifest carries `exportedAt` per match and the doc carries the identical
+    // stamp at generator.createdAt, so "is my copy current" is one string compare with
+    // no extra request. A cached doc with no stamp predates this and is refetched once.
+    let want = null;
+    try {
+        const man = await loadTracksManifest();
+        want = (man.matches || []).find(m => m.key === matchKey)?.exportedAt || null;
+    } catch { /* no manifest: fall back to trusting the cache */ }
     try {
         const hit = await db.matchTracks.get(matchKey);
-        if (hit) return hit;
+        if (hit && (!want || hit.generator?.createdAt === want)) return hit;
     } catch { /* table may not exist on a stale schema; fall through to network */ }
 
     const url = `${import.meta.env.BASE_URL}tracks/${matchKey}.json`;
@@ -8861,6 +8925,175 @@ window.loadMatchTracks = loadMatchTracks;
 
 // Size a track canvas against its backing image. Same guards as _fSizeCanvas: the rect
 // can be zero while hidden, and the image may or may not have loaded yet.
+// ── full-screen routes ─────────────────────────────────────────────────────────
+// A route plot inside the match modal is ~600 px wide on a laptop and less on a phone,
+// which is fine for "did they cross the field" and useless for anything finer -- two
+// robots working the same corner are a few pixels apart there. This opens the same
+// render at window size, reusing renderFieldRoutes rather than growing a second one,
+// so every fix (visibility shading, camera orientation, auto clipping) applies to both.
+let _fsRoutes = null;
+
+function closeRoutesFull() {
+    const el = document.getElementById('routesFull');
+    if (el) el.remove();
+    window.removeEventListener('resize', _fsRoutes || (() => {}));
+    _fsRoutes = null;
+    document.body.style.overflow = '';
+}
+window.closeRoutesFull = closeRoutesFull;
+
+window.openRoutesFull = function (doc, opts = {}) {
+    if (!doc) return;
+    closeRoutesFull();
+    const title = doc.match?.key || doc.key || 'routes';
+
+    // STATE IS SEEDED FROM THE CALLER, then owned here. Full screen is not a bigger
+    // copy of the small picture -- it is where the picture is actually read -- so it
+    // needs the same controls. They are rebuilt rather than borrowed from the match
+    // modal because the team Routes tab has no controls to borrow, and one path
+    // serving both entry points is worth the few lines it repeats.
+    const all = (doc.robots || []).map(r => String(r.team));
+    let shown = new Set(opts.teams ? [...opts.teams].map(String) : all);
+    let autoOnly = opts.tMax != null;
+    let arrows = opts.arrows !== false;
+    let tMin = Infinity, tMax = -Infinity;
+    for (const r of doc.robots || []) for (const sm of r.samples || []) {
+        if (sm.t < tMin) tMin = sm.t;
+        if (sm.t > tMax) tMax = sm.t;
+    }
+    if (!isFinite(tMin)) { tMin = 0; tMax = 1; }
+    let tNow = (opts.tNow != null) ? opts.tNow : tMax;
+    let playing = false, raf = 0;
+    const autoEnd = autoEndOf(doc);
+    const BASE = import.meta.env.BASE_URL;
+
+    const el = document.createElement('div');
+    el.id = 'routesFull';
+    el.style.cssText = 'position:fixed; inset:0; z-index:9000; background:#0b1220;'
+        + 'display:flex; flex-direction:column; padding:10px; gap:8px;';
+    el.innerHTML = [
+        '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">',
+        '  <b style="font-size:15px;">' + title + '</b>',
+        '  <span id="rfNote" style="color:#64748b; font-size:12px;"></span>',
+        '  <span style="flex:1;"></span>',
+        '  <button id="rfArrows" style="padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer;"></button>',
+        '  <button id="rfAuto" style="padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer;"></button>',
+        '  <button onclick="closeRoutesFull()" style="padding:6px 14px; border-radius:8px;',
+        '          border:1px solid #334155; background:#1e293b; color:#e2e8f0; cursor:pointer;">Close</button>',
+        '</div>',
+        '<div id="rfTeams" style="display:flex; gap:6px; flex-wrap:wrap;"></div>',
+        '<div style="position:relative; flex:1; min-height:0; display:flex;',
+        '            align-items:center; justify-content:center;">',
+        '  <div id="rfInner" style="position:relative; max-width:100%; max-height:100%;">',
+        '    <img id="rfImg" src="' + BASE + doc.field.imageRef + '" alt="field"',
+        '         style="display:block; max-width:100%; max-height:100%; width:auto; height:auto;">',
+        '    <canvas id="rfCv" style="position:absolute; inset:0; width:100%; height:100%;"></canvas>',
+        '  </div>',
+        '</div>',
+        '<div style="display:flex; gap:10px; align-items:center;">',
+        '  <button id="rfPlay" style="padding:5px 12px; font-size:13px; border-radius:6px; cursor:pointer;',
+        '          border:1px solid #334155; background:transparent; color:#94a3b8;">&#9654;</button>',
+        '  <input type="range" id="rfScrub" min="0" max="1000" value="1000" style="flex:1;">',
+        '  <span id="rfClock" style="font-variant-numeric:tabular-nums; font-size:12px;',
+        '        color:#94a3b8; min-width:70px; text-align:right;">full</span>',
+        '</div>',
+    ].join('\n');
+    document.body.appendChild(el);
+    document.body.style.overflow = 'hidden';
+
+    const img = el.querySelector('#rfImg'), cv = el.querySelector('#rfCv');
+    applyFieldOrientation(el.querySelector('#rfInner'), doc);
+    const vf = doc.field?.visibleFrac;
+    el.querySelector('#rfNote').textContent =
+        (typeof vf === 'number') ? (Math.round(100 * vf) + '% of the field visible') : '';
+
+    const paint = () => {
+        if (!_trackSizeCanvas(img, cv)) return;
+        renderFieldRoutes(cv, doc, {
+            teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
+            tMax: autoOnly ? autoEnd : null, arrows,
+        });
+    };
+    const style = (b, on) => {
+        b.style.border = '1px solid ' + (on ? '#3b82f6' : '#334155');
+        b.style.background = on ? '#1e3a5f' : 'transparent';
+        b.style.color = on ? '#60a5fa' : '#94a3b8';
+    };
+    const setT = (t) => {
+        tNow = Math.max(tMin, Math.min(tMax, t));
+        el.querySelector('#rfScrub').value =
+            String(Math.round((tNow - tMin) / Math.max(tMax - tMin, 1e-6) * 1000));
+        el.querySelector('#rfClock').textContent =
+            (tNow >= tMax) ? 'full' : (tNow.toFixed(1) + 's');
+        paint();
+    };
+
+    el.querySelector('#rfTeams').innerHTML = (doc.robots || []).map((r, k) => {
+        const t = String(r.team), c = window.trackColourFor(r, k);
+        return '<button data-team="' + t + '" style="padding:4px 10px; font-size:12px;'
+             + ' border-radius:999px; cursor:pointer; border:1px solid ' + c
+             + '; background:transparent; color:' + c + ';">' + t + '</button>';
+    }).join('');
+    const syncTeams = () => el.querySelectorAll('#rfTeams button').forEach(
+        o => { o.style.opacity = shown.has(o.dataset.team) ? '1' : '0.32'; });
+    el.querySelectorAll('#rfTeams button').forEach(b => {
+        b.onclick = () => {
+            const t = b.dataset.team;
+            if (shown.has(t)) shown.delete(t); else shown.add(t);
+            // Hiding everything leaves a blank field and reads as broken; treat the
+            // last deselection as "show all again", which is what the click meant.
+            if (!shown.size) shown = new Set(all);
+            syncTeams(); paint();
+        };
+    });
+    syncTeams();
+
+    const arrowsBtn = el.querySelector('#rfArrows');
+    const autoBtn = el.querySelector('#rfAuto');
+    const syncBtns = () => {
+        arrowsBtn.textContent = 'Direction ' + (arrows ? 'on' : 'off');
+        autoBtn.textContent = autoOnly ? ('Auto only (' + autoEnd.toFixed(0) + 's)') : 'Whole match';
+        style(arrowsBtn, arrows); style(autoBtn, autoOnly);
+    };
+    syncBtns();
+    arrowsBtn.onclick = () => { arrows = !arrows; syncBtns(); paint(); };
+    autoBtn.onclick = () => {
+        autoOnly = !autoOnly; syncBtns();
+        if (autoOnly && tNow > autoEnd) setT(autoEnd); else paint();
+    };
+
+    el.querySelector('#rfScrub').oninput = (e) =>
+        setT(tMin + (e.target.value / 1000) * (tMax - tMin));
+    const playBtn = el.querySelector('#rfPlay');
+    const step = (last) => {
+        if (!playing) return;
+        const now = performance.now();
+        setT(tNow + (now - last) / 1000);
+        if (tNow >= tMax) { playing = false; playBtn.innerHTML = '&#9654;'; return; }
+        raf = requestAnimationFrame(() => step(now));
+    };
+    playBtn.onclick = () => {
+        playing = !playing;
+        playBtn.innerHTML = playing ? '&#10073;&#10073;' : '&#9654;';
+        if (playing) {
+            if (tNow >= tMax) setT(tMin);
+            raf = requestAnimationFrame(() => step(performance.now()));
+        } else cancelAnimationFrame(raf);
+    };
+
+    if (img.complete && img.naturalWidth) setT(tNow);
+    else img.addEventListener('load', () => setT(tNow), { once: true });
+    _fsRoutes = paint;
+    window.addEventListener('resize', paint);
+    const onKey = (e) => {
+        if (e.key === 'Escape') {
+            closeRoutesFull();
+            document.removeEventListener('keydown', onKey);
+        }
+    };
+    document.addEventListener('keydown', onKey);
+};
+
 function _trackSizeCanvas(img, canvas) {
     const r = img.getBoundingClientRect();
     if (!r.width || !r.height) return false;
@@ -8878,7 +9111,13 @@ function _trackSizeCanvas(img, canvas) {
 // rulebook value rather than drawing nothing.
 const AUTO_END_DEFAULT = 20;
 function autoEndOf(doc) {
-    const v = doc?.sampling?.phases?.autoEndT;
+    // `phases` is a TOP-LEVEL key of the export, not a child of `sampling`. This read
+    // the nested path for a while and therefore always got undefined, silently falling
+    // back to the constant below -- which happens to equal C.AUTO_S, so the auto toggle
+    // looked correct while ignoring the file entirely. Both paths are accepted now: the
+    // real one first, the mistaken one after, so nothing that may have been written in
+    // the wrong shape is orphaned.
+    const v = doc?.phases?.autoEndT ?? doc?.sampling?.phases?.autoEndT;
     return (typeof v === 'number' && v > 0) ? v : AUTO_END_DEFAULT;
 }
 
@@ -8898,6 +9137,74 @@ function renderFieldRoutes(canvas, doc, opts = {}) {
     // t <= autoEndT. Clipping here rather than filtering the doc keeps one source of
     // truth for the routes and lets the caller toggle without re-fetching.
     const tMax = (opts.tMax === undefined || opts.tMax === null) ? null : opts.tMax;
+    // Direction is on by default: it is information the plot otherwise loses entirely.
+    const arrows = opts.arrows !== false;
+
+    // BLIND AREA FIRST, so routes draw on top of it and stay legible.
+    //
+    // A route that stops dead at the far-left corner looks like the tracker failing and
+    // is nothing of the sort: on the 2026necmp1 camera 13.5% of the field is simply off
+    // frame, almost all of it the two far corners. Without this the missing data is
+    // indistinguishable from lost data, and a reader concludes something about a robot
+    // that was never observable.
+    //
+    // Drawn as the field MINUS the visible polygon, using the even-odd fill rule: the
+    // outer rectangle and the polygon together leave only the unseen part filled. A doc
+    // with no polygon (older export, or a camera whose visibility could not be computed)
+    // draws nothing at all -- unknown visibility must never render as "all visible".
+    const vis = doc.field?.visiblePolyM;
+    if (opts.visibility !== false && Array.isArray(vis) && vis.length >= 3) {
+        const [FL, FW] = doc.field.sizeM;
+        const poly = (arr) => arr.forEach(([x, y], k) => {
+            const [nx, ny] = N(x, y);
+            k ? ctx.lineTo(nx * W, ny * H) : ctx.moveTo(nx * W, ny * H);
+        });
+        ctx.save();
+        // CLIP to the unseen area, then paint freely inside it. Building the region as
+        // field-rect + visible-polygon under the even-odd rule leaves exactly the blind
+        // part selected; clipping rather than filling lets the hatch below be drawn as
+        // plain lines across the whole canvas without any per-wedge geometry.
+        ctx.beginPath();
+        poly([[0, 0], [FL, 0], [FL, FW], [0, FW]]);
+        ctx.closePath();
+        poly(vis);
+        ctx.closePath();
+        ctx.clip('evenodd');
+
+        // LIGHTEN, DO NOT DARKEN. The obvious treatment -- a dark wash over the unseen
+        // area -- barely registers, because 2026-field.png is itself dark: darkening a
+        // dark image cannot create a boundary. Rendering the three candidates over the
+        // real field art settled it; only lifting the region off the background reads
+        // as a mask at a glance.
+        ctx.fillStyle = 'rgba(170,180,190,0.22)';
+        ctx.fillRect(0, 0, W, H);
+        // Diagonal hatch over the wash, because a plain lighter patch reads as
+        // EMPHASIS -- the opposite of the meaning. Hatching is not a texture the field
+        // can produce accidentally, so it says "no data" rather than "look here", and
+        // it survives whatever is underneath.
+        ctx.strokeStyle = 'rgba(220,228,235,0.55)';
+        ctx.lineWidth = 1;
+        const step = Math.min(14, Math.max(6, Math.round(W / 110)));
+        ctx.beginPath();
+        for (let d = -H; d < W + H; d += step) {
+            ctx.moveTo(d, 0);
+            ctx.lineTo(d + H, H);
+        }
+        ctx.stroke();
+        ctx.restore();
+
+        // Boundary last and unclipped, so the edge stays crisp rather than being
+        // half-covered by the hatch that ends on it.
+        ctx.save();
+        ctx.beginPath();
+        poly(vis);
+        ctx.closePath();
+        ctx.strokeStyle = 'rgba(226,232,240,0.75)';
+        ctx.setLineDash([5, 4]);
+        ctx.lineWidth = 1.5;
+        ctx.stroke();
+        ctx.restore();
+    }
 
     doc.robots.forEach((r, i) => {
         if (only && !only.has(String(r.team))) return;
@@ -8926,6 +9233,48 @@ function renderFieldRoutes(canvas, doc, opts = {}) {
             else ctx.lineTo(X, Y);
         }
         if (started) ctx.stroke();
+
+        // DIRECTION ARROWS. A route is a closed scribble without them: the same loop
+        // driven clockwise and anticlockwise means different things about where a robot
+        // collected and where it scored, and the polyline alone cannot say which.
+        //
+        // Spaced by DISTANCE ALONG THE PATH rather than by sample index, so a robot
+        // sitting still does not pile up arrowheads on one spot while a fast traverse
+        // gets none. Skipped across gaps for the same reason the line is.
+        if (arrows) {
+            const step = Math.max(34, Math.min(W, H) / 9);
+            let acc = step * 0.6, px = null, py = null;
+            ctx.globalAlpha = 0.95;
+            ctx.fillStyle = col;
+            for (let k = 0; k < pts.length; k++) {
+                const p = pts[k];
+                if (trailOnly && tNow !== null && p.t > tNow) break;
+                const [nx, ny] = N(p.x, p.y);
+                const X = nx * W, Y = ny * H;
+                const broke = k && spans(pts[k - 1], p);
+                if (px !== null && !broke) {
+                    const dx = X - px, dy = Y - py;
+                    const d = Math.hypot(dx, dy);
+                    acc += d;
+                    // Only where the robot is actually travelling: a heading computed
+                    // from a sub-pixel step is noise pointing nowhere in particular.
+                    if (acc >= step && d > 1.2) {
+                        acc = 0;
+                        const a = Math.atan2(dy, dx), L = 7, Wd = 4.2;
+                        ctx.beginPath();
+                        ctx.moveTo(X, Y);
+                        ctx.lineTo(X - L * Math.cos(a) + Wd * Math.sin(a),
+                                   Y - L * Math.sin(a) - Wd * Math.cos(a));
+                        ctx.lineTo(X - L * Math.cos(a) - Wd * Math.sin(a),
+                                   Y - L * Math.sin(a) + Wd * Math.cos(a));
+                        ctx.closePath();
+                        ctx.fill();
+                    }
+                } else if (broke) acc = step * 0.6;
+                px = X; py = Y;
+            }
+            ctx.globalAlpha = 1;
+        }
 
         if (dots && tNow !== null) {
             let cur = null;
@@ -11111,7 +11460,14 @@ window.toggleRoutesAuto = function () {
     routesRenderedFor = null;
     if (activeTeamData) renderTeamRoutesTab(activeTeamData.teamNumber);
 };
-let _tracksManifest = null;   // cached for the session
+let _tracksManifest = null;
+let _tracksManifestAt = 0;
+// The manifest is the freshness signal for every cached track doc (see
+// loadMatchTracks), so caching it for the whole session would defeat the revalidation
+// it enables: with the app left open during an event, the stamp it compares against
+// would never move. A short TTL instead. 60s matches rtrack.watch's poll interval --
+// nothing can appear faster than the watcher publishes it -- and the file is a few KB.
+const TRACKS_MANIFEST_TTL_MS = 60_000;
 
 /**
  * What tracks exist, from public/tracks/index.json.
@@ -11124,17 +11480,19 @@ let _tracksManifest = null;   // cached for the session
  * before downloading anything.
  */
 async function loadTracksManifest(force = false) {
-    if (_tracksManifest && !force) return _tracksManifest;
+    const fresh = Date.now() - _tracksManifestAt < TRACKS_MANIFEST_TTL_MS;
+    if (_tracksManifest && fresh && !force) return _tracksManifest;
     try {
         const url = `${import.meta.env.BASE_URL}tracks/index.json`;
         const head = await fetch(url, { method: 'HEAD' });
         const ct = head.headers.get('content-type') || '';
-        if (!head.ok || !ct.includes('json')) return (_tracksManifest = { matches: [] });
+        if (!head.ok || !ct.includes('json')) { _tracksManifestAt = Date.now(); return (_tracksManifest = { matches: [] }); }
         const resp = await fetch(url);
-        if (!resp.ok) return (_tracksManifest = { matches: [] });
+        if (!resp.ok) { _tracksManifestAt = Date.now(); return (_tracksManifest = { matches: [] }); }
         const doc = await resp.json();
         _tracksManifest = (doc && Array.isArray(doc.matches)) ? doc : { matches: [] };
     } catch { _tracksManifest = { matches: [] }; }
+    _tracksManifestAt = Date.now();
     return _tracksManifest;
 }
 window.loadTracksManifest = loadTracksManifest;
@@ -11225,7 +11583,9 @@ async function renderTeamRoutesTab(teamNumber) {
                   ${routesAutoOnly ? `· <span style="color:#60a5fa;">first ${autoEndOf(d).toFixed(0)}s</span>` : ''}
                 </span>
               </div>
-              <div style="position:relative; width:100%; border-radius:6px; overflow:hidden;">
+              <div class="trBox" data-i="${i}" title="Open full screen"
+                   style="position:relative; width:100%; border-radius:6px;
+                          overflow:hidden; cursor:zoom-in;">
                 <img class="trImg" data-i="${i}"
                      src="${import.meta.env.BASE_URL}${d.field.imageRef}" alt="field"
                      style="display:block; width:100%; height:auto;">
@@ -11239,6 +11599,14 @@ async function renderTeamRoutesTab(teamNumber) {
     host.querySelectorAll('.trCv').forEach(cv => {
         const i = Number(cv.dataset.i);
         const img = host.querySelector(`.trImg[data-i="${i}"]`);
+        applyFieldOrientation(img.parentElement, mine[i]);
+        // The whole tile opens full screen. A small multiple is for spotting which
+        // match is worth a closer look; this is the closer look.
+        const box = host.querySelector(`.trBox[data-i="${i}"]`);
+        if (box) box.onclick = () => window.openRoutesFull(mine[i], {
+            teams: only, tNow: null, dots: false,
+            tMax: routesAutoOnly ? autoEndOf(mine[i]) : null,
+        });
         const paint = () => {
             if (_trackSizeCanvas(img, cv)) {
                 // autoEndOf reads sampling.phases.autoEndT from the export and falls

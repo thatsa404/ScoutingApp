@@ -36,7 +36,7 @@ def colour(alliance: str | None):
 
 
 def render(stem: str, tracks_p: Path, out_mp4: Path, plot_p: Path,
-           show_conf: bool) -> None:
+           show_conf: bool, team_alli: dict | None = None) -> None:
     rows = load(tracks_p)
     if not rows:
         raise SystemExit(f"{tracks_p} is empty")
@@ -76,7 +76,15 @@ def render(stem: str, tracks_p: Path, out_mp4: Path, plot_p: Path,
         for d in row["dets"]:
             x1, y1, x2, y2 = (int(v) for v in d["xyxy"])
             tid = d["tid"]
-            col = colour(d.get("alliance"))
+            # COLOUR BY THE TEAM'S REAL ALLIANCE, not the per-detection hue.
+            # Alliance is not inferred once identity is known -- TBA says which three
+            # teams are red. Hue is only the EVIDENCE used to get there, and drawing
+            # evidence as though it were the conclusion put 5-7% of boxes in the wrong
+            # colour and sent a reviewer hunting a bug that was never in the data.
+            # rtrack.export has always used the TBA side; only this render did not.
+            _tm = d.get("team")
+            _al = (team_alli or {}).get(str(_tm)) if _tm else None
+            col = colour(_al or d.get("alliance"))
             if d.get("alliance") == "red":
                 n_r += 1
             elif d.get("alliance") == "blue":
@@ -166,6 +174,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("video")
     ap.add_argument("--tracks", type=Path, default=None)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--match", default=None,
+                    help="TBA match key. Colours boxes by each team's REAL "
+                         "alliance instead of the per-detection bumper hue.")
     ap.add_argument("--no-conf", action="store_true")
     args = ap.parse_args(argv)
 
@@ -173,8 +184,15 @@ def main(argv: list[str] | None = None) -> int:
     stem = video_id(args.video)
     tracks = args.tracks or (C.STAGE1_DIR / f"{stem}_tracks.jsonl")
     out = args.out or (C.STAGE1_DIR / f"{stem}_overlay.mp4")
+    ta = None
+    if args.match:
+        from . import tba as _tba
+        _mm = _tba.match_by_key(args.match)
+        ta = {str(t): "red" for t in _mm["red"]}
+        ta.update({str(t): "blue" for t in _mm["blue"]})
+        print(f"[overlay] colouring by TBA alliance for {args.match}")
     render(stem, tracks, out, C.STAGE1_DIR / f"{stem}_counts.png",
-           show_conf=not args.no_conf)
+           show_conf=not args.no_conf, team_alli=ta)
     return 0
 
 

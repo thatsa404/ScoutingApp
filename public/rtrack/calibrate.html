@@ -179,6 +179,12 @@
   </section>
 </main>
 
+<!-- Relay defaults, generated at build time from VITE_RTRACK_RELAY (see vite.config.js).
+     Loaded before the page script so a phone handed to a scout at an event needs no
+     setup at all. Absent in a checkout with no VITE_RTRACK_RELAY set, in which case the
+     page behaves exactly as it did before and asks for the URL. -->
+<script src="relay.js"></script>
+
 <script>
 const $ = s => document.querySelector(s);
 const ID_PARAM = 'video', ID_FIELD = '#vid';
@@ -200,8 +206,10 @@ function needToken(msg) {
 }
 const say = (el, t, cls = '') => { el.hidden = false; el.className = 'msg ' + cls; el.textContent = t; };
 
-$('#relay').value = localStorage.getItem('rtrackRelay') || '';
-$('#token').value = localStorage.getItem('rtrackToken') || '';
+// Baked default LAST, so it fills a fresh device but never overrides a deliberate
+// choice this device has already made. Same precedence as curate.html's LS.
+$('#relay').value = localStorage.getItem('rtrackRelay') || window.RTRACK_DEFAULT_RELAY || '';
+$('#token').value = localStorage.getItem('rtrackToken') || window.RTRACK_DEFAULT_TOKEN || '';
 if ($('#token').value) $('#tokRow').hidden = false;
 $('#vid').value   = localStorage.getItem('rtrackCalibVid') || '';
 // Straight to the Tracks queue, like the curator. history.back() is no use: the app opens

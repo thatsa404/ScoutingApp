@@ -53,6 +53,8 @@ import json
 from collections import Counter, defaultdict
 from pathlib import Path
 
+from . import config as C
+
 SCHEMA = 1
 MATCH_PX = 90.0        # a label must land this close to a detection centre
 
@@ -256,6 +258,100 @@ def crossing_cuts(pins: dict[int, str], rows, label_t: dict[int, list[float]],
     return {k: sorted(set(v)) for k, v in cuts.items()}, found
 
 
+# Two boxes on ONE robot is a different problem from two robots, and the separation
+# between them is not subtle. Measured across 20 curated 2026necmp1 matches, every pair
+# of co-detected tracks the curator gave the SAME team sits 39-118 px apart -- 0.20 to
+# 0.71 box widths, with box IoU up to 0.56. The codebase's own measurements of pairs
+# that really are two robots: 218-1206 px in custody_conflicts, 471 px at IoU ~0 in
+# split_conflicts. A wide empty gap in between.
+#
+# 1.0 box width is the same constant custody_conflicts already uses to make this exact
+# distinction, kept deliberately rather than re-tuned to the observed 0.71 -- the point
+# is that one threshold serves both places, not that it is fitted tightly here.
+MERGE_SEP_WIDTHS = 1.0
+MERGE_MIN_FRAMES = 2
+
+
+def merge_duplicates(pins: dict[int, str], rows, sep_widths: float = MERGE_SEP_WIDTHS):
+    """Fuse tracks the curator labelled the same team while both were on screen.
+
+    WHY THIS RUNS BEFORE split_conflicts. That function assumes a same-team
+    co-detection means the CURATOR WAS WRONG -- two robots on screen, only one can hold
+    the label -- and demotes the weaker pin to a preference. For genuinely distant pairs
+    that is right. For a robot the detector fired on twice, low and high, it throws away
+    a correct answer and leaves the duplicate free to take a different team, which is
+    strictly worse than either merging or ignoring it.
+    
+    The curator is the authority here, not the geometry. solve.py's hard constraint says
+    "co-detected tracks are different robots. This is geometry, not inference" -- true of
+    two boxes on two robots, false of two boxes on one. A human looking at both crops and
+    calling them the same robot is evidence the constraint's PREMISE failed, so the fix
+    is to remove the second box, not to overrule the human.
+
+    Returns (rows, merges). Detections of the absorbed track are re-tagged to the keeper;
+    where both have one in the same frame the keeper's is kept and the other dropped, so
+    the merged track never carries two boxes in a frame and the solver's constraint is
+    satisfied by construction rather than suspended.
+    """
+    import numpy as np
+    from collections import defaultdict as _dd
+
+    close: dict[tuple[int, int], list] = _dd(list)
+    for r in rows:
+        here = [d for d in r["dets"] if d["tid"] in pins]
+        for i, a in enumerate(here):
+            for b in here[i + 1:]:
+                if pins[a["tid"]] != pins[b["tid"]]:
+                    continue
+                ax1, ay1, ax2, ay2 = a["xyxy"]
+                bx1, by1, bx2, by2 = b["xyxy"]
+                w = max(ax2 - ax1, ay2 - ay1, bx2 - bx1, by2 - by1, 1.0)
+                d = float(np.hypot((ax1 + ax2) / 2 - (bx1 + bx2) / 2,
+                                   (ay1 + ay2) / 2 - (by1 + by2) / 2))
+                key = (min(a["tid"], b["tid"]), max(a["tid"], b["tid"]))
+                close[key].append(d / w)
+
+    merges = []
+    absorb: dict[int, int] = {}
+    for (a, b), seps in close.items():
+        if len(seps) < MERGE_MIN_FRAMES:
+            continue
+        med = float(np.median(seps))
+        if med > sep_widths:
+            continue            # genuinely two robots -- split_conflicts handles it
+        # Keep the track with more detections; it carries more of the robot's timeline.
+        na = sum(1 for r in rows for d in r["dets"] if d["tid"] == a)
+        nb = sum(1 for r in rows for d in r["dets"] if d["tid"] == b)
+        keep, gone = (a, b) if na >= nb else (b, a)
+        while keep in absorb:          # chains: c->b->a collapses to a
+            keep = absorb[keep]
+        if gone == keep:
+            continue
+        absorb[gone] = keep
+        merges.append({"team": pins[a], "keep": keep, "absorbed": gone,
+                       "frames": len(seps), "sepWidths": round(med, 2),
+                       "dets": max(na, nb) + min(na, nb)})
+    if not absorb:
+        return rows, []
+
+    out = []
+    for r in rows:
+        dets, seen = [], set()
+        for d in r["dets"]:
+            tid = d["tid"]
+            while tid in absorb:
+                tid = absorb[tid]
+            if tid in seen and tid != d["tid"]:
+                continue        # the keeper already has a box here; drop the duplicate
+            if tid in seen:
+                continue
+            e = dict(d); e["tid"] = tid
+            seen.add(tid)
+            dets.append(e)
+        out.append({**r, "dets": dets})
+    return out, merges
+
+
 def split_conflicts(pins: dict[int, str], rows, ident: dict
                     ) -> tuple[dict[int, str], dict[int, str], list[dict]]:
     """Separate pins a solver can satisfy from pins that contradict each other.
@@ -350,3 +446,168 @@ def report(resolved: list[dict], pins: dict[int, str], flags: dict[int, str],
               if r["dist"] is not None else
               f"[corrections]   UNRESOLVED f{r['f']} at {r['xy']} "
               f"(no tracked detection in that frame)")
+
+
+# ---- timing ------------------------------------------------------------------
+# "Curation takes about five minutes a match" was the working figure for every
+# decision about frame counts, pre-fill and whether scouts could run this. It was a
+# recollection. The curator now ships a `session` block (see TIMER in curate.html) and
+# every label carries the `ms` it took, so the question has an answer.
+#
+# TWO CLOCKS, DELIBERATELY. `session.activeSec` is wall time minus long gaps -- what a
+# curator would call "how long that took me". Summed `ms` is time with a box actually
+# selected. The gap between them is the overhead: reading the frame, hunting the next
+# box, waiting for a crop. Reporting only one of them would hide whichever half is
+# worth fixing.
+
+def timing_rows(event: str | None = None, root: Path | None = None) -> list[dict]:
+    """One row per curated match that carries timing, newest schema only."""
+    d = (root or (C.REPO_ROOT / "robot-tracker" / "corrections"))
+    out = []
+    for p in sorted(d.glob("*_corrections.json")):
+        stem = p.name[: -len("_corrections.json")]
+        if event and not stem.startswith(event):
+            continue
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        labels = doc.get("labels") or []
+        human = [l for l in labels if l.get("src") == "human"]
+        ms = [l["ms"] for l in human if isinstance(l.get("ms"), (int, float))]
+        sess = doc.get("session") or {}
+        out.append({
+            "match": stem,
+            "labels": len(labels),
+            "human": len(human),
+            "activeSec": sess.get("activeSec"),
+            "wallSec": sess.get("wallSec"),
+            "onBoxSec": round(sum(ms) / 1000.0, 1) if ms else None,
+            "msN": len(ms),
+        })
+    return out
+
+
+def timing_report(event: str | None = None, root: Path | None = None) -> int:
+    rows = timing_rows(event, root)
+    if not rows:
+        print("[timing] no corrections files found")
+        return 1
+    print(f"{'match':<26}{'labels':>7}{'yours':>7}{'active':>9}{'wall':>8}"
+          f"{'on-box':>8}{'s/label':>9}")
+    timed = []
+    for r in rows:
+        per = (r["activeSec"] / r["human"]) if r["activeSec"] and r["human"] else None
+        if r["activeSec"]:
+            timed.append(r)
+        def f(v, suf=""):
+            return "-" if v is None else f"{v:.0f}{suf}" if isinstance(v, float) else f"{v}{suf}"
+        print(f"{r['match']:<26}{r['labels']:>7}{r['human']:>7}"
+              f"{f(r['activeSec']):>9}{f(r['wallSec']):>8}{f(r['onBoxSec']):>8}"
+              f"{('-' if per is None else f'{per:.1f}'):>9}")
+    if not timed:
+        print("\n[timing] no match carries a session block yet -- that field is written "
+              "by curate.html from this version on, so only matches curated from now "
+              "will appear. Per-label `ms` above is the older instrumentation.")
+        return 0
+    tot_a = sum(r["activeSec"] for r in timed)
+    tot_h = sum(r["human"] for r in timed)
+    tot_b = sum(r["onBoxSec"] or 0 for r in timed)
+    print(f"\n[timing] {len(timed)} timed match(es): "
+          f"{tot_a / len(timed) / 60:.1f} min/match average, "
+          f"{tot_a / max(tot_h, 1):.1f} s/label")
+    if tot_b:
+        print(f"[timing] {100 * tot_b / tot_a:.0f}% of active time had a box selected; "
+              f"the rest is reading the frame and moving between boxes")
+    return 0
+
+
+
+
+# ---- auto-ID agreement -------------------------------------------------------
+# The question this answers is item 125 of the feedback list: "automatic ID still
+# appears pretty suspect, need rigorous testing based on a larger set of curated
+# matches." Pre-fill percentage does NOT answer it -- a bundle can arrive 98% pre-filled
+# and be 98% wrong. What matters is how often the curator changes the guess.
+#
+# `was` is written by curate.html beside every human answer (see the note there). Labels
+# without it predate that change and are reported separately rather than assumed to
+# agree, because assuming agreement is exactly the bias this report exists to avoid.
+
+def agreement_rows(event: str | None = None, root: Path | None = None) -> list[dict]:
+    d = (root or (C.REPO_ROOT / "robot-tracker" / "corrections"))
+    out = []
+    for p in sorted(d.glob("*_corrections.json")):
+        stem = p.name[: -len("_corrections.json")]
+        if event and not stem.startswith(event):
+            continue
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except Exception:
+            continue
+        human = [l for l in (doc.get("labels") or []) if l.get("src") == "human"]
+        scored = [l for l in human if "was" in l]
+        # A guess the curator kept, against one they replaced. Flag answers
+        # (notrobot/unknown/mixed) count as a change when the machine named a team:
+        # the machine asserting "this is 1768" where a human says "not a robot" is a
+        # disagreement, and a bad one.
+        def named(l):
+            return l.get("team")
+        agree = sum(1 for l in scored
+                    if l.get("was") and named(l) and str(named(l)) == str(l["was"]))
+        had_guess = sum(1 for l in scored if l.get("was"))
+        no_guess = len(scored) - had_guess
+        out.append({
+            "match": stem, "human": len(human), "scored": len(scored),
+            "legacy": len(human) - len(scored),
+            "hadGuess": had_guess, "agree": agree,
+            "pct": (round(100 * agree / had_guess, 1) if had_guess else None),
+            "noGuess": no_guess,
+        })
+    return out
+
+
+def agreement_report(event: str | None = None, root: Path | None = None) -> int:
+    rows = agreement_rows(event, root)
+    if not rows:
+        print("[agreement] no corrections files found")
+        return 1
+    print(f"{'match':<26}{'yours':>7}{'scored':>8}{'guessed':>9}{'kept':>7}{'agree':>8}")
+    for r in rows:
+        pct = "-" if r["pct"] is None else f"{r['pct']:.0f}%"
+        print(f"{r['match']:<26}{r['human']:>7}{r['scored']:>8}"
+              f"{r['hadGuess']:>9}{r['agree']:>7}{pct:>8}")
+    tg = sum(r["hadGuess"] for r in rows)
+    ta = sum(r["agree"] for r in rows)
+    legacy = sum(r["legacy"] for r in rows)
+    if tg:
+        print(f"\n[agreement] {ta}/{tg} guesses kept ({100 * ta / tg:.1f}%) across "
+              f"{sum(1 for r in rows if r['hadGuess'])} match(es)")
+    if legacy:
+        print(f"[agreement] {legacy} label(s) carry no `was` field -- curated before it "
+              f"was recorded, so their agreement is NOT measurable and is excluded "
+              f"rather than counted as agreement")
+    return 0
+
+
+def main(argv=None) -> int:
+    import argparse
+    ap = argparse.ArgumentParser(description="Curation corrections: reports.")
+    ap.add_argument("--timing", action="store_true",
+                    help="minutes per match and seconds per label, from the session "
+                         "blocks curators ship with their answers")
+    ap.add_argument("--agreement", action="store_true",
+                    help="how often the curator KEPT the machine's guess -- the only "
+                         "honest measure of whether the auto-ID can be trusted")
+    ap.add_argument("--event", default=None, help="limit to one event key prefix")
+    args = ap.parse_args(argv)
+    if args.timing:
+        return timing_report(args.event)
+    if args.agreement:
+        return agreement_report(args.event)
+    ap.print_help()
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

@@ -48,6 +48,38 @@ MARGIN_PX = 60.0        # slack for box-centre jitter between fragments
 # robot's history, which is worse than an honest gap.
 HARD_CAP_PX = 900.0
 
+# STATIONARY REAPPEARANCE. The gap cap above exists because the distance budget grows
+# with the gap, so at long gaps the reachability test stops discriminating and a merge
+# becomes a guess. That argument is about the BUDGET growing -- it says nothing about a
+# robot that did not move.
+#
+# Measured on 2026necmp1_qm24: of 17 fragment births the stitcher refused to join, 13
+# were blocked by the 6 s cap alone, and their best candidate sat 2-79 px away against a
+# median robot box of 128 px. #6 -> #88 reappeared 13 px from where it vanished after
+# 137 s; #6 -> #8, 2 px after 8 s. Those are robots waiting out an occlusion, and the
+# evidence gets STRONGER the longer they hold still, not weaker.
+#
+# So the long-gap path is gated on absolute stillness rather than on a grown budget: the
+# reappearance must be within roughly one robot width of the disappearance. The alliance
+# and uniqueness gates still apply, and the HARD_CAP is untouched for the normal path.
+STILL_PX = 0.0            # DEFAULT OFF -- see below
+"""Reappearance within this many pixels is treated as the same robot despite a gap
+past MAX_GAP_FRAMES. DISABLED by default because it measured badly.
+
+It was built on the observation that 13 of 17 blocked handoffs on qm24 had their best
+candidate 2-79 px away, and it does join those. But "same pixels" is not "same robot":
+it cannot represent a robot that transits an occluder and emerges elsewhere, and it
+fuses two robots that reuse one spot. Measured end to end -- qm21 +11 accuracy points,
+qm16 -2, qm20 -5, mean +1.3 with sd 8.5, i.e. nothing -- and on qm24 the giveaway was
+reid vote agreement collapsing from 3 tracks at >=80% to ZERO, which is what a track
+spanning two different robots looks like.
+
+rtrack.occluders supersedes it: a drawn structure knows its own edges, so a track that
+vanishes at one can be rebound to a birth at ANY of them. Kept and switchable rather
+than deleted, because the pixel test is still the right fallback for a camera nobody
+has drawn."""
+STILL_MAX_GAP_S = 150.0   # beyond this even stillness is not evidence
+
 
 @dataclass
 class Frag:
@@ -98,17 +130,102 @@ def alliance_ok(a: Frag, b: Frag) -> bool:
     return a.alliance is None or b.alliance is None or a.alliance == b.alliance
 
 
-def reachable(a: Frag, b: Frag, step: int, fps: float) -> tuple[bool, float, float]:
+# EMPIRICAL DISPLACEMENT BOUND. The physical one -- ROBOT_MAX_SPEED_MS * gap -- is the
+# worst case a drivetrain allows, and robots do not drive like that: they accelerate,
+# turn, queue and stop. Measured INSIDE continuous track stretches across 8 matches of
+# 2026necmp1, where the detector never lost the robot so it is certainly one robot:
+#
+#     window      p50    p90    p95    p99    max    physical bound
+#      0.5 s        3    109    149    228    458              360
+#      1.0 s        4    193    267    406    773              660
+#      2.0 s        5    306    426    660   1354             1259
+#      3.0 s        5    356    518    788   1558             1858
+#      4.0 s        6    387    562    873   1526             2458
+#      6.0 s        5    433    596    893   1589             3657
+#
+# The physical bound runs 2-4x loose and the gap widens with time, because a robot
+# cannot hold top speed for six seconds but the formula assumes it can. Displacement
+# saturates instead -- the field is only so big and robots double back.
+#
+# This cost a real error: on qm24 stitch joined two different robots across 3.73 s and
+# 678 px, inside the physical bound but at the 97.7th percentile of real 3-4 s
+# displacements. The chimera then propagated the whole way down -- see
+# robots.split_chimeric_joins.
+#
+# Anchors are the measured p95, linearly interpolated, held flat past the last one.
+# p95 rather than p99 because the tail is where wrong joins live; a legitimate pair that
+# just misses stays split, which is an honest gap rather than a rewritten history.
+EMPIRICAL_P95 = ((0.5, 149.0), (1.0, 267.0), (2.0, 426.0),
+                 (3.0, 518.0), (4.0, 562.0), (6.0, 596.0))
+
+
+def empirical_budget_px(gap_s: float) -> float:
+    """How far a robot really travels in `gap_s`, at the 95th percentile."""
+    if gap_s <= EMPIRICAL_P95[0][0]:
+        return EMPIRICAL_P95[0][1]
+    for (t0, d0), (t1, d1) in zip(EMPIRICAL_P95, EMPIRICAL_P95[1:]):
+        if gap_s <= t1:
+            f = (gap_s - t0) / (t1 - t0)
+            return d0 + f * (d1 - d0)
+    return EMPIRICAL_P95[-1][1]
+
+
+def reachable(a: Frag, b: Frag, step: int, fps: float,
+              empirical: bool = True) -> tuple[bool, float, float]:
     gap_frames = (b.f0 - a.f1) / step   # already in PROCESSED frames
     # `fps` is the processed rate (source fps / stride), so do NOT multiply by step
     # again -- doing so double-counted the stride and made every budget 2x too big.
     gap_s = gap_frames / fps
     dist = float(np.hypot(b.start[0] - a.end[0], b.start[1] - a.end[1]))
-    budget = min(C.ROBOT_MAX_SPEED_MS * PX_PER_M * gap_s + MARGIN_PX, HARD_CAP_PX)
+    if empirical:
+        budget = empirical_budget_px(gap_s) + MARGIN_PX
+    else:
+        budget = min(C.ROBOT_MAX_SPEED_MS * PX_PER_M * gap_s + MARGIN_PX, HARD_CAP_PX)
     return dist <= budget, dist, budget
 
 
-def stitch(frags: dict[int, Frag], step: int, fps: float, verbose: bool
+def stationary(a: Frag, b: Frag, step: int, fps: float, still_px: float) -> bool:
+    """Reappeared essentially where it vanished, after a gap too long for `reachable`."""
+    if still_px <= 0:
+        return False
+    gap_s = ((b.f0 - a.f1) / step) / fps
+    if gap_s > STILL_MAX_GAP_S:
+        return False
+    d = float(np.hypot(b.start[0] - a.end[0], b.start[1] - a.end[1]))
+    return d <= still_px
+
+
+def occluded_pair(a: Frag, b: Frag, regions, step: int, fps: float) -> str | None:
+    """Did `a` vanish behind a structure that `b` could have emerged from?
+
+    Both endpoints must sit on the SAME structure -- its outline is the set of places a
+    robot can go in or come out -- and the gap must fit the time it takes to get across
+    it. That is the case pixel-proximity cannot express: a robot driving behind a tower
+    leaves one edge and returns at another, tens of pixels apart or hundreds.
+
+    Returns the structure's name, or None.
+    """
+    if not regions:
+        return None
+    from .occluders import region_at, transit_budget_s, parked_at
+    ra = region_at(a.end[0], a.end[1], regions)
+    if ra is None:
+        return None
+    rb = region_at(b.start[0], b.start[1], regions)
+    if rb != ra:
+        return None
+    gap_s = ((b.f0 - a.f1) / step) / fps
+    if gap_s < 0:
+        return None
+    # Two ways to be the same robot here, and the common one is not transit.
+    budget = transit_budget_s(regions, ra, C.ROBOT_MAX_SPEED_MS * PX_PER_M)
+    if gap_s <= budget:
+        return ra
+    return ra if parked_at(a.end, b.start, ra, regions, gap_s) else None
+
+
+def stitch(frags: dict[int, Frag], step: int, fps: float, verbose: bool,
+           still_px: float = STILL_PX, regions=None, empirical: bool = True
            ) -> tuple[dict[int, int], list[str]]:
     parent = {t: t for t in frags}
 
@@ -134,15 +251,30 @@ def stitch(frags: dict[int, Frag], step: int, fps: float, verbose: bool
             # 4. no temporal overlap -- coexisting fragments are different robots
             if a.f1 >= b.f0:
                 continue
-            if (b.f0 - a.f1) / step > MAX_GAP_FRAMES:
+            long_gap = (b.f0 - a.f1) / step > MAX_GAP_FRAMES
+            occl = occluded_pair(a, b, regions, step, fps) if long_gap else None
+            if long_gap and not occl and not stationary(a, b, step, fps, still_px):
                 continue
             # already claimed by another fragment
             if a.tid in merged_into:
                 continue
             if not alliance_ok(a, b):
                 continue
-            ok, dist, budget = reachable(a, b, step, fps)
-            if ok:
+            ok, dist, budget = reachable(a, b, step, fps, empirical)
+            if occl:
+                # Scored by DISPLACEMENT, on the same 0-1 scale the normal path uses,
+                # so the two compete honestly. A flat score was tried and made things
+                # worse -- 35 tracks against 32 -- because a constant ties with every
+                # real candidate and trips the uniqueness gate, so adding a permissive
+                # path REMOVED merges. A robot reappearing 13 px away has to outrank
+                # one 689 px into its budget, and this makes it.
+                from .occluders import PARKED_MOVE_PX as _PMP
+                cands.append((min(dist / max(_PMP, 1e-9), 0.99), a.tid, dist, budget))
+            elif long_gap:
+                # Scored on stillness, not on a budget that has stopped meaning
+                # anything at this gap. Ranks ahead of nothing else competing.
+                cands.append((dist / max(still_px, 1e-9), a.tid, dist, still_px))
+            elif ok:
                 cands.append((dist / max(budget, 1e-9), a.tid, dist, budget))
 
         if not cands:
@@ -233,6 +365,20 @@ def main(argv: list[str] | None = None) -> int:
     # element is misread for most of its visible life, so the vote entrenches the
     # error for the whole track instead of averaging it away. On the full match this
     # took frames-with-an-alliance-over-3 from 123 (4.6%) to 412 (15.5%).
+    ap.add_argument("--physical-bound", action="store_true",
+                    help="use ROBOT_MAX_SPEED_MS * gap for reachability instead of the "
+                         "measured p95 displacement. The physical bound runs 2-4x loose "
+                         "-- see EMPIRICAL_P95 -- and let two different robots be joined "
+                         "on qm24.")
+    ap.add_argument("--occluders", default=None, metavar="CAMERA",
+                    help="camera stem whose drawn occluder regions should be used to "
+                         "rebind tracks across a structure (calib/<CAMERA>_occluders"
+                         ".json, drawn in public/rtrack/occluders.html). Without it, "
+                         "long gaps are refused as before.")
+    ap.add_argument("--still-px", type=float, default=STILL_PX,
+                    help="fallback for a camera with no drawn occluders: rebind a "
+                         "reappearance within this many pixels. 0 = off; see STILL_PX "
+                         "for why it defaults off.")
     ap.add_argument("--vote", action="store_true",
                     help="assign one alliance per track by weighted vote. Only "
                          "helps once per-frame classification is right more often "
@@ -243,7 +389,26 @@ def main(argv: list[str] | None = None) -> int:
             if l.strip()]
     rows.sort(key=lambda r: r["f"])
     frags, step = load_frags(rows)
-    mapping, log = stitch(frags, step, args.fps, not args.quiet)
+    regions = None
+    if args.occluders:
+        from .occluders import load as _load_occ, to_pixels as _occ_px
+        doc = _load_occ(args.occluders)
+        if doc is None:
+            print(f"[stitch] no occluder file for {args.occluders} -- long gaps stay "
+                  f"refused. Draw one in public/rtrack/occluders.html.")
+        else:
+            # Frame size from the tracks themselves, so a drawing made on a different
+            # resolution is rescaled rather than silently misplaced.
+            mx = max((d["xyxy"][2] for r in rows for d in r["dets"]), default=1920)
+            my = max((d["xyxy"][3] for r in rows for d in r["dets"]), default=1080)
+            wh = (1920 if mx <= 1920 else 3840, 1080 if my <= 1080 else 2160)
+            regions = _occ_px(doc, wh)
+            print(f"[stitch] {len(regions)} occluder region(s) for {args.occluders} "
+                  f"at {wh[0]}x{wh[1]}: "
+                  + ", ".join(r["name"] for r in regions))
+    mapping, log = stitch(frags, step, args.fps, not args.quiet,
+                          still_px=args.still_px, regions=regions,
+                          empirical=not args.physical_bound)
 
     if not args.quiet:
         for line in log:

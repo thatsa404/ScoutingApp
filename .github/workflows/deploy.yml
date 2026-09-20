@@ -30,6 +30,12 @@ jobs:
         env:
           VITE_TBA_KEY: ${{ secrets.VITE_TBA_KEY }}
           VITE_YOUTUBE_KEY: ${{ secrets.VITE_YOUTUBE_KEY }}
+          # Pre-fills the relay URL on the curator/calibrator pages so a scout handed a
+          # phone at an event types nothing. Unset is safe: the pages fall back to
+          # asking, exactly as before. Set VITE_RTRACK_ANSWER_TOKEN alongside it --
+          # publishing the URL without one leaves /answer open to anybody.
+          VITE_RTRACK_RELAY: ${{ secrets.VITE_RTRACK_RELAY }}
+          VITE_RTRACK_ANSWER_TOKEN: ${{ secrets.VITE_RTRACK_ANSWER_TOKEN }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

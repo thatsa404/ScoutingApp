@@ -97,7 +97,12 @@ def descriptor(crop: np.ndarray) -> np.ndarray:
     return np.concatenate(out) / BANDS
 
 
-def run(stem: str, tracks_p: Path, out: Path) -> None:
+def cnn_path(out: Path) -> Path:
+    """Sibling of the histogram npz, so one decode can fill both."""
+    return out.with_name(out.name.replace("_appearance", "_appearance_cnn"))
+
+
+def run(stem: str, tracks_p: Path, out: Path, backend: str = "hist") -> None:
     rows = [json.loads(l) for l in tracks_p.read_text(encoding="utf-8").splitlines()
             if l.strip()]
     rows.sort(key=lambda r: r["f"])
@@ -123,7 +128,9 @@ def run(stem: str, tracks_p: Path, out: Path) -> None:
     print(f"[appear] {len(seen)} tracks, "
           f"{sum(len(v) for v in plan.values())} crops over {len(wanted)} frames")
 
-    tids, ts, feats = [], [], []
+    want_hist = backend in ("hist", "both")
+    want_cnn = backend in ("cnn", "both")
+    tids, ts, feats, crops = [], [], [], []
     cap = cv2.VideoCapture(str(raw_path(stem)))
     idx, i = 0, 0
     while i < len(wanted):
@@ -143,7 +150,12 @@ def run(stem: str, tracks_p: Path, out: Path) -> None:
                     continue
                 tids.append(tid)
                 ts.append(t)
-                feats.append(descriptor(crop))
+                if want_hist:
+                    feats.append(descriptor(crop))
+                if want_cnn:
+                    # Kept at source resolution here; embed() does its own resize, and
+                    # downsampling twice would throw away detail for nothing.
+                    crops.append(crop.copy())
             i += 1
             if i % 400 == 0:
                 print(f"    {i}/{len(wanted)} frames", flush=True)
@@ -151,10 +163,16 @@ def run(stem: str, tracks_p: Path, out: Path) -> None:
     cap.release()
 
     out.parent.mkdir(parents=True, exist_ok=True)
-    np.savez_compressed(out, tid=np.array(tids, np.int32),
-                        t=np.array(ts, np.float32),
-                        feat=np.array(feats, np.float32))
-    print(f"[appear] {len(tids)} descriptors -> {out}")
+    tid_a, t_a = np.array(tids, np.int32), np.array(ts, np.float32)
+    if want_hist:
+        np.savez_compressed(out, tid=tid_a, t=t_a,
+                            feat=np.array(feats, np.float32))
+        print(f"[appear] {len(tids)} histogram descriptors -> {out}")
+    if want_cnn:
+        from .embed import embed
+        cp = cnn_path(out)
+        np.savez_compressed(cp, tid=tid_a, t=t_a, feat=embed(crops))
+        print(f"[appear] {len(tids)} cnn embeddings -> {cp}")
 
 
 def main(argv=None) -> int:
@@ -162,10 +180,16 @@ def main(argv=None) -> int:
     ap.add_argument("video")
     ap.add_argument("--tracks", type=Path, required=True)
     ap.add_argument("--out", type=Path, default=None)
+    ap.add_argument("--backend", choices=("hist", "cnn", "both"), default="hist",
+                    help="which descriptor(s) to cache from the single decode. "
+                         "'hist' is the tuned default that robots.split_on_appearance "
+                         "needs; 'cnn' is the learned embedding reid can vote with; "
+                         "'both' fills each from one pass. See rtrack.embed.")
     args = ap.parse_args(argv)
     C.ensure_dirs()
     stem = video_id(args.video)
-    run(stem, args.tracks, args.out or (C.STAGE3_DIR / f"{stem}_appearance.npz"))
+    run(stem, args.tracks, args.out or (C.STAGE3_DIR / f"{stem}_appearance.npz"),
+        backend=args.backend)
     return 0
 
 

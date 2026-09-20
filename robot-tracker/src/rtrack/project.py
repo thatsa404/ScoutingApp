@@ -22,6 +22,12 @@ are real and neither is measurable from a single camera:
 Quality flags are attached, never dropped silently:
   offfield    projected outside the field rectangle (+ slack)
   fast        implied speed above ROBOT_MAX_SPEED -- a bad projection or an ID switch
+  viewmoved   the camera was not in its calibrated pose here (see rtrack.viewcheck),
+              so the homography does not apply and the metres are meaningless. FLAGGED
+              RATHER THAN DELETED, and the detection behind it is untouched: identity
+              work in that span is still perfectly good -- the robot was recognised,
+              it just cannot be placed. Dropping the rows would throw away gallery
+              evidence to fix a geometry problem.
 """
 
 from __future__ import annotations
@@ -35,6 +41,7 @@ import cv2
 import numpy as np
 
 from . import config as C
+from . import viewcheck as VC
 from .acquire import video_id
 from .calibrate import load_field_ref
 
@@ -66,6 +73,81 @@ def project_points(pts_px: np.ndarray, H: np.ndarray, ref: dict,
     X = (fp[:, 0] - r["x0"]) / ppm
     Y = (r["y1"] - fp[:, 1]) / ppm
     return np.stack([X, Y], axis=1)
+
+
+# Visibility. Sampled in VIDEO space and projected FORWARD, never inverted: the same
+# chain the positions themselves take, so the answer cannot disagree with them. An
+# inverse would need re-distortion and a horizon guard, and would be a second
+# implementation of the thing it is checking.
+VIS_GRID_XY = (320, 180)        # video samples
+VIS_MASK_XY = (400, 200)        # field raster the contour is traced on
+
+
+def visible_region(H, ref: dict, lens: dict | None,
+                   frame_wh: tuple[int, int] = (1920, 1080)):
+    """(polygon in field metres, visible fraction) for this camera pose.
+
+    WHY THIS IS WORTH SHIPPING. A route that stops at the far-left corner looks like a
+    tracking failure and is nothing of the sort -- the camera simply cannot see there.
+    On the 2026necmp1 camera 13.5% of the field is off-frame, almost all of it the two
+    corners NEAREST the camera -- they sit at an extreme angle and fall outside the
+    horizontal field of view, while the far corners are close to the image centre and
+    stay in frame. (calib records cornersOutsideFrame = ['far-L', 'far-R'], but that
+    naming is relative to the FIELD origin, not to the camera, so it is not evidence
+    either way; see the note in visible_region on how the camera side is established.)
+
+    Without the overlay the missing data is indistinguishable from lost data, and a
+    reader draws conclusions about a robot that was never observable.
+    """
+    import cv2
+    import numpy as np
+    FL, FW = ref["fieldSizeM"]
+    gw, gh = VIS_GRID_XY
+    gx, gy = np.meshgrid(np.linspace(0, frame_wh[0] - 1, gw),
+                         np.linspace(0, frame_wh[1] - 1, gh))
+    XY = project_points(np.stack([gx.ravel(), gy.ravel()], axis=1), H, ref, lens)
+    X, Y = XY[:, 0], XY[:, 1]
+    ok = (X >= 0) & (X <= FL) & (Y >= 0) & (Y <= FW)
+    if ok.sum() < 100:
+        return None, None, None
+    N, M = VIS_MASK_XY
+    mask = np.zeros((M, N), np.uint8)
+    ix = np.clip((X[ok] / FL * (N - 1)).astype(int), 0, N - 1)
+    iy = np.clip((Y[ok] / FW * (M - 1)).astype(int), 0, M - 1)
+    mask[iy, ix] = 255
+    # Close pinholes between sample points; the grid is coarser than the raster.
+    mask = cv2.morphologyEx(mask, cv2.MORPH_CLOSE, np.ones((5, 5), np.uint8))
+    cnts, _ = cv2.findContours(mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+    if not cnts:
+        return None, None, None
+    c = max(cnts, key=cv2.contourArea)
+    approx = cv2.approxPolyDP(c, 0.004 * cv2.arcLength(c, True), True).reshape(-1, 2)
+    poly = [[round(float(px) / (N - 1) * FL, 2), round(float(py) / (M - 1) * FW, 2)]
+            for px, py in approx]
+    # WHICH SIDE THE CAMERA IS ON. The half with LESS coverage is the NEAR half, which
+    # is the opposite of the intuition and was got wrong first time round.
+    #
+    # A side camera does not lose the far corners -- those sit near the middle of the
+    # image and subtend a small angle. It loses its OWN corners, which are metres away
+    # at an extreme angle and fall outside the horizontal field of view entirely.
+    #
+    # Verified two independent ways on 2026necmp1 rather than reasoned about:
+    #   where each edge lands in the video   y~0 at row 491, y~8.1 at row 1039 of 1080
+    #                                        -- the nearer edge sits low in frame
+    #   pixel scale                          0.95 cm/px at y~0, 0.53 at y~8.1
+    #                                        -- the nearer edge resolves finer
+    # Both say the camera is at HIGH y, and the blind wedges in the polygon are at high
+    # y too. Coverage: 0.991 of the low-y half, 0.770 of the high-y half.
+    #
+    # This exists so a route plot can be drawn the way the viewer saw it. Which end a
+    # camera sits at is a property of the venue, not of FRC, so it is derived per
+    # calibration rather than assumed once.
+    filled = np.zeros((M, N), np.uint8)
+    cv2.fillPoly(filled, [approx.astype(np.int32)], 255)
+    cov_low = float(filled[:M // 2].mean())
+    cov_high = float(filled[M // 2:].mean())
+    side = "low-y" if cov_low <= cov_high else "high-y"
+    return poly, round(float(cv2.contourArea(c)) / (N * M), 3), side
 
 
 def auto_start_check(doc: dict, window_s: float = 1.0) -> dict:
@@ -185,12 +267,18 @@ def run(stem: str, tracks: Path, out: Path, calib_stem: str | None = None) -> di
         raise SystemExit("no detections in the track file")
     XY = project_points(np.array(pts, np.float32), H, ref, lens)
 
+    # Absent file means no finding, not a failure -- is_valid_at keeps everything when
+    # the check has not been run, the same rule the scoreboard check follows.
+    vdoc = VC.load(stem)
+
     samples = []
     for (ri, di), (X, Y) in zip(idx, XY):
         r, d = rows[ri], rows[ri]["dets"][di]
         flags = []
         if not (-SLACK_M <= X <= FL + SLACK_M and -SLACK_M <= Y <= FW + SLACK_M):
             flags.append("offfield")
+        if not VC.is_valid_at(vdoc, r["t"]):
+            flags.append("viewmoved")
         samples.append({"f": r["f"], "t": r["t"], "tid": d["tid"],
                         # Carried through when the input is a LABELLED track file, so
                         # routes can be drawn per team rather than per track id. A
@@ -219,11 +307,15 @@ def run(stem: str, tracks: Path, out: Path, calib_stem: str | None = None) -> di
                 n_fast += 1
 
     n_off = sum(1 for s in samples if "offfield" in s["flags"])
+    n_vm = sum(1 for s in samples if "viewmoved" in s["flags"])
     quality = {
         "samples": len(samples),
         "tracks": len(by_tid),
         "offField": n_off,
         "offFieldPct": round(100 * n_off / len(samples), 2),
+        "viewMoved": n_vm,
+        "viewMovedPct": round(100 * n_vm / max(len(samples), 1), 2),
+        "viewChecked": vdoc is not None,
         "kinematicViolations": n_fast,
         "kinematicPct": round(100 * n_fast / max(len(samples), 1), 2),
         "tSpan": [round(min(s["t"] for s in samples), 2),

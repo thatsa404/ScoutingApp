@@ -78,7 +78,628 @@ def conflicts(rows) -> dict[int, set[int]]:
     return con
 
 
-def track_info(rows, positions: dict | None):
+def positions_by_det(positions: dict | None, tracks_p) -> dict | None:
+    """Re-key positions.json from ITS track ids onto (frame, box), which survives splits.
+
+    rtrack.project runs on the STITCHED tracks, but the solver runs on the SPLIT ones,
+    and splitting keeps the original id for the first fragment while minting new ids for
+    the rest. Joining those two id spaces by number silently pairs a fragment with the
+    whole track it came from. Measured on 2026necmp1_qm24: positions held 23 tids, the
+    solver 172, and of the 23 that matched numerically 22 spanned a DIFFERENT time range
+    -- solver track 1 ends at 20.9 s while positions track 1 ends at 108.9 s, most of a
+    match later and usually elsewhere on the field.
+
+    The consequence was not a missing penalty but a wrong one: _pair_cost compared the
+    end of a whole stitched track against the start of some fragment, so it both missed
+    real teleports and could invent penalties between tracks that are actually adjacent.
+    87% of solver tracks had no position at all and scored kin = 0 regardless.
+
+    Splitting never touches `xyxy`, so (frame, box) is stable across it -- the same
+    anchoring rtrack.corrections uses, for the same reason. kinematic_conflicts already
+    guards this hazard by refusing to run on a stale id space; this fixes it instead.
+    """
+    if not positions:
+        return None
+    box_of = {}
+    for line in Path(tracks_p).read_text(encoding="utf-8").splitlines():
+        if not line.strip():
+            continue
+        r = json.loads(line)
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                box_of[(r["f"], d["tid"])] = tuple(round(float(v), 1) for v in d["xyxy"])
+    out = {}
+    for sm in positions.get("samples", ()):
+        if sm["tid"] < 0 or "offfield" in sm.get("flags", ()):
+            continue
+        b = box_of.get((sm["f"], sm["tid"]))
+        if b:
+            out[(sm["f"], b)] = (sm["t"], sm["x"], sm["y"])
+    return out
+
+
+JOIN_GAP_MIN_S = 0.30   # a pause this long is a stitch join, not a dropped frame
+JOIN_DIFF_COS = 0.89    # solve.APP_DIFF: different-robot p10 over curated pairs
+JOIN_SIDE_S = 6.0       # how much of each side to describe
+
+
+def split_chimeric_joins(rows, npz_path, head=None, thresh: float = JOIN_DIFF_COS):
+    """Cut a track back open where STITCH joined two different robots.
+
+    WHY HERE AND NOT IN STITCH. Stitch runs before rtrack.appear, so when it decides
+    whether a reappearance continues a track it has geometry and nothing else. Measured
+    on 2026necmp1_qm24 it joined across a 3.73 s gap and 678 px -- legal against its
+    5.5 m/s bound -- and the embeddings either side sit 0.964 apart, as different as two
+    robots get. 9 of 23 stitched tracks on that match carry a jump over 300 px. The
+    resulting chimera then propagates: split_on_appearance cut it back apart, and the
+    solver reassembled it by putting team 195 on both halves.
+
+    WHY THIS THRESHOLD IS VALID HERE AND WAS NOT IN THE OBJECTIVE. 0.89 is the
+    different-robot p10 measured over 1662 curated WHOLE-TRACK pairs. The two sides of
+    a stitch join are long segments, so that calibration transfers. An earlier attempt
+    applied the same number between adjacent FRAGMENTS and cost 10-12 accuracy points,
+    because split_on_appearance cuts precisely where appearance changes most -- its
+    cut-point pairs sit at a median of 0.81 by construction, so the test fired on
+    legitimate continuations. Same number, wrong population.
+
+    Only INTERNAL gaps are examined -- a pause inside one track, which is where stitch
+    made a decision. Continuous stretches are the tracker's work and are left alone.
+    """
+    import numpy as _np
+    if not Path(npz_path).exists():
+        return rows, 0
+    z = _np.load(npz_path)
+    tid_a, t_a, feat = z["tid"], z["t"], z["feat"]
+    if head is not None:
+        feat = head(feat)
+
+    per = defaultdict(list)
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                per[d["tid"]].append(r["t"])
+    cuts = defaultdict(list)
+    for tid, ts in per.items():
+        ts.sort()
+        if len(ts) < 10:
+            continue
+        step = float(_np.median(_np.diff(ts))) if len(ts) > 2 else 0.07
+        for a, b in zip(ts, ts[1:]):
+            gap = b - a
+            if gap < max(JOIN_GAP_MIN_S, 3 * step):
+                continue
+            m0 = (tid_a == tid) & (t_a > a - JOIN_SIDE_S) & (t_a <= a + 1e-6)
+            m1 = (tid_a == tid) & (t_a >= b - 1e-6) & (t_a < b + JOIN_SIDE_S)
+            if int(m0.sum()) < 4 or int(m1.sum()) < 4:
+                continue
+            v0, v1 = feat[m0].mean(0), feat[m1].mean(0)
+            n0 = float(_np.linalg.norm(v0)) or 1.0
+            n1 = float(_np.linalg.norm(v1)) or 1.0
+            d = 1.0 - float((v0 / n0) @ (v1 / n1))
+            if d >= thresh:
+                cuts[tid].append((b, round(d, 3), round(gap, 2)))
+    if not cuts:
+        return rows, 0
+    nxt = max((d["tid"] for r in rows for d in r["dets"]), default=0) + 1
+    remap = {}
+    for tid, cl in cuts.items():
+        for b, _d, _g in sorted(cl):
+            remap.setdefault(tid, []).append((b, nxt))
+            nxt += 1
+    out, n = [], 0
+    for r in rows:
+        dets = []
+        for d in r["dets"]:
+            t = d["tid"]
+            if t in remap:
+                for b, new in remap[t]:
+                    if r["t"] >= b:
+                        t = new
+            dets.append(dict(d, tid=t))
+        out.append({**r, "dets": dets})
+    n = sum(len(v) for v in cuts.values())
+    for tid, cl in sorted(cuts.items()):
+        for b, d, g in cl:
+            print(f"[robots]   #{tid} cut at t{b:.2f} -- {g}s pause, appearance "
+                  f"{d} across it (different robots above {thresh})")
+    return out, n
+
+
+def fragment_embeddings(pre_split_rows, rows, npz_path, head=None):
+    """One whitened, unit-length embedding per FRAGMENT.
+
+    The cached descriptors are keyed by the STITCHED track id, but the solver works on
+    fragments, so a fragment's crops are found by mapping each of its detections back
+    through (frame, box) -- the one key that survives every split -- and then taking
+    the cached rows for that stitched id inside the fragment's own time span.
+    """
+    import numpy as _np
+    if not Path(npz_path).exists():
+        return {}
+    z = _np.load(npz_path)
+    tid_a, t_a, feat = z["tid"], z["t"], z["feat"]
+    if head is not None:
+        feat = head(feat)
+    parent = {}
+    for r in pre_split_rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                parent[(r["f"], tuple(round(float(v), 1) for v in d["xyxy"]))] = d["tid"]
+    span = defaultdict(lambda: [1e9, -1e9, None])
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] < 0:
+                continue
+            p = parent.get((r["f"], tuple(round(float(v), 1) for v in d["xyxy"])))
+            if p is None:
+                continue
+            a = span[d["tid"]]
+            a[0] = min(a[0], r["t"]); a[1] = max(a[1], r["t"]); a[2] = p
+    out = {}
+    for frag, (t0, t1, p) in span.items():
+        if p is None:
+            continue
+        m = (tid_a == p) & (t_a >= t0 - 1e-6) & (t_a <= t1 + 1e-6)
+        if int(m.sum()) < 4:
+            continue
+        v = feat[m].mean(0)
+        n = float(_np.linalg.norm(v))
+        if n > 0:
+            out[frag] = v / n
+    return out
+
+
+HOLD_S = 20.0          # cap when nothing is ever seen to come back out
+HOLD_TOL_PX = 40.0     # how close a death must be to count as INTO the structure
+
+
+def hold_cells(st_rows, rows, regions, tol_px: float = HOLD_TOL_PX,
+               max_hold_s: float = HOLD_S, require_exit: bool = False):
+    """Occluders as HOLDING CELLS: a team that vanished into one is in it, not loose.
+
+    THE MODEL. When a robot disappears into a marked structure it is still on the field
+    -- it is behind that structure until something comes back out. So a structure holds
+    a team for an interval, and two things follow. The team cannot also be a robot
+    visible somewhere else meanwhile (exclusion), and the track that emerges is probably
+    the team being held (emergence). The first is what pays: one disappearance then
+    constrains every other track on the field, so a vanishing robot stops destabilising
+    everyone else's labels.
+
+    EVENTS COME FROM THE STITCHED TRACKS, NOT THE FRAGMENTS. A first version keyed on
+    fragment deaths and was a clear regression at every weight -- custody 78% -> 69%,
+    unlabelled detections 180 -> 1840. The reason is that a fragment ending almost never
+    means a robot disappeared: 95 of ~128 fragment boundaries are split_on_appearance
+    cuts with the robot still plainly visible, and measured on 2026necmp1_qm24 exactly
+    ONE fragment death of 134 was inside a structure, the median being 193 px away. A
+    stitched track ending IS a disappearance -- stitch has already rejoined everything
+    it could. Measured at that level: 4 hold events on qm24, 13 on qm22, 10 on qm21.
+
+    THE INTERVAL ENDS AT THE ACTUAL EMERGENCE, not a fixed window, so a robot that
+    ducks behind and comes straight out frees its team immediately instead of staying
+    excluded for the rest of a timeout.
+
+    Returns (exclude, emerge) as fragment-id pairs, ready for the solver.
+    """
+    from .occluders import region_at
+    if not regions:
+        return [], []
+
+    # (frame, box) survives every split, so it is how a stitched detection is found
+    # again among the fragments. Track ids do not survive -- the splits rebuild them.
+    frag_of = {}
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                frag_of[(r["f"], tuple(round(float(v), 1) for v in d["xyxy"]))] = d["tid"]
+
+    st = defaultdict(list)
+    for r in st_rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                x1, y1, x2, y2 = d["xyxy"]
+                st[d["tid"]].append((r["t"], r["f"],
+                                     tuple(round(float(v), 1) for v in d["xyxy"]),
+                                     (x1 + x2) / 2.0, y2))
+    for v in st.values():
+        v.sort()
+    if not st:
+        return [], []
+    t_lo = min(v[0][0] for v in st.values())
+    t_hi = max(v[-1][0] for v in st.values())
+
+    # Who vanished into what, and what came back out of it.
+    deaths, births = [], []
+    for tid, v in st.items():
+        t, f, bx, x, y = v[-1]
+        if t < t_hi - 2:
+            S = region_at(x, y, regions, tol_px)
+            if S:
+                deaths.append((t, S, frag_of.get((f, bx))))
+        t, f, bx, x, y = v[0]
+        if t > t_lo + 2:
+            S = region_at(x, y, regions, tol_px)
+            if S:
+                births.append((t, S, frag_of.get((f, bx))))
+    births.sort()
+
+    # Fragment spans and where each sat, for the exclusion test.
+    fr = defaultdict(list)
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                x1, y1, x2, y2 = d["xyxy"]
+                fr[d["tid"]].append((r["t"], (x1 + x2) / 2.0, y2))
+    for v in fr.values():
+        v.sort()
+
+    # How many robots are visibly tracked at each sampled instant, from the PRE-SPLIT
+    # state so a split does not read as an extra robot.
+    times = sorted({t for v in st.values() for t, _f, _b, _x, _y in v})
+    live = {}
+    for t in times:
+        live[t] = sum(1 for v in st.values() if v[0][0] <= t <= v[-1][0])
+
+    def release_at(t_start):
+        """When conservation says this cell must let go.
+
+        There are six robots. A team behind a structure is one of them, so
+        `live + holds` cannot exceed six -- and when it does, the robot we thought was
+        hidden is evidently back in view. This releases the hold instead of asserting
+        it for a fixed 20 s, which is what made the ungated version harmful: measured
+        on qm24, 7 of 11 vanished robots reappeared ELSEWHERE within seconds, and the
+        cell kept excluding their team anyway.
+
+        A RULE, NOT A CONSTRAINT, deliberately. Duplicate boxes still survive the merge
+        on ~1% of detections, and >6 tracks are concurrent in 1-3% of frames, so a hard
+        count would be violated on real data. Overcounting here only RELEASES a hold
+        early -- less exclusion, never a false assertion -- so the error direction is
+        'do nothing'.
+        """
+        for t in times:
+            if t <= t_start:
+                continue
+            if live.get(t, 0) >= 6:
+                return t
+        return None
+
+    exclude, emerge, cells = [], [], []
+    for t1, S, tail in sorted(deaths):
+        if tail is None:
+            continue
+        nxt = next((b for b in births if b[1] == S and b[0] > t1), None)
+        t2 = min(nxt[0], t1 + max_hold_s) if nxt else t1 + max_hold_s
+        rel = release_at(t1)
+        if rel is not None and rel < t2:
+            t2 = rel
+        head = nxt[2] if nxt and nxt[0] <= t2 else None
+        cells.append((S, round(t1, 1), round(t2, 1), tail, head))
+        if head is not None and head != tail:
+            emerge.append((tail, head))
+        if require_exit and head is None:
+            # Nothing was ever seen to come back out. Either the robot is still behind
+            # the structure, or it emerged undetected, or -- the case that costs -- it
+            # never went in. A cell with no observed exit is an assertion with no
+            # evidence closing it, so under this flag it holds nothing.
+            continue
+        for c, v in fr.items():
+            if c in (tail, head):
+                continue
+            inwin = [(t, x, y) for t, x, y in v if t1 < t < t2]
+            if not inwin:
+                continue
+            # A fragment that was itself at the structure during the hold might BE the
+            # robot coming out; one anywhere else cannot be the team being held.
+            if any(region_at(x, y, regions, tol_px) == S for _t, x, y in inwin):
+                continue
+            exclude.append((tail, c))
+    return exclude, emerge, cells
+
+
+REBIND_MAX_COS = 0.70
+"""Whitened-embedding cosine distance a rebind may not exceed.
+
+CALIBRATED, not guessed -- whitening rescales distances, so an intuited threshold means
+nothing. Measured over 20 curated 2026necmp1 matches, track-mean distances in the
+stitched id space this runs on:
+
+                               p10     p25   median     p75     p90
+                 same team    0.25    0.31    0.38    0.45    0.53
+  diff team, same alliance    0.89    0.94    1.00    1.06    1.12
+
+Same-team p90 is 0.53 and different-team p10 is 0.89, with nothing in between:
+
+    threshold   same kept   different admitted
+      0.55         92%            0%
+      0.70        100%            0%     <- here
+      0.80        100%            1%
+      0.90        100%           13%
+
+0.55 was the first guess and threw away 8% of genuine matches for nothing. Past 0.80
+impostors start arriving, and an impostor here is a track spanning two robots -- the
+failure this whole path exists to avoid."""
+
+REBIND_MARGIN = 1.25    # best must beat the runner-up by this factor
+
+
+def occluder_rebind(rows, regions, npz_path, head=None, ident=None,
+                    max_cos: float = REBIND_MAX_COS,
+                    margin: float = REBIND_MARGIN):
+    """Rejoin tracks across a structure a human marked, using APPEARANCE to choose.
+
+    WHY THIS LIVES HERE AND NOT IN rtrack.stitch. Stitch has the geometry to find these
+    -- measured on 2026necmp1_qm24, 33 of the 72 handoffs it refuses are hub -> the same
+    hub -- but not the evidence to resolve them. Several tracks die behind one structure
+    over a match, so when a new one appears there, two or three predecessors are equally
+    plausible by position and stitch's uniqueness gate correctly refuses to guess:
+
+        AMBIGUOUS #116: candidates ['#115(280px)', '#82(30px)', '#10(50px)']
+
+    Enabling the occluder path in stitch therefore made things WORSE -- 35 tracks against
+    32 -- because extra candidates trip that gate. The pipeline runs track -> stitch ->
+    appear, so no descriptor exists yet at stitch time. Here one does, and the choice
+    between #82 and #10 is exactly what it is good at: 0.788 AUC within an alliance,
+    against a 2-3 way choice.
+
+    Runs BEFORE any split, for the same reason the duplicate merge does: after 95
+    appearance splits a track's evidence is shattered into fragments too short to
+    describe, and the tids no longer match the cached npz.
+
+    Refuses rather than guesses when appearance is not decisive either -- an unmerged
+    track is an honest gap, a wrong merge silently rewrites a robot's history.
+    """
+    import numpy as _np
+    from .occluders import region_at, transit_budget_s, parked_at, PARKED_MAX_S
+    from .stitch import PX_PER_M
+    if not regions or not Path(npz_path).exists():
+        return rows, []
+
+    z = _np.load(npz_path)
+    tid_a, feat = z["tid"], z["feat"]
+    if head is not None:
+        feat = head(feat)
+    mean, span, ends = {}, {}, {}
+    for tid in sorted(set(tid_a.tolist())):
+        m = tid_a == tid
+        if int(m.sum()) < 4:
+            continue
+        v = feat[m].mean(0)
+        n = float(_np.linalg.norm(v)) or 1.0
+        mean[int(tid)] = v / n
+    pts = defaultdict(list)
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                x1, y1, x2, y2 = d["xyxy"]
+                pts[d["tid"]].append((r["t"], (x1 + x2) / 2.0, y2))
+    for tid, v in pts.items():
+        v.sort()
+        span[tid] = (v[0][0], v[-1][0])
+        ends[tid] = ((v[0][1], v[0][2]), (v[-1][1], v[-1][2]))
+
+    order = sorted(span, key=lambda t: span[t][0])
+    absorb, merges = {}, []
+    for b in order:
+        if b not in mean:
+            continue
+        b_start, (t0b, _t1b) = ends[b][0], span[b]
+        rb = region_at(b_start[0], b_start[1], regions)
+        if rb is None:
+            continue
+        cands = []
+        for a in order:
+            if a == b or a not in mean or a in absorb:
+                continue
+            t0a, t1a = span[a]
+            if t1a >= t0b:
+                continue                     # coexisting -> different robots
+            gap_s = t0b - t1a
+            if gap_s > PARKED_MAX_S:
+                continue
+            a_end = ends[a][1]
+            if region_at(a_end[0], a_end[1], regions) != rb:
+                continue
+            budget = transit_budget_s(regions, rb,
+                                      C.ROBOT_MAX_SPEED_MS * PX_PER_M)
+            if gap_s > budget and not parked_at(a_end, b_start, rb, regions, gap_s):
+                continue
+            cands.append((float(1.0 - mean[a] @ mean[b]), a, gap_s))
+        if not cands:
+            continue
+        cands.sort()
+        best_d, best, gap_s = cands[0]
+        if best_d > max_cos:
+            continue                         # looks like a different robot
+        if len(cands) > 1 and cands[1][0] < best_d * margin:
+            continue                         # appearance cannot separate them either
+        root = best
+        while root in absorb:
+            root = absorb[root]
+        if root == b:
+            continue
+        absorb[b] = root
+        merges.append({"keep": root, "absorbed": b, "region": rb,
+                       "gapS": round(gap_s, 1), "cos": round(best_d, 3),
+                       "runnerUp": round(cands[1][0], 3) if len(cands) > 1 else None})
+    if not absorb:
+        return rows, []
+    out = []
+    for r in rows:
+        dets = []
+        for d in r["dets"]:
+            t = d["tid"]
+            while t in absorb:
+                t = absorb[t]
+            dets.append(dict(d, tid=t))
+        out.append({**r, "dets": dets})
+    if ident is not None:
+        tks = ident.setdefault("tracks", {})
+        for mg in merges:
+            src = tks.pop(str(mg["absorbed"]), None)
+            if not src:
+                continue
+            dst = tks.setdefault(str(mg["keep"]), {"tally": {}, "voteList": []})
+            tal = dst.setdefault("tally", {})
+            for team, n in (src.get("tally") or {}).items():
+                tal[team] = tal.get(team, 0) + n
+            dst.setdefault("voteList", []).extend(src.get("voteList") or [])
+    return out, merges
+
+
+DUP_SEP_M = 0.8
+"""Metres between floor-contact points. NO LONGER the criterion -- kept only as a
+corroborating signal, because the projection cannot be trusted for this question.
+
+The homography assumes every box bottom sits on the GROUND. A box drawn around a
+robot's superstructure has its bottom edge partway up the robot, so it projects away
+along the camera ray and the reported separation is mostly an artefact of height.
+Measured against this camera's calibration, from a vertical offset alone, same image x:
+
+    box bottom at y=   dy=20px   40px   60px   80px
+              500 px     0.49m  1.03m  1.60m  2.23m
+              800 px     0.21m  0.42m  0.65m  0.88m
+             1050 px     0.13m  0.27m  0.41m  0.56m
+
+A 40 px offset at the far end already exceeds this threshold, and the error is
+POSITION-DEPENDENT -- far-side duplicates read as conflicts while near-side ones do
+not, a bias that looks deceptively like a real spatial pattern. On qm24 it disagreed
+with the horizontal test on 4 of 12 co-detected pairs, every one of them a ~100 px
+vertical offset in the same image column: a robot split low/high."""
+
+DUP_DX_WIDTHS = 0.6
+"""Horizontal separation in BOX WIDTHS -- the real criterion. Two boxes on one robot
+share an image column and differ in height, so the artefact above lives entirely in
+the projection and not in the pixels. Normalising by box width absorbs perspective,
+since a distant robot's box shrinks in proportion."""
+
+DUP_V_OVERLAP = 0.25
+"""...and the boxes must overlap VERTICALLY, which is what a low/high split looks like.
+Without this, one robot directly behind another -- same column, large dy, no overlap --
+would merge. Measured on qm24, genuine pairs scored -0.67 and -0.45 (no shared rows)
+while duplicates scored 0.30 to 1.00.
+
+Appearance was tried as the discriminator here and does NOT work: a low/high split
+crops the robot's TOP in one box and its MIDDLE in the other, so 6 of 9 known
+duplicates read as different robots (median 0.753 against a same-robot p90 of 0.53).
+The descriptor is answering correctly; the question was wrong for it."""
+
+DUP_IOU = 0.05
+"""Median box overlap -- a GUARD against a bad projection, not the discriminator.
+
+Set to 0.15 first, which vetoed qm24's (19,20): 0.64 m apart over 118 frames, a
+sustained physical impossibility rejected because its overlap missed the bar by 0.03.
+The measured distribution leaves plenty of room -- pairs at 0.9-1.5 m sit at IoU 0.01
+and everything beyond at 0.00 -- so a low threshold still excludes every genuine pair
+while letting separation do the work it is actually qualified to do."""
+
+DUP_MIN_FRAMES = 5
+"""Was 8, which missed qm24's (21,23): 0.60 m at IoU 0.38 over 5 frames. A brief
+duplicate is still a duplicate, and the separation bound does not weaken with duration."""
+
+
+def geometric_duplicates(rows, pos_at, sep_m: float = DUP_SEP_M,
+                         min_iou: float = DUP_IOU, min_frames: int = DUP_MIN_FRAMES):
+    """Fuse tracks that are ONE robot the detector boxed twice, using geometry alone.
+
+    corrections.merge_duplicates does this from curator pins, and states why the curator
+    is the authority: solve.py's hard constraint asserts that co-detected tracks are
+    different robots, and a human calling both crops the same robot is evidence that
+    PREMISE failed. That gate means it never runs on an uncurated match -- exactly where
+    the damage is worst, because a duplicate does not merely confuse the solver, it
+    COMPELS it to spend a second team identity on one robot.
+
+    Geometry can now make the same argument, which it could not before per-detection
+    field positions were joined correctly (see positions_by_det). FRC bumpers are ~0.9 m
+    across, so two distinct robots cannot have floor-contact points much closer without
+    colliding. Measured on 2026necmp1_qm24, 114 co-detected pairs split cleanly:
+
+        median separation   pairs   median box IoU
+        0.0 - 0.9 m            5      0.24 - 0.50
+        0.9 - 1.5 m            8         0.01
+        above 1.5 m          101         0.00
+
+    Inspected in the video, all five below 0.9 m are one robot with a box on its
+    superstructure and another on its lower body -- the low/high split. Their separation
+    is not noise: the upper box's bottom edge sits partway up the robot, so it projects
+    further along the camera ray. That also means a duplicate has been feeding a WRONG
+    field position into the kinematic term, on top of stealing a team.
+
+    KEEPER IS THE LOWER BOX, not the longer track. Only the box whose bottom edge is on
+    the floor projects to the right place, and positions now feed a hard constraint.
+    Box geometry is never rewritten -- a union box would be a better box, but
+    positions_by_det keys on (frame, box) and reshaping would silently break that join.
+    """
+    import numpy as _np
+    if not pos_at:
+        return rows, []
+    seps = defaultdict(list)
+    ious = defaultdict(list)
+    dxs = defaultdict(list)
+    vovs = defaultdict(list)
+    bottom = defaultdict(list)
+    for r in rows:
+        here = []
+        for d in r["dets"]:
+            if d["tid"] < 0:
+                continue
+            v = pos_at.get((r["f"], tuple(round(float(c), 1) for c in d["xyxy"])))
+            if v:
+                here.append((d, v))
+                bottom[d["tid"]].append(float(d["xyxy"][3]))
+        for i, (da, va) in enumerate(here):
+            for db, vb in here[i + 1:]:
+                k = (min(da["tid"], db["tid"]), max(da["tid"], db["tid"]))
+                seps[k].append(float(_np.hypot(va[1] - vb[1], va[2] - vb[2])))
+                ax1, ay1, ax2, ay2 = da["xyxy"]
+                bx1, by1, bx2, by2 = db["xyxy"]
+                iw = max(0.0, min(ax2, bx2) - max(ax1, bx1))
+                ih = max(0.0, min(ay2, by2) - max(ay1, by1))
+                un = (ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1) - iw * ih
+                ious[k].append(iw * ih / un if un > 0 else 0.0)
+                w = max(ax2 - ax1, bx2 - bx1, 1.0)
+                dxs[k].append(abs((ax1 + ax2) / 2 - (bx1 + bx2) / 2) / w)
+                vovs[k].append(ih / max(min(ay2 - ay1, by2 - by1), 1.0))
+
+    absorb = {}
+    merges = []
+    cand = []
+    for k, v in seps.items():
+        if len(v) < min_frames:
+            continue
+        md, mi = float(_np.median(v)), float(_np.median(ious[k]))
+        mdx = float(_np.median(dxs[k])) if dxs[k] else 9.9
+        mvo = float(_np.median(vovs[k])) if vovs[k] else 0.0
+        if mdx < DUP_DX_WIDTHS and mvo > DUP_V_OVERLAP and mi > min_iou:
+            cand.append((mdx, mi, len(v), k))
+    for md, mi, n, (a, b) in sorted(cand):
+        ba = float(_np.median(bottom[a])) if bottom[a] else 0.0
+        bb = float(_np.median(bottom[b])) if bottom[b] else 0.0
+        keep, gone = (a, b) if ba >= bb else (b, a)   # larger y2 == nearer the floor
+        while keep in absorb:
+            keep = absorb[keep]
+        if gone == keep or gone in absorb:
+            continue
+        absorb[gone] = keep
+        merges.append({"keep": keep, "absorbed": gone, "frames": n,
+                       "dxWidths": round(md, 2), "iou": round(mi, 2)})
+    if not absorb:
+        return rows, []
+    out = []
+    for r in rows:
+        dets, seen = [], set()
+        for d in r["dets"]:
+            t = d["tid"]
+            while t in absorb:
+                t = absorb[t]
+            if t >= 0 and t in seen:
+                continue          # keeper already has a box this frame; drop the copy
+            if t >= 0:
+                seen.add(t)
+            dets.append(dict(d, tid=t))
+        out.append({**r, "dets": dets})
+    return out, merges
+
+
+def track_info(rows, positions: dict | None, pos_at: dict | None = None):
     """Per-track span, alliance and endpoint positions (metres where available)."""
     info: dict[int, dict] = {}
     for r in rows:
@@ -110,7 +731,24 @@ def track_info(rows, positions: dict | None):
         it["alliConf"] = ((dec / it["n"]) * (c.most_common(1)[0][1] / dec)
                           if dec and it["n"] else 0.0)
         del it["alli"]
-    if positions:
+    if pos_at is not None:
+        # Keyed by (frame, box), so it follows a detection through every split.
+        pts = defaultdict(list)
+        for r in rows:
+            for d in r["dets"]:
+                if d["tid"] < 0:
+                    continue
+                v = pos_at.get((r["f"], tuple(round(float(c), 1) for c in d["xyxy"])))
+                if v:
+                    pts[d["tid"]].append(v)
+        for tid, ps in pts.items():
+            if tid in info and ps:
+                ps.sort()
+                info[tid]["start"] = (ps[0][1], ps[0][2])
+                info[tid]["end"] = (ps[-1][1], ps[-1][2])
+        n_have = sum(1 for t in info if "start" in info[t])
+        print(f"[robots] kinematic endpoints on {n_have}/{len(info)} track(s)")
+    elif positions:
         pts = defaultdict(list)
         for s in positions["samples"]:
             if s["tid"] >= 0 and "offfield" not in s["flags"]:
@@ -212,7 +850,8 @@ def split_on_alliance(rows, window: float = ALLI_WIN, min_run: int = ALLI_MIN_RU
     return rows, n_split, orig_of
 
 
-def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12):
+def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12,
+                        metric: str = "hellinger", head=None):
     """Cut tracks where the robot's APPEARANCE changes discontinuously.
 
     Hue splitting only separates red from blue. Within one alliance the three robots
@@ -256,6 +895,15 @@ def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12):
         return rows, 0, {}
     z = np.load(npz_path)
     tid_a, t_a, feat = z["tid"], z["t"], z["feat"]
+    # COSINE for the learned embedding, Hellinger for the histogram. The two are not
+    # interchangeable: Hellinger is only a distance for normalised distributions, and
+    # an embedding is not one -- feeding it here would clip to zero and silently cut
+    # nothing (the same failure the docstring above warns about from the other
+    # direction). The whitening head is applied first when present, because splitting
+    # asks the same question re-identification does -- is this the same robot -- and
+    # the head is what makes that question answerable within an alliance.
+    if metric == "cosine" and head is not None:
+        feat = head(feat)
 
     cuts: dict[int, list[float]] = {}
     for tid in sorted(set(tid_a.tolist())):
@@ -270,7 +918,13 @@ def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12):
         for i in range(win, n - win):
             a = (cs[i] - cs[i - win]) / win
             b = (cs[i + win] - cs[i]) / win
-            d[i] = np.sqrt(max(0.0, 1.0 - np.sum(np.sqrt(np.clip(a * b, 0, None)))))
+            if metric == "cosine":
+                na = float(np.linalg.norm(a)) or 1.0
+                nb = float(np.linalg.norm(b)) or 1.0
+                d[i] = 1.0 - float(a @ b) / (na * nb)
+            else:
+                d[i] = np.sqrt(max(0.0,
+                                   1.0 - np.sum(np.sqrt(np.clip(a * b, 0, None)))))
         chosen: list[int] = []
         for i in np.argsort(-d):
             if d[i] < thresh:
@@ -574,6 +1228,50 @@ FIELD_SLACK_M = 0.6     # matches project.SLACK_M; a robot's foot point can sit 
                         # outside the rectangle through projection error alone
 
 
+def drop_offview(rows, stem: str):
+    """Remove detections from spans where the camera was not in its calibrated pose.
+
+    Returns (rows, n_dropped, n_total), and leaves rows untouched when no view check
+    has been run -- absence of a finding is not a finding.
+
+    WHY THIS DROPS RATHER THAN FLAGS, WHICH IS THE OPPOSITE OF rtrack.project.
+
+    project attaches `viewmoved` and keeps the row, on the reasoning that a camera move
+    invalidates the GEOMETRY while leaving the IDENTITY work perfectly good: the robot
+    was still recognised, it just cannot be placed. That reasoning is sound for a cut to
+    a close-angle camera covering this same match.
+
+    It is wrong, and dangerously so, for what 2026necmp1_qm4 actually does. At t=120 the
+    broadcast cuts to ANOTHER DIVISION'S FIELD and never comes back. The FMS overlay is
+    unchanged throughout -- same title, same roster, a clock that keeps counting -- so
+    every identity check we have says this is still qualification 4. The robots beneath
+    it are strangers. The tracker labelled four of them 10910, 6324, 4905 and 4925 with
+    full confidence; their bumpers read 839, ~2223, ~8389 and ~95.
+
+    The damage is not confined to those samples. 45% of qm4's detections and 70 of its
+    141 track ids exist ONLY in that span, so CP-SAT was distributing six teams across a
+    population half of which belongs to another match, and rtrack.reid would have taught
+    the event gallery what those six teams "look like" from the wrong robots -- poisoning
+    the pre-fill of every later match. (It had not yet: no 2026necmp1 gallery existed.)
+
+    So the policy here is deliberately more conservative than project's: a span we cannot
+    verify the camera on is a span we cannot verify the ROBOTS in either. Losing the
+    close-up crops from a legitimate cut costs some good evidence. Accepting a foreign
+    robot as a team's exemplar costs correctness, quietly, everywhere downstream.
+    """
+    from . import viewcheck as VC
+    n_tot = sum(len(r.get("dets", ())) for r in rows)
+    doc = VC.load(stem)
+    if not doc or not (doc.get("validIntervals") or []):
+        return rows, 0, n_tot
+    out, kept = [], 0
+    for r in rows:
+        if VC.is_valid_at(doc, r["t"]):
+            out.append(r)
+            kept += len(r.get("dets", ()))
+    return out, n_tot - kept, n_tot
+
+
 def drop_offfield(rows, stem: str, slack: float = FIELD_SLACK_M,
                   calib_stem: str | None = None):
     """Remove detections whose foot point projects outside the field. Returns
@@ -639,7 +1337,8 @@ def drop_offfield(rows, stem: str, slack: float = FIELD_SLACK_M,
 def prepare_tracks(stem: str, tracks_p: Path, ident: dict,
                    alliance_split: bool = True, appear_thresh: float = 0.25,
                    chimera_split: bool = True, quiet: bool = True,
-                   field_filter: bool = True, calib_stem: str | None = None):
+                   field_filter: bool = True, calib_stem: str | None = None,
+                   view_filter: bool = True):
     """Apply the whole split chain, so callers share ONE track segmentation.
 
     This exists because two parts of the system disagreed about what a "track" is.
@@ -657,6 +1356,14 @@ def prepare_tracks(stem: str, tracks_p: Path, ident: dict,
     Returns (rows, ident) with the same segmentation this module will use.
     """
     rows = load_tracks(tracks_p)
+    # BEFORE the field filter and before any split. A foreign robot must not reach the
+    # segmentation at all: once it has a track id it competes for a team in CP-SAT and
+    # takes a slot in the curator's frame budget.
+    if view_filter:
+        rows, n_v, n_t = drop_offview(rows, stem)
+        if n_v and not quiet:
+            print(f"[prepare] dropped {n_v}/{n_t} detection(s) outside the "
+                  f"calibrated camera view")
     if field_filter:
         # Must match main() exactly. When these two disagreed about what a track is,
         # 31 of 96 shared detections carried different ids and every cross-boundary
@@ -928,7 +1635,114 @@ def verify(groups, ident, window=20.0):
 
 
 
-def _write_clash_bundle(stem, args, rows, clashes, red, blue) -> None:
+# A robot cannot cross the field between two consecutive samples. When a team's route
+# does exactly that, two tracks have been put on one robot that cannot both be it.
+KIN_MAX_GAP_S = 1.5      # beyond this the route already draws an honest gap
+KIN_MIN_DETS = 4         # a 2-detection fragment is not worth asking a human about
+KIN_SLACK = 1.30         # allow 30% over the limit for projection noise at range
+# SPEED ALONE IS NOT ENOUGH, because dt at a handover is often a single frame. At 15 Hz
+# a 0.53 m step reads as 7.9 m/s and is smaller than a robot -- that is the box-bottom
+# jitter project.py documents, not a teleport, and no curator can adjudicate it because
+# the two positions are not far enough apart to be different robots in the first place.
+# The question being asked is "are these two different machines", so the jump must be
+# at least a robot-and-a-half before it is worth a person's time.
+KIN_MIN_DIST_M = 1.5
+
+
+def kinematic_conflicts(rows, positions: dict | None,
+                        max_speed: float = None) -> list[dict]:
+    """Team routes that teleport where one track hands over to another.
+
+    THE GAP EVERY OTHER GUARD LEAVES. There are three kinematic checks and this case
+    falls between all of them:
+
+      project.py's `fast` flag groups BY TRACK, so a discontinuity BETWEEN two tracks
+        of one team is invisible to it -- each track is internally smooth.
+      custody_conflicts only examines tracks that OVERLAP in time, and wants a second
+        of it; two tracks handing over sequentially never qualify.
+      solve.py's _pair_cost does penalise an implausible pairing, but it is SOFT and a
+        curator pin is HARD, so it cannot win against a mistaken label.
+
+    Measured on the 20 published 2026necmp1 matches: 212 impossible transitions, in
+    every single match, the worst implying 61 m/s -- about twelve times a drivetrain's
+    top speed. They are drawn as straight lines across the field and read as real
+    movement.
+
+    Returns records shaped like custody_conflicts', so _write_clash_bundle can ask
+    about both kinds without caring which it is holding.
+    """
+    if not positions:
+        return []          # metres are required; a pixel proxy is not comparable
+    # POSITIONS MAY BE FROM AN OLDER SEGMENTATION, in which case its track ids name
+    # different things and every question built from them would be nonsense. The whole
+    # id-space hazard prepare_tracks documents, one layer down. Cheap to test: the two
+    # should be talking about mostly the same tracks.
+    live = {d["tid"] for r in rows for d in r["dets"] if d["tid"] >= 0}
+    have = {s_["tid"] for s_ in positions.get("samples", ()) if s_["tid"] >= 0}
+    if live and len(live & have) < 0.5 * len(live):
+        print(f"[clash] positions.json covers {len(live & have)}/{len(live)} of the "
+              f"current tracks -- it predates this segmentation, so the kinematic "
+              f"check is SKIPPED rather than asked about the wrong tracks")
+        return []
+    max_speed = max_speed or (C.ROBOT_MAX_SPEED_MS * KIN_SLACK)
+    pts: dict[int, list] = defaultdict(list)
+    team_of: dict[int, str] = {}
+    for sm in positions["samples"]:
+        if sm["tid"] < 0 or not sm.get("team"):
+            continue
+        if "offfield" in sm["flags"] or "viewmoved" in sm["flags"]:
+            continue
+        pts[sm["tid"]].append((sm["t"], sm["x"], sm["y"]))
+        team_of[sm["tid"]] = str(sm["team"])
+    for v in pts.values():
+        v.sort()
+
+    by_team: dict[str, list] = defaultdict(list)
+    for tid, t in team_of.items():
+        if len(pts[tid]) >= KIN_MIN_DETS:
+            by_team[t].append(tid)
+
+    out = []
+    for team, tids in by_team.items():
+        # EVERY ORDERED PAIR, not just start-order-adjacent ones. Sorting by start and
+        # zipping neighbours looks right and silently misses the common case: a short
+        # track NESTED inside a longer one's span. On 2026necmp1_qm16 team 78, track 17
+        # (129.73-130.13) sits inside track 111 (123.67-130.73), so start-order put it
+        # between 111 and 18 and the real handover -- 111 ending at (7.72,7.00), 18
+        # starting 0.8 s later at (2.98,3.07), 7.7 m/s -- was never examined at all.
+        # That was the exact jump visible in the published route.
+        for a in tids:
+            for b in tids:
+                if a == b:
+                    continue
+                ea = pts[a][-1]
+                sb = pts[b][0]
+                dt = sb[0] - ea[0]
+                if dt <= 0 or dt > KIN_MAX_GAP_S:
+                    continue
+                # Only the FIRST track to resume counts as the handover partner;
+                # without this one long gap generates a conflict per later track.
+                if any(ea[0] < pts[c][0][0] < sb[0] for c in tids if c not in (a, b)):
+                    continue
+                dist = float(np.hypot(sb[1] - ea[1], sb[2] - ea[2]))
+                v = dist / dt
+                if v <= max_speed or dist < KIN_MIN_DIST_M:
+                    continue
+                out.append({"team": team, "tracks": [a, b],
+                            # The window brackets the handover so the bundle builder
+                            # finds frames of BOTH tracks near it -- the last of one
+                            # and the first of the other.
+                            "window": [round(ea[0] - 0.5, 1), round(sb[0] + 0.5, 1)],
+                            "dets": [len(pts[a]), len(pts[b])],
+                            "kind": "kinematic",
+                            "gapS": round(dt, 2), "distM": round(dist, 2),
+                            "impliedMs": round(v, 1)})
+    out.sort(key=lambda z: -z["impliedMs"])
+    return out
+
+
+def _write_clash_bundle(stem, args, rows, clashes, red, blue,
+                        positions: dict | None = None) -> None:
     """Ask about the clashes that physics could not explain, and nothing else.
 
     A clash whose two tracks CROSS is resolved automatically -- the tracker swapped
@@ -945,10 +1759,38 @@ def _write_clash_bundle(stem, args, rows, clashes, red, blue) -> None:
     # survives to the output is a custody conflict -- one team held by two tracks that
     # are far apart at the same instant. That is the same question in its final form,
     # and unlike the clash list it is measured on the tracks that were really emitted.
-    issues = custody_conflicts(rows)
+    # TWO KINDS OF THE SAME QUESTION. A custody conflict is "one team, two tracks, at
+    # the same instant, far apart". A kinematic conflict is "one team, two tracks, one
+    # after the other, too far apart to be the same robot". Both mean at most one of
+    # the pair really is that team, and both are answerable only by looking. They are
+    # asked together because the curator does not care which detector found it.
+    issues = custody_conflicts(rows) + kinematic_conflicts(rows, positions)
+    # ONLY ASK ABOUT THE MATCH. Conflicts in staging or post-match footage are real but
+    # worthless: nothing downstream uses those seconds, and every question spent there
+    # is one a curator did not spend on the match. qm18 otherwise led with a clash at
+    # t=496 s, four minutes after its own match window closed.
+    try:
+        from .curate import match_window
+        win = match_window(rows)
+    except Exception:
+        win = None
+    if win:
+        before = len(issues)
+        issues = [i for i in issues
+                  if win[0] <= (i["window"][0] + i["window"][1]) / 2 <= win[1]]
+        if before != len(issues):
+            print(f"[clash] {before - len(issues)} conflict(s) outside the match window "
+                  f"{win[0]:.0f}-{win[1]:.0f}s -- not asked about")
     if not issues:
-        print("[clash] no custody conflicts -- nothing left to ask about")
+        print("[clash] no custody or kinematic conflicts -- nothing left to ask about")
         return
+    n_kin = sum(1 for i in issues if i.get("kind") == "kinematic")
+    if n_kin:
+        print(f"[clash] {n_kin} kinematic conflict(s): a team's route jumps further "
+              f"than a robot can travel where one track hands over to another")
+        for i in [z for z in issues if z.get("kind") == "kinematic"][:8]:
+            print(f"[clash]   {i['team']}: tracks {i['tracks']} -- {i['distM']} m in "
+                  f"{i['gapS']} s = {i['impliedMs']} m/s")
     from . import curate as CU
 
     # A custody conflict CANNOT be shown in one frame -- that is what defines it. If
@@ -981,23 +1823,46 @@ def _write_clash_bundle(stem, args, rows, clashes, red, blue) -> None:
         print("[clash] the conflicting tracks never share a frame -- cannot ask visually")
         return
 
+    # CARRY IS KEYED BY TRACK, NOT BY FRAME. The obvious form -- ship the curator's
+    # existing labels and let the viewer match them by (f, xy) -- cannot work here and
+    # measurably did not: a clash bundle picks frames that show the conflicting pair,
+    # which are deliberately NOT the frames the main bundle chose, so 0 of 106 labels
+    # ever matched. Resolving them to track ids first makes them apply to whatever
+    # frame this bundle happens to show.
+    #
+    # The focus tracks are EXCLUDED on purpose. Pre-filling them would answer the very
+    # question the bundle exists to ask, and a curator confirming a pre-filled box is
+    # not the same evidence as one naming it unprompted.
     carry = []
     if args.corrections and args.corrections.exists():
-        carry = json.loads(args.corrections.read_text(encoding="utf-8"))["labels"]
+        from . import corrections as CO
+        labels = json.loads(args.corrections.read_text(encoding="utf-8"))["labels"]
+        asked = {t for tids in focus.values() for t in tids}
+        by_tid: dict[int, str] = {}
+        for r in CO.resolve(rows, labels):
+            if r["ok"] and r.get("team") and not CO.flag_of(r):
+                if r["tid"] not in asked:
+                    by_tid[r["tid"]] = str(r["team"])
+        carry = [{"tid": t, "team": tm} for t, tm in sorted(by_tid.items())]
 
     doc = CU.build_frames(stem, args.tracks, args.match, 0, 2, rows=rows,
                           frames=want, focus=focus, carry=carry,
                           note=("These frames come in pairs, moments apart. In each "
                                 "pair the pipeline gave ONE team name to two different "
                                 "robots -- the amber box in each frame. They cannot "
-                                "both be that team. Name the amber box in each."))
+                                "both be that team: either they are on screen together, "
+                                "or the robot would have had to cross the field between "
+                                "them. Name the amber-ringed box in each frame -- some "
+                                "frames have two. Everything else is already filled in "
+                                "from your earlier answers."))
     dest = (C.STAGE3_DIR / f"{stem}_curate_clash.json"
             if str(args.clash_bundle) == "AUTO" else args.clash_bundle)
     dest.parent.mkdir(parents=True, exist_ok=True)
     dest.write_text(json.dumps(doc), encoding="utf-8")
-    print(f"[clash] {len(want)} frame(s) covering {len(issues)} custody "
-          f"conflict(s), carrying {len(carry)} existing label(s) "
-          f"-> {dest}  ({dest.stat().st_size / 1e6:.1f} MB)")
+    print(f"[clash] {len(want)} frame(s) covering {len(issues)} conflict(s) "
+          f"({n_kin} kinematic, {len(issues) - n_kin} custody), carrying "
+          f"{len(carry)} existing label(s) -> {dest}  "
+          f"({dest.stat().st_size / 1e6:.1f} MB)")
 
 
 def main(argv=None) -> int:
@@ -1027,6 +1892,11 @@ def main(argv=None) -> int:
                     help="keep detections that project outside the field. The filter "
                          "needs a calibration and is a no-op without one; see "
                          "drop_offfield for what it does and does not remove")
+    ap.add_argument("--no-view-filter", action="store_true",
+                    help="keep detections recorded while the camera was not in its "
+                         "calibrated pose. A no-op without a viewcheck run; see "
+                         "drop_offview for why those detections are not merely "
+                         "unprojectable but of possibly the wrong robots entirely")
     ap.add_argument("--clash-bundle", type=Path, nargs="?", const=Path("AUTO"),
                     default=None, metavar="PATH",
                     help="after solving, write a small curation bundle showing the "
@@ -1064,6 +1934,75 @@ def main(argv=None) -> int:
                          "with how hard the instance is. Multiplies up: the solver runs "
                          "2 x (1 + --deconflict) times. See the measured sweep above "
                          "before raising it; more is not reliably better.")
+    ap.add_argument("--appear-backend", choices=("hist", "cnn"), default="hist",
+                    help="descriptor used to CUT tracks where appearance changes. "
+                         "hist is the tuned 48-d histogram (0.665 single-crop AUC); "
+                         "cnn is the learned embedding (0.788), which should need far "
+                         "fewer cuts to catch the same switches. Threshold scales are "
+                         "NOT comparable between them -- see --appear-thresh.")
+    ap.add_argument("--occluders", default=None, metavar="CAMERA",
+                    help="rejoin tracks that stop and restart at a structure marked in "
+                         "public/rtrack/occluders.html, choosing the predecessor by "
+                         "APPEARANCE. Geometry finds these pairs but cannot resolve "
+                         "them -- several robots use one structure over a match; see "
+                         "occluder_rebind.")
+    ap.add_argument("--no-join-check", action="store_true",
+                    help="do NOT re-open stitch joins whose two sides look like "
+                         "different robots. See split_chimeric_joins.")
+    ap.add_argument("--app-weight", type=int, default=0, metavar="PTS",
+                    help="reward two adjacent tracks sharing a team when they LOOK "
+                         "like one robot, and penalise it when they do not. 0 = off. "
+                         "The solver has never had an appearance term; see "
+                         "solve.APP_SAME for the calibration and what it costs.")
+    ap.add_argument("--hold-weight", type=int, default=0, metavar="PTS",
+                    help="penalty for giving a team to a visible track while that team "
+                         "is presumed behind a structure it vanished into. 0 = off. "
+                         "Needs --occluders. See occlusion_holds.")
+    ap.add_argument("--hold-require-exit", action="store_true",
+                    help="only hold a team when something was actually seen to come "
+                         "back out of that structure. A cell with no observed exit is "
+                         "an assertion nothing closes.")
+    ap.add_argument("--hold-s", type=float, default=HOLD_S, metavar="S",
+                    help="how long a structure keeps a team after one vanishes into it")
+    ap.add_argument("--no-dup-merge", action="store_true",
+                    help="do NOT fuse tracks that geometry says are one robot boxed "
+                         "twice. See geometric_duplicates.")
+    ap.add_argument("--dup-sep", type=float, default=DUP_SEP_M, metavar="M",
+                    help="floor-contact separation below which two co-detected tracks "
+                         "cannot be two robots (bumpers are ~0.9 m across).")
+    ap.add_argument("--dup-iou", type=float, default=DUP_IOU, metavar="FRAC",
+                    help="median box overlap required alongside --dup-sep. Genuine "
+                         "pairs measured 0.00-0.01; duplicates 0.24-0.50.")
+    ap.add_argument("--kin-weight", type=int, default=120, metavar="PTS",
+                    help="penalty per unit of kinematic impossibility when pairing two "
+                         "tracks onto one robot.")
+    ap.add_argument("--kin-cap", type=float, default=3.0, metavar="MULT",
+                    help="the penalty stops growing past this multiple of the distance "
+                         "budget. At the default, ANY violation costs at most "
+                         "kin-weight*3 = 360, which vote evidence outweighs 13:1 at "
+                         "--vote-weight 200.")
+    ap.add_argument("--kin-hard", type=float, default=0.0, metavar="MULT",
+                    help="FORBID pairing two tracks whose separation exceeds this "
+                         "multiple of the physical distance budget, rather than pricing "
+                         "it. 0 = off. A robot cannot be in two places; past some "
+                         "multiple that is geometry, not evidence -- the same argument "
+                         "the co-detection constraint already rests on.")
+    ap.add_argument("--seed", type=int, default=0,
+                    help="CP-SAT random seed. Changes only search ORDER, not the model "
+                         "or its optimum -- so sweeping it samples DIFFERENT solutions "
+                         "of the same problem, which is how to measure whether the "
+                         "objective actually discriminates a correct labelling.")
+    ap.add_argument("--no-hint", action="store_true",
+                    help="do NOT seed CP-SAT with the vote-implied assignment. The hint "
+                         "changes neither the feasible set nor the optimum, only where "
+                         "the search starts; this flag exists to measure it.")
+    ap.add_argument("--opt-gap", type=float, default=0.0, metavar="FRAC",
+                    help="stop each solve once proven within this fraction of optimal "
+                         "(0 = prove exact optimality, the default). Unlike a wall-clock "
+                         "cap this keeps the solver deterministic, because it stops on "
+                         "a property of the objective rather than on a timer. Aimed at "
+                         "instances carrying identity votes, which are far harder to "
+                         "PROVE than to solve.")
     ap.add_argument("--deconflict", type=int, default=3,
                     help="rounds of cutting tracks that no group can accept, then "
                          "re-solving (cpsat only; 0 disables)")
@@ -1088,6 +2027,15 @@ def main(argv=None) -> int:
     ap.add_argument("--alli-weight", type=float, default=250.0,
                     help="cost of assigning a track to a team on the other alliance "
                          "(cpsat only); see the note above before raising it")
+    ap.add_argument("--vote-weight", type=int, default=10, metavar="PTS",
+                    help="points per identity vote. Measured on qm21: at the default "
+                         "10 the vote terms are 8.7%% of the objective magnitude "
+                         "against 87%% for pair+park, and even a PERFECT descriptor "
+                         "caps identity at 20%%. Parity with the structural terms "
+                         "needs ~41. Raise this rather than MAX_VOTES: the vote cap "
+                         "counts EVIDENCE (reid saturates ~40 crops), so inflating it "
+                         "double-counts the same observation, whereas this is honestly "
+                         "a weight.")
     ap.add_argument("--park", type=float, default=300.0,
                     help="cost of leaving a track unassigned; raise for coverage, "
                          "lower for purity (cpsat only)")
@@ -1096,6 +2044,14 @@ def main(argv=None) -> int:
     C.ensure_dirs()
     stem = video_id(args.video)
     rows = load_tracks(args.tracks)
+    # Kept in lockstep with prepare_tracks, in this order. The two must segment
+    # identically or every cross-boundary inference compares two id spaces -- see the
+    # note in prepare_tracks.
+    if not args.no_view_filter:
+        rows, n_v, n_t = drop_offview(rows, stem)
+        if n_v:
+            print(f"[robots] dropped {n_v}/{n_t} detection(s) recorded while the "
+                  f"camera was not in its calibrated view (see rtrack.viewcheck)")
     if not args.no_field_filter:
         rows, n_off, n_tot = drop_offfield(rows, stem,
                                            calib_stem=args.calib_from)
@@ -1119,6 +2075,82 @@ def main(argv=None) -> int:
     red, blue = [str(t) for t in m["red"]], [str(t) for t in m["blue"]]
     print(f"[robots] red {red}  blue {blue}")
 
+    # BEFORE ANY SPLIT, and that position is the whole point. On the stitched tracks a
+    # duplicate is one long-lived pair -- qm24's worst shared 304 frames. After the 95
+    # appearance splits it is shattered into a dozen short-lived fragment pairs, each
+    # individually below any sane frame threshold and indistinguishable from noise.
+    # Run late, this merged 9 pairs while 57 pairs still came within 1.0 m of each other
+    # in the output; run early, it sees the evidence intact.
+    #
+    # It also has to precede the splits for a second reason: split_on_appearance cuts a
+    # track when its descriptor jumps, and a box that slides between a robot's
+    # superstructure and its lower body IS such a jump. Feeding the splitter duplicates
+    # manufactures fragments it then has to have cut.
+    pos_at = positions_by_det(positions, args.tracks)
+    if not args.no_dup_merge:
+        rows, dups = geometric_duplicates(rows, pos_at, args.dup_sep, args.dup_iou)
+        if dups:
+            print(f"[robots] {len(dups)} duplicate track(s) merged -- one robot boxed "
+                  f"twice (low/high), which would otherwise force a second team on it:")
+            for mg in dups:
+                print(f"[robots]   #{mg['absorbed']} -> #{mg['keep']}: "
+                      f"{mg['dxWidths']} box widths apart horizontally, "
+                      f"IoU {mg['iou']}, {mg['frames']} shared frame(s)")
+            tks = ident.setdefault("tracks", {})
+            for mg in dups:
+                src = tks.pop(str(mg["absorbed"]), None)
+                if not src:
+                    continue
+                dst = tks.setdefault(str(mg["keep"]), {"tally": {}, "voteList": []})
+                tal = dst.setdefault("tally", {})
+                for team, n in (src.get("tally") or {}).items():
+                    tal[team] = tal.get(team, 0) + n
+                dst.setdefault("voteList", []).extend(src.get("voteList") or [])
+
+    # Rejoin across the structures a human marked, BEFORE any split -- same reason as
+    # the duplicate merge above: afterwards the evidence is shattered and the tids no
+    # longer match the cached descriptors.
+    if args.occluders:
+        from .occluders import load as _occ_load, to_pixels as _occ_px
+        from .embed import load_head as _lh
+        _doc = _occ_load(args.occluders)
+        if _doc is None:
+            print(f"[robots] no occluder file for {args.occluders} -- nothing to rebind")
+        else:
+            _regs = _occ_px(_doc, (1920, 1080))
+            rows, rb = occluder_rebind(
+                rows, _regs, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
+                head=_lh(str(args.match).split("_")[0]), ident=ident)
+            if rb:
+                print(f"[robots] {len(rb)} track(s) rejoined across a marked structure "
+                      f"using appearance:")
+                for mg in rb:
+                    ru = f", runner-up {mg['runnerUp']}" if mg["runnerUp"] else ""
+                    print(f"[robots]   #{mg['absorbed']} -> #{mg['keep']} at "
+                          f"{mg['region']}: gap {mg['gapS']}s, cos {mg['cos']}{ru}")
+            else:
+                print(f"[robots] no track pairs met the rebind test at "
+                      f"{len(_regs)} marked structure(s)")
+
+    # The state the holding-cell events are derived from: after the duplicate merge
+    # (so two boxes on one robot are already one track) but before ANY split (so a
+    # track ending still means a robot disappeared). Re-reading the stitched file
+    # instead was wrong -- the merge has since absorbed tracks, so two stitched ids
+    # could map to one fragment and a cell reported itself as its own emergence.
+    pre_split_rows = [{"f": r["f"], "t": r["t"],
+                       "dets": [dict(d) for d in r["dets"]]} for r in rows]
+
+    # Undo bad stitch joins BEFORE anything else reasons about these tracks: a chimera
+    # left whole poisons the descriptors, the votes and the assignment alike.
+    if not args.no_join_check:
+        from .embed import load_head as _lh3
+        rows, n_j = split_chimeric_joins(
+            rows, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
+            head=_lh3(str(args.match).split("_")[0]))
+        if n_j:
+            print(f"[robots] {n_j} stitch join(s) cut -- two robots had been joined "
+                  f"into one track")
+
     if not args.no_alliance_split:
         rows, n_a, orig_a = split_on_alliance(rows)
         if n_a:
@@ -1127,8 +2159,17 @@ def main(argv=None) -> int:
                   f"changed alliance ({len(orig_a) - n_a} tracks affected)")
 
     if args.appear_thresh > 0:
-        ap_p = C.STAGE3_DIR / f"{stem}_appearance.npz"
-        rows, n_p, orig_p = split_on_appearance(rows, ap_p, args.appear_thresh)
+        cnn_split = args.appear_backend == "cnn"
+        ap_p = C.STAGE3_DIR / (f"{stem}_appearance_cnn.npz" if cnn_split
+                               else f"{stem}_appearance.npz")
+        _hd = None
+        if cnn_split:
+            from .embed import load_head as _lh
+            # "2026necmp1_qm24" -> "2026necmp1"; the head is per event.
+            _hd = _lh(str(args.match).split("_")[0])
+        rows, n_p, orig_p = split_on_appearance(
+            rows, ap_p, args.appear_thresh, metric=("cosine" if cnn_split
+                                                    else "hellinger"), head=_hd)
         if n_p:
             ident = retally(ident, rows, orig_p)
             print(f"[robots] split {n_p} segment(s) on APPEARANCE change "
@@ -1197,6 +2238,23 @@ def main(argv=None) -> int:
                 print(f"[corrections]   {fnd['team']}: tracks {fnd['tracks']} cross at "
                       f"t{fnd['atS']}s ({fnd['closeFrames']} close frames)")
 
+        # BEFORE split_conflicts, deliberately: a same-team co-detection whose boxes sit
+        # on top of each other is ONE robot the detector fired on twice, not a curator
+        # error. Fusing it here means split_conflicts only ever sees the clashes that
+        # really are two robots. The deconflict loop below re-derives pins from these
+        # already-merged rows, so it needs no second pass.
+        rows, merges = CO.merge_duplicates(pinned, rows)
+        if merges:
+            resolved = CO.resolve(rows, doc["labels"])
+            pinned, cflags = CO.pins_from(resolved)
+            mixed = CO.dropped(cflags)
+            print(f"[corrections] {len(merges)} duplicate detection(s) merged -- one "
+                  f"robot boxed twice, both boxes given the same team by the curator:")
+            for mg in merges:
+                print(f"[corrections]   {mg['team']}: track {mg['absorbed']} folded "
+                      f"into {mg['keep']} ({mg['frames']} shared frame(s), centres "
+                      f"{mg['sepWidths']} box widths apart)")
+
         pinned, preferred, clashes = CO.split_conflicts(pinned, rows, ident)
         if clashes:
             print(f"[corrections] {len(clashes)} label clash(es) -- tracks pinned to "
@@ -1208,8 +2266,37 @@ def main(argv=None) -> int:
                 print(f"[corrections]   {c['team']}: kept #{c['kept']}, demoted "
                       f"{c['demoted']} -- together in {c['frames']} frames  [{sup}]")
 
-    info = track_info(rows, positions)
+    # Built once from the tracks file on disk, then reused by every rebuild below.
+    # The deconflict loop recomputes `info` after each round of cuts, and the FINAL
+    # answer comes from the last of those -- so a fix applied only to the first call
+    # would leave the result untouched. That is exactly what happened on the first
+    # attempt here.
+    info = track_info(rows, positions, pos_at=pos_at)
     con = conflicts(rows)
+    frag_emb = {}
+    if args.app_weight > 0:
+        from .embed import load_head as _lh2
+        frag_emb = fragment_embeddings(
+            pre_split_rows, rows, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
+            head=_lh2(str(args.match).split("_")[0]))
+        print(f"[robots] appearance term on {len(frag_emb)}/{len(info)} fragment(s)")
+    holds_x, holds_e = [], []
+    if args.occluders and args.hold_weight > 0:
+        from .occluders import load as _ol, to_pixels as _op
+        _d = _ol(args.occluders)
+        if _d:
+            _rg = _op(_d, (1920, 1080))
+            # The STITCHED tracks, re-read from disk: `rows` has been split since, and a
+            # fragment ending is not a disappearance. See hold_cells.
+            holds_x, holds_e, _cells = hold_cells(
+                pre_split_rows, rows, _rg, max_hold_s=args.hold_s,
+                require_exit=args.hold_require_exit)
+            print(f"[robots] {len(_cells)} holding-cell event(s) over {len(_rg)} "
+                  f"structure(s): {len(holds_x)} exclusion(s), "
+                  f"{len(holds_e)} emergence pair(s)")
+            for S, t1, t2, tail, head in _cells:
+                print(f"[robots]   {S}: held {t1}-{t2}s ({t2 - t1:.1f}s) from #{tail}"
+                      + (f", out as #{head}" if head is not None else ""))
     # Denominator BEFORE dropping anything, so coverage stays comparable run to run.
     # Excluding curator-rejected tracks from both halves of the fraction would make
     # every rejection look like an improvement.
@@ -1227,11 +2314,16 @@ def main(argv=None) -> int:
         for spec in args.pin:
             tid_s, _, team = spec.partition("=")
             pinned[int(tid_s)] = team
-        W = S.Weights(park=args.park, alli=args.alli_weight)
+        S.KIN_CAP = args.kin_cap
+        W = S.Weights(park=args.park, alli=args.alli_weight, vote=args.vote_weight,
+                      kin=args.kin_weight, hold=args.hold_weight, app=args.app_weight)
 
         def run_solve(limit):
             a, t, m, u = S.solve(info, con, ident, red, blue, pinned or None,
-                                 limit, W, preferred=preferred or None)
+                                 limit, W, preferred=preferred or None,
+                                 opt_gap=args.opt_gap, hint=not args.no_hint, seed=args.seed,
+                                 kin_hard=args.kin_hard, holds=(holds_x, holds_e),
+                                 emb=frag_emb or None)
             # UNKNOWN and INFEASIBLE are opposite problems and must not share a fate.
             # INFEASIBLE is proved: the constraints cannot all hold, and more time will
             # only prove it again -- fail now. UNKNOWN means the budget ran out before
@@ -1246,7 +2338,10 @@ def main(argv=None) -> int:
                 print(f"[robots] CP-SAT {m.get('status')} at {limit}s "
                       f"-- retrying once at {longer}s")
                 a, t, m, u = S.solve(info, con, ident, red, blue, pinned or None,
-                                     longer, W, preferred=preferred or None)
+                                     longer, W, preferred=preferred or None,
+                                     opt_gap=args.opt_gap, hint=not args.no_hint, seed=args.seed,
+                                 kin_hard=args.kin_hard, holds=(holds_x, holds_e),
+                                 emb=frag_emb or None)
             if a is None:
                 raise SystemExit(f"[robots] CP-SAT found no solution ({m['status']})")
             return a, t, m, u
@@ -1281,7 +2376,7 @@ def main(argv=None) -> int:
                 pinned, cflags = CO.pins_from(resolved)
                 mixed = CO.dropped(cflags)
                 pinned, preferred, clashes = CO.split_conflicts(pinned, rows, ident)
-            info = track_info(rows, positions)
+            info = track_info(rows, positions, pos_at=pos_at)
             con = conflicts(rows)
             for tid in mixed:
                 info.pop(tid, None)
@@ -1357,6 +2452,48 @@ def main(argv=None) -> int:
     for gi, members in enumerate(groups):
         for m in members:
             tid_team[m] = names.get(gi)
+    # CURATOR ALIGNMENT -- the one statistic on this pipeline that cannot be gamed.
+    # Every other number (custody, coverage, label churn, impossible transitions) is
+    # computed over the solver's OWN output, so a run that labels less can score better
+    # on several at once. Measured repeatedly, those proxies pointed the OPPOSITE way to
+    # truth: an appearance term that cut label churn 46% cost 10-12 points here, and a
+    # stitch change that cut fragments 19% cost 5. Reported whenever corrections exist,
+    # so it sits in the log beside the numbers it should be trusted over.
+    if args.corrections and args.corrections.exists():
+        try:
+            _hl = [l for l in json.loads(
+                       args.corrections.read_text(encoding="utf-8"))["labels"]
+                   if l.get("src") == "human" and l.get("team")]
+            _byf = defaultdict(list)
+            for _r in rows:
+                _byf[_r["f"]].append(_r)
+            _hit = _miss = _unres = 0
+            for _lab in _hl:
+                _b, _bd = None, 1e9
+                for _r in _byf.get(_lab["f"], ()):
+                    for _d in _r["dets"]:
+                        _x1, _y1, _x2, _y2 = _d["xyxy"]
+                        _dd = float(np.hypot((_x1 + _x2) / 2 - _lab["xy"][0],
+                                             (_y1 + _y2) / 2 - _lab["xy"][1]))
+                        if _dd < _bd:
+                            _b, _bd = _d, _dd
+                if _b is None or _bd > 90:
+                    _unres += 1
+                # tid_team, NOT d["team"] -- the teams are written onto the
+                # detections in the loop below this, so reading them here compares
+                # every label against None and reports 0%.
+                elif str(tid_team.get(_b["tid"]) or "") == str(_lab["team"]):
+                    _hit += 1
+                else:
+                    _miss += 1
+            if _hit + _miss:
+                print(f"[robots] CURATOR ALIGNMENT "
+                      f"{100 * _hit / (_hit + _miss):.0f}%  "
+                      f"({_hit} agree, {_miss} differ"
+                      + (f", {_unres} unresolved" if _unres else "") + ")")
+        except Exception as _e:
+            print(f"[robots] curator alignment not computed ({type(_e).__name__})")
+
     lab = C.STAGE3_DIR / f"{stem}_labeled.jsonl"
     with lab.open("w", encoding="utf-8") as fh:
         for r in rows:
@@ -1399,7 +2536,7 @@ def main(argv=None) -> int:
               f"({len(cust)}/6 robots present at all)")
 
     if args.clash_bundle is not None:
-        _write_clash_bundle(stem, args, rows, clashes, red, blue)
+        _write_clash_bundle(stem, args, rows, clashes, red, blue, positions)
 
     out = C.STAGE3_DIR / f"{stem}_robots.json"
     out.write_text(json.dumps(

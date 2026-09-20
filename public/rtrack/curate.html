@@ -80,6 +80,9 @@
   /* Overlap warning. Loud enough to notice mid-sweep, quiet enough not to be swatted
      away: an amber bar under the crop, only when two boxes actually sit on each other.
      It was a sentence appended to the hint line and went unread. */
+  #note[hidden]{display:none}
+  #note{margin:0 0 10px;padding:10px 12px;border-radius:8px;border:1px solid #2563eb;
+        background:#12243f;color:#bfdbfe;font-size:13px;line-height:1.45}
   #ovl[hidden]{display:none}
   #ovl{margin-top:8px;padding:9px 11px;border-radius:8px;
        border:1px solid var(--warn);background:#2a2110;color:#fcd34d;font-size:13px;
@@ -181,6 +184,9 @@
       <div id="tick" aria-hidden="true">&#10003;</div>
       <div id="swipeHint">swipe the image left or right to change box</div>
     </div>
+  <!-- Why this bundle exists. A clash bundle is not a normal pass and the curator has
+       no way to know that without being told. -->
+  <div id="note" hidden></div>
     <div id="ovl" hidden><span id="ovlIcon">⚠</span><span id="ovlText"></span></div>
     <div id="views" hidden>
       <div class="vlabel">Clearest views of this robot</div>
@@ -206,6 +212,7 @@
     <div id="workMsg" class="msg" hidden></div>
     <div class="bar">
       <span id="count" style="color:var(--dim);font-size:13px"></span>
+      <span id="clock" style="color:#64748b;font-size:12px;margin-left:10px"></span>
       <span class="sp"></span>
       <button id="submit" class="primary">Submit</button>
     </div>
@@ -224,14 +231,27 @@
   </div>
 </div>
 
+<!-- Relay defaults, generated at build time from VITE_RTRACK_RELAY (see vite.config.js).
+     Loaded before the page script so a phone handed to a scout at an event needs no
+     setup at all. Absent in a checkout with no VITE_RTRACK_RELAY set, in which case the
+     page behaves exactly as it did before and asks for the URL. -->
+<script src="relay.js"></script>
+
 <script>
 const $ = s => document.querySelector(s);
 const ID_PARAM = 'match', ID_FIELD = '#match';
 
+// Precedence: a ?relay= on the URL (handled in deepLink below, which writes through to
+// localStorage) > whatever this device last used > the value baked in at build time.
+// The baked default is LAST so it can never overwrite a deliberate choice -- someone
+// pointing a phone at a second relay for a test must not have it silently reverted on
+// the next load.
 const LS = {
-  get url()   { return localStorage.getItem('rtrackRelay') || ''; },
+  get url()   { return localStorage.getItem('rtrackRelay')
+                    || window.RTRACK_DEFAULT_RELAY || ''; },
   set url(v)  { localStorage.setItem('rtrackRelay', v); },
-  get tok()   { return localStorage.getItem('rtrackToken') || ''; },
+  get tok()   { return localStorage.getItem('rtrackToken')
+                    || window.RTRACK_DEFAULT_TOKEN || ''; },
   set tok(v)  { localStorage.setItem('rtrackToken', v); },
   get match() { return localStorage.getItem('rtrackMatch') || ''; },
   set match(v){ localStorage.setItem('rtrackMatch', v); },
@@ -324,6 +344,81 @@ $('#load').onclick = async () => {
 // only after the relay confirms the send. Wrapped in try/catch throughout because
 // private windows and blocked site data make these accessors throw rather than no-op,
 // and losing the draft must never take the curator down with it.
+// ── session timer ───────────────────────────────────────────────────────
+// "Curation takes about five minutes a match" is a recollection, and every decision
+// about whether to ship fewer frames, more pre-fill or more scouts rests on it. This
+// makes it a measurement.
+//
+// ACTIVE TIME, NOT WALL TIME. A match left open on a bench while someone goes to look
+// at the field would otherwise report an hour, and one such match poisons the average
+// for the whole event. Any gap between actions longer than IDLE_GAP_S is counted as
+// IDLE_GAP_S and no more -- so a real pause to think still counts, and walking away
+// does not. The wall-clock span is kept alongside it, because the difference between
+// the two is itself worth seeing.
+//
+// Persisted per match like DRAFT, and for the same reason: a reload mid-match must not
+// restart the clock, or the number quietly reads low ever after.
+const IDLE_GAP_S = 60;
+
+const TIMER = {
+  key: m => 'rtrackTimer_' + (m || 'unknown'),
+  s: null,
+  load(m) {
+    let v = null;
+    try { v = JSON.parse(localStorage.getItem(this.key(m)) || 'null'); } catch { }
+    this.s = v && typeof v.activeMs === 'number'
+      ? v : { startedAt: Date.now(), activeMs: 0, actions: 0, sends: 0 };
+    this.last = Date.now();
+  },
+  save(m) {
+    try { localStorage.setItem(this.key(m), JSON.stringify(this.s)); } catch { }
+  },
+  // Called on every curator action. Charges the elapsed time since the last one,
+  // capped, then restarts the clock from now.
+  tick(m) {
+    if (!this.s) return;
+    const now = Date.now();
+    this.s.activeMs += Math.min(now - (this.last || now), IDLE_GAP_S * 1000);
+    this.s.actions++;
+    this.last = now;
+    this.save(m);
+  },
+  clear(m) { try { localStorage.removeItem(this.key(m)); } catch { } this.s = null; },
+  // What goes up with the labels. Live-capped the same way, so a submit after a long
+  // pause does not bank the pause.
+  report() {
+    if (!this.s) return null;
+    const live = this.s.activeMs
+      + Math.min(Date.now() - (this.last || Date.now()), IDLE_GAP_S * 1000);
+    return {
+      startedAt: new Date(this.s.startedAt).toISOString(),
+      activeSec: Math.round(live / 1000),
+      wallSec: Math.round((Date.now() - this.s.startedAt) / 1000),
+      actions: this.s.actions,
+      sends: this.s.sends,
+      idleGapS: IDLE_GAP_S,
+    };
+  },
+};
+
+function fmtDur(sec) {
+  const m = Math.floor(sec / 60), s = Math.floor(sec % 60);
+  return m ? `${m}m ${String(s).padStart(2, '0')}s` : `${s}s`;
+}
+
+function paintClock() {
+  const el = $('#clock');
+  if (!el || !TIMER.s || !DOC) return;
+  const r = TIMER.report();
+  let human = 0;
+  for (const a of ANS.values()) if (a.src === 'human') human++;
+  const per = human ? r.activeSec / human : 0;
+  el.textContent = `${fmtDur(r.activeSec)} active`
+    + (human ? ` · ${per.toFixed(1)}s/label` : '');
+  el.title = `Wall clock ${fmtDur(r.wallSec)}. Active time ignores any gap longer `
+           + `than ${IDLE_GAP_S}s, so a match left open does not count.`;
+}
+
 const DRAFT = {
   key: m => 'rtrackDraft_' + (m || 'unknown'),
   save(m, ans) {
@@ -342,6 +437,10 @@ const DRAFT = {
 // ── curation ────────────────────────────────────────────────────────────
 function start(doc) {
   DOC = doc; FI = 0; SEL = null; ANS = new Map();
+  TIMER.load(doc.match);
+  // One interval for the life of the page; start() can run twice if a second match is
+  // loaded without a reload, and two intervals would double the repaint rate.
+  if (!start._clock) start._clock = setInterval(paintClock, 1000);
   const saved = DRAFT.load(doc.match);
   if (saved && saved.size) {
     ANS = saved;
@@ -351,6 +450,9 @@ function start(doc) {
   }
   $('#setup').hidden = true; $('#work').hidden = false;
   $('#hdr').textContent = doc.match || doc.video || '';
+  const noteEl = $('#note');
+  if (doc.note) { noteEl.textContent = doc.note; noteEl.hidden = false; }
+  else noteEl.hidden = true;
   const teams = [...(doc.teams?.red || []), ...(doc.teams?.blue || [])];
   $('#teams').innerHTML = teams.map(t => {
     const red = (doc.teams?.red || []).map(String).includes(String(t));
@@ -390,7 +492,31 @@ function showFrame(i) {
     const k = keyOf(f.f, d.xy);
     if (!ANS.has(k) && d.team) ANS.set(k, { f: f.f, xy: d.xy, team: String(d.team), src: 'machine' });
   }
+  // CARRY: answers this curator already gave, restored so a clash bundle asks only its
+  // own questions instead of being a second full pass. Keyed by TRACK, because a clash
+  // bundle deliberately shows frames the main bundle never did -- matching by (f, xy)
+  // found 0 of 106 labels when this was first tried.
+  //
+  // The tracks under question are absent from `carry` by construction (robots.py
+  // excludes them), so this can never pre-answer the thing being asked.
+  const carryByTid = new Map((DOC.carry || [])
+    .filter(c => c && c.team != null && c.tid != null)
+    .map(c => [Number(c.tid), String(c.team)]));
+  if (carryByTid.size) {
+    for (const d of f.dets) {
+      const team = carryByTid.get(Number(d.tid));
+      if (!team) continue;
+      const k = keyOf(f.f, d.xy);
+      const cur = ANS.get(k);
+      if (!cur || cur.src !== 'human') {
+        ANS.set(k, { f: f.f, xy: d.xy, team, src: 'human', carried: true });
+      }
+    }
+  }
   drawPips(); updateCount(); paint();
+  // A clash frame has exactly one question; go straight to it.
+  const fsel = frame().dets.findIndex(d => isFocus(d));
+  if (fsel >= 0) { SEL = fsel; beginBox(); showZoom(); paint(); markTaken(); updateDoneBar(); return; }
   // Select the first unanswered box straight away. Every frame otherwise began with a
   // tap that conveys nothing -- there is always a first box and it is always next.
   // With pre-fill, the first box needing attention is usually none -- so select the
@@ -428,6 +554,22 @@ function scale() {
 
 function answerFor(d) { return ANS.get(keyOf(frame().f, d.xy)); }
 
+// THE BOX THE QUESTION IS ABOUT. A clash bundle asks about ONE robot per frame -- the
+// pipeline gave its team name to two different machines and only a person can say which
+// is which. Without this the bundle is just eight ordinary frames with no indication of
+// what is being asked, which is what it was until now: the Python side has emitted
+// `focus` for a long time and no viewer ever read it.
+function focusTids() {
+  const m = DOC && DOC.focus;
+  if (!m) return null;
+  const v = m[String(frame().f)];
+  return (Array.isArray(v) && v.length) ? new Set(v.map(Number)) : null;
+}
+function isFocus(d) {
+  const f = focusTids();
+  return !!f && f.has(Number(d.tid));
+}
+
 function paint() {
   const cv = $('#hit'); if (!cv.width && !sizeHit()) return;
   const ctx = cv.getContext('2d'), { sx, sy } = scale();
@@ -443,10 +585,24 @@ function paint() {
     else if (a?.unknown) col = '#f59e0b';
     if (a?.team && a.src === 'machine') ctx.setLineDash([6, 4]);
     else ctx.setLineDash([]);
-    ctx.lineWidth = (SEL === i) ? 4 : 2;
+    // In a clash bundle only ONE box per frame is the question. Everything else is
+    // context -- drawn faintly so the eye lands on the right robot immediately,
+    // rather than on whichever box happens to be biggest.
+    const fset = focusTids();
+    const dim = fset && !fset.has(Number(d.tid));
+    ctx.globalAlpha = dim ? 0.30 : 1;
+    ctx.lineWidth = (SEL === i) ? 4 : (fset && !dim ? 4 : 2);
     ctx.strokeStyle = (SEL === i) ? '#facc15' : col;
     ctx.strokeRect(X, Y, W, H);
     ctx.setLineDash([]);
+    if (fset && !dim) {
+      // A second, offset ring in amber: unmistakable even when the box itself is
+      // already green or cyan from an answer.
+      ctx.strokeStyle = '#f59e0b';
+      ctx.lineWidth = 2;
+      ctx.strokeRect(X - 4, Y - 4, W + 8, H + 8);
+    }
+    ctx.globalAlpha = 1;
     if (a?.team) {
       ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center';
       ctx.fillStyle = '#000'; ctx.fillText(a.team, X + W / 2 + 1, Y - 3);
@@ -701,12 +857,25 @@ function assign(val) {
   if (val === 'clear') ANS.delete(k);
   else ANS.set(k, {
     f: frame().f, xy: d.xy, ...val, src: 'human',
+    // WHAT THE MACHINE SAID, recorded beside what the human said. This is the only
+    // way to measure whether the auto-ID can be trusted, and it has to live HERE
+    // rather than be recovered later by joining the answer back to its bundle: a
+    // bundle is rebuilt whenever the solver, the gallery or the frame selection
+    // changes, and the guess the curator actually saw is then gone. That is not
+    // hypothetical -- rebuilding four 2026necmp1 bundles destroyed the agreement
+    // data for 441 already-curated labels, which cannot be reconstructed.
+    //
+    // Taken from the DETECTION, not from ANS: ANS holds the machine's answer only
+    // until this line overwrites it, and on a second visit to the same box it would
+    // already read 'human' and record the curator agreeing with themselves.
+    was: d.team ? String(d.team) : null,
     // Difficulty, alongside the label and never instead of it. See beginBox().
     ms: BOX_T0 ? Math.min(Date.now() - BOX_T0, 120000) : null,
     aid: BOX_AID && BOX_AID.size ? [...BOX_AID] : undefined,
   });
   DRAFT.save(DOC?.match, ANS);   // write through on every tap; see DRAFT
-  paint(); drawPips(); updateCount(); markTaken();
+  TIMER.tick(DOC?.match);        // and charge the time it took; see TIMER
+  paint(); drawPips(); updateCount(); markTaken(); paintClock();
   // Advance to the next box THAT STILL NEEDS THE CURATOR -- unreviewed(), not
   // unanswered. A machine guess counts as needing review, so a pre-filled frame still
   // sweeps end to end at one tap per box; a box the curator has already confirmed is
@@ -901,10 +1070,15 @@ $('#submit').onclick = async () => {
   const { url, tok } = cfg();
   const id = $('#match').value.trim();
   if (!ANS.size) return say($('#workMsg'), 'Nothing labelled yet.', 'err');
+  // The session block sits BESIDE the labels and never inside them: it is metadata
+  // about how the work was done, not a claim about any robot. corrections.load ignores
+  // unknown top-level keys, so an older consumer reads this file unchanged.
+  TIMER.tick(DOC?.match);
   const payload = {
     schemaVersion: 1,
     video: DOC.video, match: DOC.match,
     createdAt: new Date().toISOString(),
+    session: TIMER.report(),
     labels: [...ANS.values()],
   };
   say($('#workMsg'), `Sending ${payload.labels.length} labels…`);
@@ -923,7 +1097,12 @@ $('#submit').onclick = async () => {
     SENT = true;
     // The draft is only safe to drop once the relay has actually taken the answer, so
     // this sits AFTER the status checks, never alongside the optimistic SENT flag.
+    if (TIMER.s) { TIMER.s.sends++; TIMER.save(DOC?.match); }
     DRAFT.clear(id);
+    // The clock is NOT cleared here. A curator often sends, spots something and sends
+    // again; restarting the timer on the first send would report the second pass as
+    // the whole cost of the match. It is cleared when a new match is loaded.
+    paintClock();
     say($('#workMsg'), `Sent ${payload.labels.length} labels for ${id}. You can keep editing and send again, or go Back.`, 'ok');
     $('#backBtn').style.background = '#16803c';
     $('#backBtn').style.borderColor = '#16803c';

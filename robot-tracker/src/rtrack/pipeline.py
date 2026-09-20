@@ -49,7 +49,7 @@ def tba_mod_teams(match_key: str):
 
 
 STEPS = ["track", "stitch", "appear", "votes", "robots", "curate",
-         "send", "resolve", "project", "export", "gallery"]
+         "send", "resolve", "viewcheck", "project", "export", "gallery"]
 # A lock older than this is assumed to be from a crashed run. Generous,
 # because a match with --relay legitimately blocks for its whole --wait
 # while a human curates.
@@ -95,6 +95,17 @@ def _main(argv=None) -> int:
     ap.add_argument("--force", action="store_true", help="redo everything")
     ap.add_argument("--no-curate", action="store_true",
                     help="stop after solving; do not build a curation bundle")
+    ap.add_argument("--no-votes", action="store_true",
+                    help="solve identity WITHOUT appearance votes even though a "
+                         "gallery exists. Normally a votes failure is fatal; this is "
+                         "the deliberate override, not a routine flag.")
+    ap.add_argument("--appearance", choices=("hist", "cnn"), default="hist",
+                    help="descriptor backend for identity votes. 'hist' is the tuned "
+                         "48-d histogram; 'cnn' is the learned embedding, which scores "
+                         "90.6%% within-alliance against 55.1%% leave-one-match-out "
+                         "(see rtrack.embed). 'cnn' costs one GPU pass on the same "
+                         "decode and still writes the histogram, which "
+                         "robots.split_on_appearance needs either way.")
     ap.add_argument("--no-identity-check", action="store_true",
                     help="process even if the clip cannot be confirmed to hold this "
                          "match. See the gate in _main(); this is the override, not a "
@@ -178,13 +189,17 @@ def _main(argv=None) -> int:
     tracks = C.STAGE1_DIR / f"{stem}_tracks.jsonl"
     st = C.STAGE1_DIR / f"{stem}_tracks_stitched.jsonl"
     appear = C.STAGE3_DIR / f"{stem}_appearance.npz"
-    votes = C.STAGE3_DIR / f"{stem}_reid.json"
+    # The cnn backend keeps its gallery, votes and npz under separate names; the two
+    # descriptors are not comparable and one shared path would mix 48-d histograms
+    # with 512-d embeddings. See reid.gallery_path.
+    _sfx = "_cnn" if args.appearance == "cnn" else ""
+    votes = C.STAGE3_DIR / f"{stem}_reid{_sfx}.json"
     labeled = C.STAGE3_DIR / f"{stem}_labeled.jsonl"
     bundle = C.STAGE3_DIR / f"{stem}_curate_frames.json"
     corr = C.TRACKER_ROOT / "corrections" / f"{args.match}_corrections.json"
     positions = C.STAGE2_DIR / f"{stem}_positions.json"
     out = C.STAGE3_DIR / f"{args.match}.json"
-    gallery = C.STAGE3_DIR / f"{event}_gallery.npz"
+    gallery = C.STAGE3_DIR / f"{event}_gallery{_sfx}.npz"
 
     si = STEPS.index(args.start) if args.start else -1
     def do(step: str, fresh: bool) -> bool:
@@ -233,7 +248,8 @@ def _main(argv=None) -> int:
             print(f"[pipeline] motion check skipped ({type(e).__name__}: {e})")
 
     if do("appear", newer(appear, st)):
-        if not run("appear", stem, "--tracks", st):
+        if not run("appear", stem, "--tracks", st,
+                   "--backend", "both" if args.appearance == "cnn" else "hist"):
             return 1
     else:
         print("    appear: up to date")
@@ -247,10 +263,28 @@ def _main(argv=None) -> int:
     # falls back to geometry plus bumper hue, which is ~13% correct -- expected, not an
     # error. Curating this match is what creates the gallery for the next.
     have_votes = False
-    if gallery.exists():
+    if args.no_votes:
+        print("    votes: SKIPPED by --no-votes; identity from geometry and hue only")
+    elif gallery.exists():
         if do("votes", newer(votes, appear, gallery)):
             have_votes = run("reid", "votes", stem, "--event", event,
-                             "--match", args.match, "--tracks", st)
+                             "--match", args.match, "--tracks", st,
+                             "--backend", args.appearance)
+            if not have_votes:
+                # FATAL, deliberately. A gallery exists, so appearance evidence was
+                # available and something broke -- that is not the same state as an
+                # event's first match having nothing to vote with, and it must not be
+                # allowed to look like it. reid.vote_tracks raised NameError on every
+                # call for the whole 2026necmp1 event; the pipeline carried on to the
+                # 'identity will come from the curator' path and reported success, so
+                # 20 matches were solved on geometry and bumper hue alone and the
+                # resulting 23-39% auto-ID was read as the descriptor's performance.
+                # A wrong number that looks like a right one costs more than a stop.
+                print(f"    !! votes FAILED but {gallery.name} exists -- appearance "
+                      f"evidence is available and was not used. Refusing to solve "
+                      f"identity without it; fix the error above and re-run. "
+                      f"(--no-votes to proceed deliberately without appearance.)")
+                return 6
         else:
             have_votes = True
             print("    votes: up to date")
@@ -321,6 +355,16 @@ def _main(argv=None) -> int:
             return 1
 
     # ---- downstream ---------------------------------------------------------
+    # Camera-pose check BEFORE project, because project reads its output. Never fatal:
+    # a clip where the check cannot form an opinion is still worth projecting, and
+    # is_valid_at keeps everything when the file is missing. A failure here must not
+    # cost a match its routes.
+    va = ["viewcheck", stem]
+    if args.calib_from:
+        va += ["--calib-from", args.calib_from]
+    if not run(*va):
+        print("[pipeline] viewcheck failed; projecting without a camera-pose check")
+
     pa = ["project", stem, "--tracks", labeled]
     if args.calib_from:
         pa += ["--calib-from", args.calib_from]
@@ -334,7 +378,8 @@ def _main(argv=None) -> int:
         return 1
 
     # Gallery LAST: it learns from the curated labelling, and only helps the NEXT match.
-    if not run("reid", "gallery", stem, "--event", event, "--labeled", labeled):
+    if not run("reid", "gallery", stem, "--event", event, "--labeled", labeled,
+               "--backend", args.appearance):
         return 1
 
     # Rebuild the manifest AFTER the gallery update. export already wrote one, but that

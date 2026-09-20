@@ -1,0 +1,406 @@
+<!doctype html>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>rtrack — occluders</title>
+
+<!--
+  Draw the field structures that HIDE robots, once per camera.
+
+  WHY A HUMAN DRAWS THIS. Occluders were first proposed automatically, from the places
+  where tracks disproportionately start and stop. That works -- on three matches it put
+  regions against both hub towers, mirrored to within 11 cm -- but it recovers the
+  SCATTER around a structure, not the structure. The output was slivers needing two
+  thresholds to tune, and tuning them is a worse job than drawing the shape once.
+
+  WHY IMAGE SPACE. An occluder hides part of the PICTURE. Projected onto the field it
+  becomes a huge distorted wedge that depends on robot height, and testing against it
+  would need the homography inverted. A polygon on the frame needs none of that: a
+  track that ends against one is occluded, and the structure's edges are where it can
+  come back. Stored normalised to the frame, so it survives a resolution change.
+
+  The frame comes from /calib/<id>, the same shot the calibration was clicked on --
+  same camera, same pose, already on the relay. Saving is a download rather than a POST
+  because this is setup that lives beside the calibration, not per-match traffic: the
+  relay has four kinds and none of them is this one.
+-->
+
+<style>
+  :root { color-scheme: dark; }
+  body { margin: 0; background: #0b1220; color: #e2e8f0;
+         font: 14px/1.5 system-ui, -apple-system, Segoe UI, Roboto, sans-serif; }
+  header { padding: 10px 16px; border-bottom: 1px solid #1e293b; display: flex;
+           gap: 12px; align-items: center; flex-wrap: wrap; }
+  h1 { font-size: 15px; margin: 0 12px 0 0; font-weight: 600; }
+  label { font-size: 12px; color: #94a3b8; }
+  input, button, select { font: inherit; }
+  input[type=text] { background: #0f172a; border: 1px solid #334155; color: #e2e8f0;
+                     border-radius: 6px; padding: 5px 8px; }
+  button { background: #1e293b; border: 1px solid #334155; color: #e2e8f0;
+           border-radius: 6px; padding: 5px 11px; cursor: pointer; }
+  button:hover { border-color: #475569; }
+  button.primary { background: #1e3a5f; border-color: #3b82f6; color: #bfdbfe; }
+  button:disabled { opacity: .45; cursor: default; }
+  main { display: flex; gap: 14px; padding: 12px 16px; align-items: flex-start;
+         flex-wrap: wrap; }
+  #stage { position: relative; flex: 1 1 640px; min-width: 320px; max-width: 100%; }
+  #shot { display: block; width: 100%; height: auto; border-radius: 8px; }
+  #cv { position: absolute; inset: 0; width: 100%; height: 100%; cursor: crosshair; }
+  aside { flex: 0 0 260px; }
+  .card { background: #0f172a; border: 1px solid #1e293b; border-radius: 8px;
+          padding: 10px 12px; margin-bottom: 10px; }
+  .card h2 { font-size: 12px; text-transform: uppercase; letter-spacing: .06em;
+             color: #64748b; margin: 0 0 8px; }
+  ul { list-style: none; margin: 0; padding: 0; }
+  li { display: flex; align-items: center; gap: 8px; padding: 4px 0;
+       border-bottom: 1px solid #1e293b; }
+  li:last-child { border-bottom: 0; }
+  li.sel { background: #1e3a5f33; }
+  li .sw { width: 12px; height: 12px; border-radius: 3px; flex: none; }
+  li .nm { flex: 1; font-size: 13px; }
+  li button { padding: 2px 7px; font-size: 12px; }
+  .msg { font-size: 12px; min-height: 1.4em; white-space: pre-wrap; }
+  .err { color: #fca5a5; } .ok { color: #86efac; } .dim { color: #64748b; }
+  kbd { background: #1e293b; border: 1px solid #334155; border-radius: 4px;
+        padding: 0 5px; font-size: 11px; }
+</style>
+
+<header>
+  <h1>Occluders</h1>
+  <label for="relay">Relay</label>
+  <input type="text" id="relay" size="34" placeholder="https://rtrack-relay.…workers.dev"
+         autocapitalize="off" autocorrect="off" spellcheck="false">
+  <label for="vid">Camera / video id</label>
+  <input type="text" id="vid" size="18" placeholder="2026necmp1_qm1"
+         autocapitalize="off" autocorrect="off" spellcheck="false">
+  <button id="load" class="primary">Load frame</button>
+  <button id="openFile">Open image…</button>
+  <input type="file" id="fileIn" accept="image/*" hidden>
+  <span id="msg" class="msg"></span>
+</header>
+
+<main>
+  <div id="stage">
+    <img id="shot" alt="camera frame" hidden>
+    <canvas id="cv" hidden></canvas>
+  </div>
+
+  <aside>
+    <div class="card">
+      <h2>Regions</h2>
+      <ul id="list"></ul>
+      <p id="empty" class="msg dim">None yet. Click on the frame to start one.</p>
+    </div>
+
+    <div class="card">
+      <h2>What to mark</h2>
+      <div class="msg dim">
+        <b>Trace each structure that hides a robot</b>, as this camera sees it &mdash;
+        the hub tower, a trench, a wall. Its outline in the picture <i>is</i> the
+        hidden region.<br><br>
+        <b>One shape per structure.</b> Two towers are two regions, not one: the code
+        rebinds a track that vanishes at a structure to one that reappears anywhere
+        else on <i>that same</i> structure, so it has to know which edges belong
+        together.<br><br>
+        <b>Don't mark entries and exits</b> &mdash; the edges of the shape are the
+        entries and exits.<br><br>
+        <b>Don't mark the edge of the picture</b> or parts of the field the camera
+        can't see. That is handled separately; marking it here would rebind robots
+        that simply drove out of frame.<br><br>
+        <b>Rough is fine.</b> A track ending within about a robot width of the outline
+        counts, so a few pixels either way costs nothing. This is not calibration.<br><br>
+        <b>Lines, for where robots leave the picture.</b> A corner or the lip of the
+        frame is not something a robot goes <i>behind</i>, so there is no shape to
+        close &mdash; place two or more corners along it and press
+        <kbd>Finish line</kbd> (or <kbd>Shift</kbd>+<kbd>Enter</kbd>). Mark each exit
+        as its OWN line: a robot leaving near-left and returning far-right is not the
+        same event, and one line around the whole frame would let a team reappear
+        anywhere.
+      </div>
+    </div>
+
+    <div class="card">
+      <h2>Drawing</h2>
+      <div class="msg dim">
+        Click to place corners.<br>
+        <kbd>Enter</kbd> or double-click closes the shape.<br>
+        <kbd>Esc</kbd> cancels it. <kbd>Backspace</kbd> drops the last corner.<br>
+        Drag a corner to adjust. Click a shape to select it.
+      </div>
+      <p style="margin:8px 0 0"><button id="undo">Undo corner</button>
+         <button id="close">Close shape</button>
+         <button id="finishLine">Finish line</button></p>
+    </div>
+
+    <div class="card">
+      <h2>Save</h2>
+      <p class="msg dim">Writes <code>&lt;id&gt;_occluders.json</code>. Put it in
+         <code>robot-tracker/calib/</code> beside the calibration.</p>
+      <p><button id="save" class="primary">Download JSON</button>
+         <button id="loadJson">Load JSON…</button>
+         <input type="file" id="jsonIn" accept="application/json" hidden></p>
+      <p id="saveMsg" class="msg"></p>
+    </div>
+  </aside>
+</main>
+
+<script src="relay.js"></script>
+<script>
+const $ = s => document.querySelector(s);
+const img = $('#shot'), cv = $('#cv'), ctx = cv.getContext('2d');
+
+// Normalised 0-1 against the frame, so a camera that changes resolution keeps its
+// shapes. frameSize is recorded so the consumer can scale back to pixels.
+let REGIONS = [];      // {name, pts:[[x,y]…], colour}
+let DRAFT = [];        // the shape being drawn
+let SEL = -1;          // selected region index
+let DRAG = null;       // {r, i} vertex being moved
+let FRAME = { w: 0, h: 0 };
+
+const PALETTE = ['#f59e0b', '#38bdf8', '#a78bfa', '#4ade80', '#fb7185', '#facc15'];
+const say = (el, t, cls = '') => { el.textContent = t; el.className = 'msg ' + cls; };
+
+$('#relay').value = localStorage.getItem('rtrackRelay') || window.RTRACK_DEFAULT_RELAY || '';
+$('#vid').value = localStorage.getItem('rtrackCalibVid') || '';
+
+// ---- loading a frame ---------------------------------------------------------
+$('#load').onclick = async () => {
+  const url = $('#relay').value.trim().replace(/\/+$/, '');
+  const id = $('#vid').value.trim();
+  if (!url || !id) return say($('#msg'), 'Relay URL and camera id are both needed.', 'err');
+  localStorage.setItem('rtrackRelay', url);
+  localStorage.setItem('rtrackCalibVid', id);
+  say($('#msg'), 'Loading…');
+  try {
+    const r = await fetch(`${url}/calib/${encodeURIComponent(id)}`);
+    if (r.status === 404) return say($('#msg'),
+      `No calibration frame for "${id}". Publish one with rtrack.calibrate first, `
+      + `or use "Open image…" with any frame from this camera.`, 'err');
+    const doc = await r.json();
+    if (!doc.img) throw new Error('payload has no frame image');
+    setShot(doc.img);
+    say($('#msg'), `Frame loaded for ${id}.`, 'ok');
+  } catch (e) { say($('#msg'), 'Load failed:\n' + e.message, 'err'); }
+};
+
+$('#openFile').onclick = () => $('#fileIn').click();
+$('#fileIn').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => { setShot(fr.result); say($('#msg'), `Loaded ${f.name}.`, 'ok'); };
+  fr.readAsDataURL(f);
+};
+
+function setShot(src) {
+  img.onload = () => {
+    FRAME = { w: img.naturalWidth, h: img.naturalHeight };
+    img.hidden = cv.hidden = false;
+    fit();
+  };
+  img.src = src;
+}
+
+function fit() {
+  const r = img.getBoundingClientRect();
+  if (!r.width || !r.height) return;
+  cv.width = Math.round(r.width); cv.height = Math.round(r.height);
+  draw();
+}
+addEventListener('resize', fit);
+
+// ---- geometry helpers --------------------------------------------------------
+const toNorm = e => {
+  const r = cv.getBoundingClientRect();
+  return [(e.clientX - r.left) / r.width, (e.clientY - r.top) / r.height];
+};
+const toPx = p => [p[0] * cv.width, p[1] * cv.height];
+
+function hitVertex(n) {
+  for (let ri = 0; ri < REGIONS.length; ri++) {
+    const pts = REGIONS[ri].pts;
+    for (let i = 0; i < pts.length; i++) {
+      const [x, y] = toPx(pts[i]), [mx, my] = toPx(n);
+      if (Math.hypot(x - mx, y - my) <= 9) return { r: ri, i };
+    }
+  }
+  return null;
+}
+
+function inside(n, pts) {
+  // Even-odd ray cast, in normalised space.
+  let hit = false;
+  for (let i = 0, j = pts.length - 1; i < pts.length; j = i++) {
+    const [xi, yi] = pts[i], [xj, yj] = pts[j];
+    if (((yi > n[1]) !== (yj > n[1]))
+        && (n[0] < (xj - xi) * (n[1] - yi) / ((yj - yi) || 1e-9) + xi)) hit = !hit;
+  }
+  return hit;
+}
+
+// ---- interaction -------------------------------------------------------------
+cv.onpointerdown = e => {
+  if (cv.hidden) return;
+  const n = toNorm(e);
+  const v = hitVertex(n);
+  if (v) { DRAG = v; SEL = v.r; cv.setPointerCapture(e.pointerId); return sync(); }
+  if (!DRAFT.length) {
+  // Only a closed shape can be clicked inside; a line is selected by its corners.
+    const hitR = REGIONS.findIndex(r => r.closed !== false && inside(n, r.pts));
+    if (hitR >= 0 && hitR !== SEL) { SEL = hitR; return sync(); }
+  }
+  DRAFT.push(n);
+  draw();
+};
+
+cv.onpointermove = e => {
+  if (!DRAG) return;
+  REGIONS[DRAG.r].pts[DRAG.i] = toNorm(e);
+  draw();
+};
+cv.onpointerup = () => { DRAG = null; };
+cv.ondblclick = e => { e.preventDefault(); closeShape(); };
+
+addEventListener('keydown', e => {
+  if (e.key === 'Enter') { closeShape(!e.shiftKey); }
+  else if (e.key === 'Escape') { DRAFT = []; draw(); }
+  else if (e.key === 'Backspace' && DRAFT.length) { e.preventDefault(); DRAFT.pop(); draw(); }
+  else if ((e.key === 'Delete') && SEL >= 0 && !DRAFT.length) { remove(SEL); }
+});
+
+$('#undo').onclick = () => { DRAFT.pop(); draw(); };
+$('#close').onclick = () => closeShape(true);
+$('#finishLine').onclick = () => closeShape(false);
+
+function closeShape(closed = true) {
+  const need = closed ? 3 : 2;
+  if (DRAFT.length < need) {
+    if (DRAFT.length) say($('#msg'),
+      closed ? 'A region needs at least 3 corners.' : 'A line needs at least 2 corners.', 'err');
+    return;
+  }
+  REGIONS.push({ name: (closed ? 'region ' : 'exit ') + (REGIONS.length + 1),
+                 pts: DRAFT, closed,
+                 colour: PALETTE[REGIONS.length % PALETTE.length] });
+  DRAFT = [];
+  SEL = REGIONS.length - 1;
+  sync();
+}
+
+function remove(i) { REGIONS.splice(i, 1); SEL = -1; sync(); }
+
+// ---- rendering ---------------------------------------------------------------
+function draw() {
+  if (cv.hidden) return;
+  ctx.clearRect(0, 0, cv.width, cv.height);
+  REGIONS.forEach((r, ri) => {
+    poly(r.pts, r.colour, ri === SEL, r.closed !== false);
+    r.pts.forEach(p => dot(p, r.colour));
+  });
+  if (DRAFT.length) {
+    poly(DRAFT, '#e2e8f0', true, false);
+    DRAFT.forEach(p => dot(p, '#e2e8f0'));
+  }
+}
+
+function poly(pts, colour, strong, fill) {
+  if (pts.length < 2) return;
+  ctx.beginPath();
+  pts.forEach((p, i) => { const [x, y] = toPx(p); i ? ctx.lineTo(x, y) : ctx.moveTo(x, y); });
+  if (fill) ctx.closePath();
+  ctx.lineWidth = fill ? (strong ? 3 : 2) : (strong ? 5 : 4);
+  ctx.strokeStyle = colour;
+  ctx.stroke();
+  if (fill) { ctx.globalAlpha = strong ? 0.30 : 0.18; ctx.fillStyle = colour;
+              ctx.fill(); ctx.globalAlpha = 1; }
+}
+
+function dot(p, colour) {
+  const [x, y] = toPx(p);
+  ctx.beginPath(); ctx.arc(x, y, 4.5, 0, 7);
+  ctx.fillStyle = '#0b1220'; ctx.fill();
+  ctx.lineWidth = 2; ctx.strokeStyle = colour; ctx.stroke();
+}
+
+function sync() {
+  const ul = $('#list');
+  ul.innerHTML = '';
+  REGIONS.forEach((r, i) => {
+    const li = document.createElement('li');
+    if (i === SEL) li.className = 'sel';
+    li.innerHTML = `<span class="sw" style="background:${r.colour}"></span>`
+                 + `<span class="nm"></span>`
+                 + `<span class="dim" style="font-size:12px">`
+                 + `${r.closed === false ? 'line' : 'area'} ${r.pts.length}</span>`
+                 + `<button data-i="${i}">remove</button>`;
+    const nm = li.querySelector('.nm');
+    nm.textContent = r.name;
+    nm.title = 'click to rename';
+    nm.onclick = () => {
+      const v = prompt('Name this region', r.name);
+      if (v) { r.name = v.trim() || r.name; sync(); }
+    };
+    li.onclick = ev => { if (ev.target.tagName !== 'BUTTON') { SEL = i; sync(); } };
+    li.querySelector('button').onclick = () => remove(i);
+    ul.appendChild(li);
+  });
+  $('#empty').hidden = REGIONS.length > 0;
+  draw();
+}
+
+// ---- save / load -------------------------------------------------------------
+$('#save').onclick = () => {
+  if (!REGIONS.length) return say($('#saveMsg'), 'Nothing to save yet.', 'err');
+  const id = $('#vid').value.trim() || 'camera';
+  const doc = {
+    schemaVersion: 1,
+    kind: 'occluders',
+    camera: id,
+    // Normalised 0-1 against the frame; frameSize records what they were drawn on so a
+    // consumer can scale to pixels and tell whether the source resolution changed.
+    coordinates: 'normalised-image',
+    frameSize: [FRAME.w, FRAME.h],
+    createdAt: new Date().toISOString(),
+    regions: REGIONS.map(r => ({
+      name: r.name,
+      // "area" = a structure robots go behind; "edge" = a line they cross, where there
+      // is no inside and the outside of the frame cannot be enclosed.
+      type: r.closed === false ? 'edge' : 'area',
+      points: r.pts.map(p => [Math.round(p[0] * 1e4) / 1e4, Math.round(p[1] * 1e4) / 1e4]),
+    })),
+  };
+  const blob = new Blob([JSON.stringify(doc, null, 1)], { type: 'application/json' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = `${id}_occluders.json`;
+  a.click();
+  URL.revokeObjectURL(a.href);
+  say($('#saveMsg'), `Saved ${REGIONS.length} region(s) as ${a.download}.`, 'ok');
+};
+
+$('#loadJson').onclick = () => $('#jsonIn').click();
+$('#jsonIn').onchange = e => {
+  const f = e.target.files[0];
+  if (!f) return;
+  const fr = new FileReader();
+  fr.onload = () => {
+    try {
+      const doc = JSON.parse(fr.result);
+      if (!Array.isArray(doc.regions)) throw new Error('no regions array');
+      REGIONS = doc.regions.map((r, i) => ({
+        name: r.name || `region ${i + 1}`,
+        pts: r.points.map(p => [p[0], p[1]]),
+        // Older files predate the type field; 3+ points meant a closed area.
+        closed: (r.type || (r.points.length >= 3 ? 'area' : 'edge')) !== 'edge',
+        colour: PALETTE[i % PALETTE.length],
+      }));
+      if (doc.camera && !$('#vid').value.trim()) $('#vid').value = doc.camera;
+      SEL = -1; DRAFT = [];
+      sync();
+      say($('#saveMsg'), `Loaded ${REGIONS.length} region(s) from ${f.name}.`, 'ok');
+    } catch (err) { say($('#saveMsg'), 'Could not read that file:\n' + err.message, 'err'); }
+  };
+  fr.readAsText(f);
+};
+
+sync();
+</script>

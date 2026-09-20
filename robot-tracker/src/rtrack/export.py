@@ -47,6 +47,10 @@ from . import config as C
 from .acquire import video_id
 from . import tba as tba_mod
 
+# Seconds either side of the match kept in the export. Enough for the run-up to the
+# starting line and the moment after the buzzer; not enough for field reset.
+EXPORT_PAD_S = 5.0
+
 SCHEMA_VERSION = 1
 GENERATOR_VERSION = "0.1.0"
 DEFAULT_HZ = 5.0
@@ -120,13 +124,37 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             alliance_of[str(t)] = side
             station_of[str(t)] = i
 
+    # CLIP TO THE MATCH. A slice is cut with generous padding and can run for minutes
+    # either side -- 2026necmp1_qm13 is 678 s around a ~166 s match, so 48% of its
+    # exported samples were staging and post-match milling about. Harmless to the
+    # numbers and ruinous to the UI: the route slider's range is set by the data, so
+    # dragging it spent most of its travel outside the match.
+    #
+    # Bounds are match-relative because `t` already is: auto starts at 0 and the match
+    # is over by C.MATCH_SPAN_S. The pad keeps the approach to the starting line and
+    # the moment after the buzzer, both of which are worth seeing.
+    lo, hi = -EXPORT_PAD_S, C.MATCH_SPAN_S + EXPORT_PAD_S
+
     step = max(1.0 / max(hz, 0.1), 1e-6)
     by_team: dict[str, list] = defaultdict(list)
+    n_clipped = 0
     for s in samples:
         team = s.get("team")
-        if not team or "offfield" in s.get("flags", []):
+        fl = s.get("flags", [])
+        if not (lo <= s["t"] - t0 <= hi):
+            n_clipped += 1
+            continue
+        # `viewmoved` is excluded for the same reason as `offfield`: these are metres
+        # the homography could not have produced correctly. The gap it leaves is
+        # honest, and `gaps` below already describes gaps, so a route that stops while
+        # the broadcast was on another camera reads as missing rather than as wrong.
+        if not team or "offfield" in fl or "viewmoved" in fl:
             continue
         by_team[str(team)].append(s)
+
+    if n_clipped:
+        print(f"[export] clipped {n_clipped} sample(s) outside the match "
+              f"(t {lo:.0f}..{hi:.0f} s relative to auto start)")
 
     custody = robots_doc.get("custody") or {}
     out_robots = []
@@ -155,6 +183,18 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
     q = positions.get("quality") or {}
     cur = robots_doc.get("curator") or {}
     n_labels = len(cur.get("pinned") or {}) + len(cur.get("flags") or {})
+    # Visibility depends only on the camera pose, so it is a property of the
+    # CALIBRATION and identical for every match sharing one. Computed here rather than
+    # stored in calib/ so an older calibration file gains it without being re-fitted.
+    vis_poly = vis_frac = cam_side = None
+    try:
+        from .project import load_calib, visible_region
+        _H, _lens = load_calib(calib_stem or stem)
+        vis_poly, vis_frac, cam_side = visible_region(_H, ref, _lens)
+    except Exception as e:
+        print(f"[export] visibility not computed ({type(e).__name__}); "
+              f"the app will draw no visibility overlay")
+
     doc = {
         "schemaVersion": SCHEMA_VERSION,
         "generator": {"name": "rtrack", "version": GENERATOR_VERSION,
@@ -170,7 +210,17 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
                   "imageRef": "field/2026-field.png",
                   "imageSize": ref["imageSize"],
                   "fieldRectPx": ref["fieldRectPx"],
-                  "pxPerMeter": ref["pxPerMeter"]},
+                  "pxPerMeter": ref["pxPerMeter"],
+                  # What this camera can actually SEE, so a route that stops at a far
+                  # corner reads as unobservable rather than as lost tracking. Null
+                  # when it cannot be computed; consumers must treat that as "unknown
+                  # visibility" and draw nothing, never as "all visible".
+                  "visiblePolyM": vis_poly,
+                  "visibleFrac": vis_frac,
+                  # "low-y" or "high-y": which touchline the camera sits behind. A
+                  # renderer should put that side at the BOTTOM, so the plot matches
+                  # what someone watching the video saw. null = unknown, draw as-is.
+                  "cameraSide": cam_side},
         "calibration": {"mode": calib.get("mode", "static-homography"),
                         "pointCount": calib.get("pointCount"),
                         "reprojErrorM": calib.get("reprojErrorM")},
@@ -185,6 +235,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "samplesOut": sum(len(r["samples"]) for r in out_robots),
             "tracks": q.get("tracks"),
             "offField": q.get("offField"),
+            # Whether the camera-pose check ran at all is reported alongside its result,
+            # so a zero here can be read as "none found" rather than "never looked".
+            "viewChecked": q.get("viewChecked", False),
+            "viewMoved": q.get("viewMoved", 0),
             "kinematicViolations": q.get("kinematicViolations"),
             "meanCustody": round(
                 sum(r["custody"] for r in out_robots) / max(len(out_robots), 1), 4),
