@@ -765,6 +765,15 @@ def track_info(rows, positions: dict | None, pos_at: dict | None = None):
                 ps.sort()
                 info[tid]["start"] = (ps[0][1], ps[0][2])
                 info[tid]["end"] = (ps[-1][1], ps[-1][2])
+                # THE WHOLE PATH, not just its ends. solve.pair_forbidden compares
+                # a["end"] to b["start"], which is the right question only when the two
+                # tracks are SEQUENTIAL. They frequently are not: a 3-detection fragment
+                # sitting inside a 232-detection track's span shares no frame with it
+                # (so the co-detection constraint never sees the pair) yet yields
+                # gap = 0, and the distance measured runs between two points hundreds of
+                # frames apart. Measured on 2026mawor: 92 cross-field jumps survived,
+                # and every interleaved pair inspected shared zero frames.
+                info[tid]["path"] = ps
         n_have = sum(1 for t in info if "start" in info[t])
         print(f"[robots] kinematic endpoints on {n_have}/{len(info)} track(s)")
     elif positions:
@@ -777,6 +786,7 @@ def track_info(rows, positions: dict | None, pos_at: dict | None = None):
                 ps.sort()
                 info[tid]["start"] = (ps[0][1], ps[0][2])
                 info[tid]["end"] = (ps[-1][1], ps[-1][2])
+                info[tid]["path"] = ps
     return info
 
 

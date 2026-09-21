@@ -114,6 +114,29 @@ def _pair_cost(a: dict, b: dict, w: Weights) -> tuple[int, int]:
     return kin, int(w.gap * gap)
 
 
+def _forbid_all_teams(m, x, a, b, teams) -> None:
+    """a and b cannot share ANY team, including a team one of them is pinned to.
+
+    This used to skip the pinned team -- `if teams[k] == pl or teams[k] == ph: continue`
+    -- on the reasoning that a hard pin and a hard exclusion would fight. They do not,
+    except in the one case already handled before this is called: BOTH tracks pinned to
+    the SAME team, which is genuinely infeasible and where the curator wins.
+
+    With only one side pinned there is no conflict at all. x[a,T] == 1 plus
+    AtMostOne(x[a,T], x[b,T]) simply forces x[b,T] == 0, which is the intended
+    conclusion -- b is not T, because it cannot be where a is. Skipping team T removed
+    the single constraint that mattered and left b free to take the one team it must
+    not have.
+
+    Measured on 2026mawor_qm11: track 108 (96 detections, pinned 2262) and track 281
+    (2 detections, 12.8 m away, sharing no frame with it) were correctly identified as
+    kinematically impossible -- forbid=True -- and both came out as 2262 anyway, which
+    is the 64 m/s jump in that match's route.
+    """
+    for k in range(len(teams)):
+        m.AddAtMostOne(x[a, k], x[b, k])
+
+
 def pair_forbidden(a: dict, b: dict, mult: float) -> bool:
     """True when a,b are too far apart in space to be one robot, at ANY price.
 
@@ -124,11 +147,63 @@ def pair_forbidden(a: dict, b: dict, mult: float) -> bool:
     """
     if mult <= 0 or "end" not in a or "start" not in b:
         return False
+
+    # CLOSEST APPROACH IN TIME, when both paths are known.
+    #
+    # The endpoint test below asks "could a robot finishing track a start track b?",
+    # which is the right question only for SEQUENTIAL tracks. Interleaved pairs break it
+    # in both terms at once: gap collapses to 0 because b starts before a ends, and the
+    # distance is measured between two points that may be hundreds of frames apart. The
+    # verdict it returns is then close to arbitrary -- on 2026mawor this let 92
+    # cross-field jumps through, a typical one pairing a 2-detection fragment with a
+    # 96-detection track 12.8 m away that it shares no frame with.
+    #
+    # The physical statement does not care about ordering: if at ANY two instants the
+    # two tracks are further apart than a robot could travel between those instants,
+    # they are not one robot. So walk both paths and test every nearby pair.
+    #
+    # Bounded, not exhaustive. The budget grows with dt, so beyond the point where it
+    # exceeds the field diagonal nothing can ever be forbidden -- at mult 1.5 that is
+    # about 2.0 s. Pairs further apart in time are skipped, which makes this a merge
+    # walk over a short window rather than a cross product.
+    if a.get("path") and b.get("path"):
+        return paths_forbidden(a, b, mult)
+
     gap = max(0.0, b["t0"] - a["t1"])
     if gap > MAX_PAIR_GAP_S:
         return False
     d = float(np.hypot(b["start"][0] - a["end"][0], b["start"][1] - a["end"][1]))
     return d > mult * (C.ROBOT_MAX_SPEED_MS * max(gap, 0.1) + 1.0)
+
+
+def paths_forbidden(a: dict, b: dict, mult: float) -> bool:
+    """True when two tracks are too far apart at some instant to be one robot.
+
+    SYMMETRIC, and that is the point. pair_forbidden asks an ordered question -- could a
+    robot finishing a start b -- which only means anything for sequential tracks. This
+    asks the unordered one, so it also covers pairs that INTERLEAVE: a 3-detection
+    fragment sitting inside a 232-detection track's span, sharing no frame with it.
+    Those were handled by nothing at all. The co-detection constraint needs a shared
+    frame and the pair loop skipped anything not strictly sequential, so they fell
+    between the two and produced 92 cross-field jumps on 2026mawor.
+    """
+    pa, pb = a.get("path"), b.get("path")
+    if pa and pb:
+        diag = float(np.hypot(*C.FIELD_SIZE_M)) if hasattr(C, "FIELD_SIZE_M") else 18.4
+        win = max(0.1, (diag / max(mult, 1e-6) - 1.0) / C.ROBOT_MAX_SPEED_MS)
+        j = 0
+        for ta, xa, ya in pa:
+            while j < len(pb) and pb[j][0] < ta - win:
+                j += 1
+            k = j
+            while k < len(pb) and pb[k][0] <= ta + win:
+                tb, xb, yb = pb[k]
+                dt = abs(tb - ta)
+                d = float(np.hypot(xb - xa, yb - ya))
+                if d > mult * (C.ROBOT_MAX_SPEED_MS * max(dt, 0.1) + 1.0):
+                    return True
+                k += 1
+    return False
 
 
 def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
@@ -236,6 +311,20 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
             lo, hi = (a, b) if info[a]["t1"] <= info[b]["t0"] else (
                 (b, a) if info[b]["t1"] <= info[a]["t0"] else (None, None))
             if lo is None:
+                # INTERLEAVED, and co-detection does not cover it. The pair is not
+                # sequential, so the ordered test below cannot be asked -- but if they
+                # never share a frame, the hard co-detection constraint never saw them
+                # either. That gap is where the cross-field jumps lived. Test the
+                # unordered question and forbid on the same terms; the pin override
+                # applies identically, because a human still outranks the geometry.
+                if kin_hard > 0 and b not in con.get(a, ()) \
+                        and paths_forbidden(info[a], info[b], kin_hard):
+                    pl, ph = (pinned or {}).get(a), (pinned or {}).get(b)
+                    if pl is not None and pl == ph:
+                        n_pin_override += 1
+                        continue
+                    _forbid_all_teams(m, x, a, b, teams)
+                    n_forbid += 1
                 continue
             if pair_forbidden(info[lo], info[hi], kin_hard):
                 # THE CURATOR OUTRANKS THE GEOMETRY. A hard pin and a hard kinematic
@@ -249,10 +338,7 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
                 if pl is not None and pl == ph:
                     n_pin_override += 1
                     continue
-                for k in range(len(teams)):
-                    if teams[k] == pl or teams[k] == ph:
-                        continue      # that team is pinned here; leave it alone
-                    m.AddAtMostOne(x[lo, k], x[hi, k])
+                _forbid_all_teams(m, x, lo, hi, teams)
                 n_forbid += 1
                 continue
             kin, gap = _pair_cost(info[lo], info[hi], w)
