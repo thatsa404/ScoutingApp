@@ -1,6 +1,6 @@
 {
  "schemaVersion": 1,
- "updatedAt": "2026-09-21T00:28:57Z",
+ "updatedAt": "2026-09-21T03:27:33Z",
  "gallery": {
   "2026necmp": {
    "1768": 588,
@@ -102,9 +102,9 @@
     "716"
    ],
    "curated": true,
-   "meanCustody": 0.8614,
-   "bytes": 176956,
-   "exportedAt": "2026-09-21T00:13:44Z",
+   "meanCustody": 0.8776,
+   "bytes": 179858,
+   "exportedAt": "2026-09-21T03:10:13Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -124,9 +124,9 @@
     "11483"
    ],
    "curated": true,
-   "meanCustody": 0.8665,
-   "bytes": 174058,
-   "exportedAt": "2026-09-21T00:13:58Z",
+   "meanCustody": 0.8334,
+   "bytes": 167399,
+   "exportedAt": "2026-09-21T03:22:39Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -146,9 +146,9 @@
     "157"
    ],
    "curated": true,
-   "meanCustody": 0.8822,
-   "bytes": 177482,
-   "exportedAt": "2026-09-21T00:14:00Z",
+   "meanCustody": 0.8825,
+   "bytes": 177446,
+   "exportedAt": "2026-09-21T03:24:17Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -168,9 +168,75 @@
     "9644"
    ],
    "curated": true,
-   "meanCustody": 0.8253,
-   "bytes": 168142,
-   "exportedAt": "2026-09-21T00:28:24Z",
+   "meanCustody": 0.8271,
+   "bytes": 168077,
+   "exportedAt": "2026-09-21T03:25:34Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm13",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 13,
+   "videoId": "2026mawor_qm13",
+   "teams": [
+    "1757",
+    "3205",
+    "5000",
+    "1100",
+    "2079",
+    "999"
+   ],
+   "curated": true,
+   "meanCustody": 0.7666,
+   "bytes": 162177,
+   "exportedAt": "2026-09-21T03:26:56Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm14",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 14,
+   "videoId": "2026mawor_qm14",
+   "teams": [
+    "1768",
+    "8567",
+    "8724",
+    "4628",
+    "10254",
+    "716"
+   ],
+   "curated": true,
+   "meanCustody": 0.5484,
+   "bytes": 112536,
+   "exportedAt": "2026-09-21T02:32:01Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm15",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 15,
+   "videoId": "2026mawor_qm15",
+   "teams": [
+    "2168",
+    "190",
+    "157",
+    "1027",
+    "10393",
+    "237"
+   ],
+   "curated": true,
+   "meanCustody": 0.5945,
+   "bytes": 130736,
+   "exportedAt": "2026-09-21T02:36:49Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -190,9 +256,9 @@
     "190"
    ],
    "curated": true,
-   "meanCustody": 0.8613,
-   "bytes": 172576,
-   "exportedAt": "2026-09-21T00:13:46Z",
+   "meanCustody": 0.8294,
+   "bytes": 164581,
+   "exportedAt": "2026-09-21T03:11:52Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -213,8 +279,8 @@
    ],
    "curated": true,
    "meanCustody": 0.7744,
-   "bytes": 54739,
-   "exportedAt": "2026-09-21T00:14:10Z",
+   "bytes": 54738,
+   "exportedAt": "2026-09-21T03:13:00Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -234,9 +300,9 @@
     "2370"
    ],
    "curated": true,
-   "meanCustody": 0.8539,
-   "bytes": 170548,
-   "exportedAt": "2026-09-21T00:13:49Z",
+   "meanCustody": 0.8401,
+   "bytes": 167462,
+   "exportedAt": "2026-09-21T03:14:07Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -256,9 +322,9 @@
     "10393"
    ],
    "curated": true,
-   "meanCustody": 0.8356,
-   "bytes": 170747,
-   "exportedAt": "2026-09-21T00:13:51Z",
+   "meanCustody": 0.8367,
+   "bytes": 169595,
+   "exportedAt": "2026-09-21T03:15:37Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -278,9 +344,9 @@
     "8544"
    ],
    "curated": true,
-   "meanCustody": 0.8318,
-   "bytes": 169971,
-   "exportedAt": "2026-09-21T00:13:53Z",
+   "meanCustody": 0.8311,
+   "bytes": 167290,
+   "exportedAt": "2026-09-21T03:16:59Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -300,9 +366,9 @@
     "1740"
    ],
    "curated": true,
-   "meanCustody": 0.8145,
-   "bytes": 165629,
-   "exportedAt": "2026-09-21T00:24:42Z",
+   "meanCustody": 0.8136,
+   "bytes": 165756,
+   "exportedAt": "2026-09-21T03:18:27Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -322,9 +388,9 @@
     "8724"
    ],
    "curated": true,
-   "meanCustody": 0.8776,
-   "bytes": 175552,
-   "exportedAt": "2026-09-21T00:13:55Z",
+   "meanCustody": 0.8787,
+   "bytes": 175703,
+   "exportedAt": "2026-09-21T03:19:43Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -344,9 +410,9 @@
     "8567"
    ],
    "curated": true,
-   "meanCustody": 0.8514,
-   "bytes": 182504,
-   "exportedAt": "2026-09-21T00:13:57Z",
+   "meanCustody": 0.8981,
+   "bytes": 179596,
+   "exportedAt": "2026-09-21T03:21:06Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },

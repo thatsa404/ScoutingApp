@@ -582,14 +582,33 @@ crops the robot's TOP in one box and its MIDDLE in the other, so 6 of 9 known
 duplicates read as different robots (median 0.753 against a same-robot p90 of 0.53).
 The descriptor is answering correctly; the question was wrong for it."""
 
-DUP_IOU = 0.05
+DUP_IOU = 0.35
 """Median box overlap -- a GUARD against a bad projection, not the discriminator.
 
 Set to 0.15 first, which vetoed qm24's (19,20): 0.64 m apart over 118 frames, a
 sustained physical impossibility rejected because its overlap missed the bar by 0.03.
 The measured distribution leaves plenty of room -- pairs at 0.9-1.5 m sit at IoU 0.01
 and everything beyond at 0.00 -- so a low threshold still excludes every genuine pair
-while letting separation do the work it is actually qualified to do."""
+while letting separation do the work it is actually qualified to do.
+
+RAISED TO 0.35 after 2026mawor. That reasoning held while the OTHER criteria did the
+excluding, and on a second camera they stopped: qm6 merged four pairs at IoU 0.09-0.29,
+two of them co-detected for 137 and 140 frames -- nine seconds of a pair sitting
+0.37 box widths apart. That is two robots driving alongside each other, not one robot
+boxed twice, and merging them destroys a team. Genuine low/high duplicates are not
+marginal on overlap: necmp1's sit at 0.27-0.53.
+
+Measured, curator alignment at each threshold:
+
+    match              0.05        0.20        0.35
+    2026mawor_qm2      97%         --          97%
+    2026mawor_qm6      94%         95%         97%
+    2026mawor_qm9      94%         --          96%
+    2026mawor_qm10     94%         --          94%
+    2026necmp1_qm21    98%         97%         98%   (103 agree vs 101)
+
+No match is worse and two are materially better. The old value was safe only because
+necmp1's geometry never produced a sustained low-IoU pair to be wrong about."""
 
 DUP_MIN_FRAMES = 5
 """Was 8, which missed qm24's (21,23): 0.60 m at IoU 0.38 over 5 frames. A brief
