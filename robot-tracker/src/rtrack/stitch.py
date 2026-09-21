@@ -350,12 +350,108 @@ def apply(rows: list[dict], mapping: dict[int, int],
     return out, changed
 
 
+# WITHIN-TRACK STEP BOUND, in BOX WIDTHS PER SECOND.
+#
+# EMPIRICAL_P95 above answers a different question -- how far apart two fragments may be
+# and still be joined across a gap -- at p95, which is far too loose to cut on. This is
+# the per-step question: between two CONSECUTIVE detections of one track, how far can the
+# box move and still be the same robot?
+#
+# Box widths rather than raw pixels, because a robot near the camera covers several times
+# the pixels of one at the far barrier for the same real motion. A box width is roughly a
+# bumper perimeter, so the ratio is scale-invariant -- the same reason DUP_DX_WIDTHS and
+# CROSS_WIDTHS are expressed this way.
+#
+# Measured over 665k consecutive within-track steps across both events, displacement of
+# the floor-contact point in box widths:
+#
+#     dt            p50    p90    p99   p99.9    max      event
+#     0.05-0.1s    0.01   0.10   0.21    0.41    2.3      2026mawor
+#     0.05-0.1s    0.00   0.11   0.20    0.34    1.4      2026necmp1
+#
+# p99.9 at one sample interval is 0.41 widths in 0.067 s = 6.1 widths/s. An FRC bumper
+# perimeter is ~0.9 m, so that is 5.5 m/s -- the drivetrain figure, recovered from the
+# footage without being told. Good evidence the measure is the right one.
+#
+# 8.0 sits ~30% above that, so it cuts only what no drivetrain can do. Cut rates:
+#
+#     widths/s / floor    mawor            necmp1
+#     6.0 / 0.5           241  (0.064%)     81  (0.028%)
+#     8.0 / 1.2            27  (0.007%)      6  (0.002%)
+#     12.0 / 2.0           13  (0.003%)      1  (0.000%)
+#
+# The floor covers very small dt, where box jitter rather than motion dominates.
+STEP_WIDTHS_PER_S = 8.0
+STEP_FLOOR_WIDTHS = 1.2
+
+
+def cut_impossible_steps(rows, mapping, wps: float = STEP_WIDTHS_PER_S,
+                         floor: float = STEP_FLOOR_WIDTHS) -> int:
+    """Cut a track where its own box moves further than a robot can, in place.
+
+    This is the only check in the pipeline that can see a bad detection INSIDE a track.
+    Everything downstream compares tracks to each other, so a wrong detection arrives
+    already wearing the right identity and there is no pair to forbid.
+
+    2026mawor_qm13 track 275: at f4584 the box is a robot beside the red hub (60x50 px,
+    conf 0.537); at f4596 it is a PERSON in an FTA vest at the near barrier (98x84 px,
+    conf 0.613). The detector scored the person higher than the robot it was following
+    and BoT-SORT took it. The box moved 4.2 box widths in 0.2 s against a bound of 1.6.
+
+    HERE rather than in rtrack.robots, which has the same check in metres: three stages
+    consume the stitched tracks before the solver ever sees them -- appear embeds every
+    crop, reid votes computes identity per track, and rtrack.curate builds the bundle a
+    human is asked to label. That last one matters most: cutting late means a curator can
+    be shown a crop of a person and asked which robot it is.
+    """
+    import numpy as _np
+    # GROUPED BY THE MERGED TRACK, not the fragment. rows still carry fragment ids at
+    # this point and `mapping` is what turns them into tracks -- grouping by the raw tid
+    # inspects contiguous tracker output, which almost never contains an impossible step,
+    # and the check found 1 case in 13 matches instead of the 27 measured on the stitched
+    # OUTPUT. The steps worth catching are the ones a JOIN introduced.
+    seq = defaultdict(list)
+    for ri, r in enumerate(rows):
+        for di, d in enumerate(r["dets"]):
+            if d["tid"] < 0:
+                continue
+            x1, y1, x2, y2 = d["xyxy"]
+            seq[mapping.get(d["tid"], d["tid"])].append(
+                (r["t"], (x1 + x2) / 2.0, y2, max(x2 - x1, 1.0), ri, di))
+    nxt = max(max((d["tid"] for r in rows for d in r["dets"]), default=-1),
+              max(mapping.values(), default=-1)) + 1
+    cuts = 0
+    for v in seq.values():
+        v.sort()
+        new = None
+        for a, b in zip(v, v[1:]):
+            dt = b[0] - a[0]
+            if dt <= 0:
+                continue
+            dw = float(_np.hypot(b[1] - a[1], b[2] - a[2])) / ((a[3] + b[3]) / 2.0)
+            if dw > max(floor, wps * dt):
+                new = nxt
+                nxt += 1
+                # Its own root, so the piece after the cut is a separate TRACK rather
+                # than rejoining the one it was severed from.
+                mapping[new] = new
+                cuts += 1
+            if new is not None:
+                rows[b[4]]["dets"][b[5]]["tid"] = new
+    return cuts
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Merge split track fragments.")
     ap.add_argument("tracks", type=Path)
     ap.add_argument("--out", type=Path, default=None)
     ap.add_argument("--fps", type=float, default=15.0,
                     help="processed frame rate (source fps / stride)")
+    ap.add_argument("--step-widths", type=float, default=STEP_WIDTHS_PER_S,
+                    metavar="W_PER_S",
+                    help="cut a track where its box moves faster than this many box "
+                         "widths per second between consecutive detections. 0 disables. "
+                         "See cut_impossible_steps.")
     ap.add_argument("--quiet", action="store_true")
     ap.add_argument("--min-track", type=int, default=40,
                     help="final tracks with fewer detections than this are demoted "
@@ -422,6 +518,15 @@ def main(argv: list[str] | None = None) -> int:
                         for root in set(mapping.values())), reverse=True)
     print("[stitch] merged track sizes (detections): "
           f"{[s for s, _ in survivors]}")
+
+    # Before the alliance vote and the micro-fragment drop: a track that contains a
+    # person should not contribute that crop to an alliance vote, and the pieces it
+    # breaks into should face the same size test as everything else.
+    if args.step_widths > 0:
+        n_step = cut_impossible_steps(rows, mapping, args.step_widths)
+        if n_step:
+            print(f"[stitch] cut {n_step} impossible step(s) inside a track "
+                  f"(> {args.step_widths} box widths/s) -- see cut_impossible_steps")
 
     votes = vote_alliance(rows, mapping) if args.vote else None
     if votes is not None:

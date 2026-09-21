@@ -1562,6 +1562,8 @@ async function renderMatchTracks(matchKey) {
                  style="padding:3px 10px;font-size:0.78em;border-radius:4px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;">▶ Watch this moment</button>` : ''}
         </div>
         <div id="mtTeams" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
+        <div id="mtLegend" style="display:flex; gap:14px; flex-wrap:wrap; margin-top:7px;
+             font-size:11px; color:#64748b;"></div>
         <div style="margin-top:8px;">
           <button id="mtFull" title="Open this route view full screen"
                   style="padding:4px 11px; font-size:12px; border-radius:6px;
@@ -1601,6 +1603,25 @@ async function renderMatchTracks(matchKey) {
                 border:1px solid #334155; border-radius:6px; cursor:pointer;
                 background:transparent; color:${window.trackColourFor(r, i)};
                 font-weight:700;">${r.team}</button>`).join('');
+    // Only name a shading that is actually on screen. A legend entry for an overlay the
+    // reader cannot see teaches them to look for something that is not there -- and on a
+    // camera that sees the whole field, "outside camera coverage" is genuinely absent.
+    const _lgChip = (border, fill) =>
+        `<span style="display:inline-block;width:22px;height:11px;border-radius:2px;
+         border:1px dashed ${border};background:${fill};vertical-align:-1px;
+         margin-right:5px;"></span>`;
+    const _lg = [];
+    if (Array.isArray(doc.field?.occluderPolysM) && doc.field.occluderPolysM.length) {
+        _lg.push(_lgChip('rgba(240,168,51,0.85)', 'rgba(240,168,51,0.18)')
+                 + 'hidden behind a structure');
+    }
+    if (Array.isArray(doc.field?.visiblePolyM) && (doc.field.visibleFrac ?? 1) < 0.98) {
+        _lg.push(_lgChip('rgba(226,232,240,0.75)', 'rgba(170,180,190,0.22)')
+                 + 'outside camera coverage');
+    }
+    document.getElementById('mtLegend').innerHTML =
+        _lg.map(t => `<span>${t}</span>`).join('');
+
     document.getElementById('mtTeams').querySelectorAll('.mt-team').forEach(b => {
         b.onclick = () => {
             const t = b.dataset.team;
@@ -9366,6 +9387,62 @@ function renderFieldRoutes(canvas, doc, opts = {}) {
         ctx.lineWidth = 1.5;
         ctx.stroke();
         ctx.restore();
+    }
+
+    // OCCLUDERS — structures robots pass BEHIND, as floor shadows in field metres.
+    //
+    // Deliberately a different treatment from the blind-area hatch above, because they
+    // mean different things and a reader must not confuse them. Outside camera coverage
+    // is "we never saw this part of the field". Behind a hub is "we saw it, and a robot
+    // standing here would be hidden by a structure" — the route can legitimately pass
+    // through and reappear. Same idea, opposite hatch slope and a warm hue.
+    //
+    // CLIPPED TO THE FIELD, and that is not cosmetic. These are the projection of a
+    // silhouette onto the floor plane, and a silhouette's upper edge lies well beyond
+    // the structure's base — on 2026mawor the two hub shadows reach y = -3.5 m and
+    // -4.6 m, several metres off the near end. Drawing them unclipped would paint over
+    // the margin and misrepresent how much of the field is affected.
+    const occ = doc.field?.occluderPolysM;
+    if (opts.occluders !== false && Array.isArray(occ) && occ.length) {
+        const [OFL, OFW] = doc.field.sizeM;
+        const opoly = (arr) => arr.forEach(([x, y], k) => {
+            const [nx, ny] = N(x, y);
+            k ? ctx.lineTo(nx * W, ny * H) : ctx.moveTo(nx * W, ny * H);
+        });
+        const step = Math.min(13, Math.max(6, Math.round(W / 120)));
+        occ.forEach(o => {
+            const p = o?.poly;
+            if (!Array.isArray(p) || p.length < 3) return;
+            ctx.save();
+            ctx.beginPath(); opoly([[0, 0], [OFL, 0], [OFL, OFW], [0, OFW]]);
+            ctx.closePath(); ctx.clip();
+            ctx.beginPath(); opoly(p); ctx.closePath(); ctx.clip();
+            ctx.fillStyle = 'rgba(240,168,51,0.18)';
+            ctx.fillRect(0, 0, W, H);
+            // Counter-diagonal: the blind hatch runs the other way, so the two are
+            // distinguishable even where they abut.
+            ctx.strokeStyle = 'rgba(240,168,51,0.50)';
+            ctx.lineWidth = 1;
+            ctx.beginPath();
+            for (let d = -H; d < W + H; d += step) {
+                ctx.moveTo(W - d, 0);
+                ctx.lineTo(W - d - H, H);
+            }
+            ctx.stroke();
+            ctx.restore();
+
+            // Boundary unclipped by the polygon but still inside the field, so the edge
+            // stays crisp rather than being half-covered by its own hatch.
+            ctx.save();
+            ctx.beginPath(); opoly([[0, 0], [OFL, 0], [OFL, OFW], [0, OFW]]);
+            ctx.closePath(); ctx.clip();
+            ctx.beginPath(); opoly(p); ctx.closePath();
+            ctx.strokeStyle = 'rgba(240,168,51,0.85)';
+            ctx.setLineDash([4, 3]);
+            ctx.lineWidth = 1.5;
+            ctx.stroke();
+            ctx.restore();
+        });
     }
 
     doc.robots.forEach((r, i) => {

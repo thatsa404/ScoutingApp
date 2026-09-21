@@ -879,6 +879,62 @@ def split_on_alliance(rows, window: float = ALLI_WIN, min_run: int = ALLI_MIN_RU
     return rows, n_split, orig_of
 
 
+def split_impossible_steps(rows, pos_at, mult: float = 1.5):
+    """Cut a track where IT MOVES further between two of its own detections than a
+    robot can.
+
+    Every kinematic check until now compared two TRACKS. That cannot see a track which
+    is itself wrong: a bad detection arrives already wearing the right identity, so
+    there is no pair to forbid and the route simply draws a line to it.
+
+    2026mawor_qm13 track 275, the largest surviving jump in the event: at f4584 the box
+    is a robot beside the red hub (60x50 px, conf 0.537); at f4596 it is a PERSON in an
+    FTA vest at the near barrier (98x84 px, conf 0.613). The detector scored the person
+    higher than the robot it had been following, BoT-SORT associated it into the track,
+    and the export drew 7.30 m in 0.20 s. Nothing about the homography is involved --
+    the box moved 335 px and grew 60%. The alliance check cannot help either, because a
+    navy vest reads as blue bumper colour absorbed into a blue robot's track.
+
+    The bound that already knows this is impossible is EMPIRICAL_P999_M; it just never
+    ran within a track. Applied here it is surgical: across 13 curated matches, 10 of
+    159,830 consecutive within-track steps exceed 1.5x budget -- 0.006%, about one cut
+    per match. Nothing exceeds 3x, so the setting is not near a cliff in either
+    direction.
+
+    Cutting rather than dropping the detection: which SIDE of the step is the impostor
+    is not knowable here, and a cut lets the solver decide by treating the two pieces as
+    separate candidates. Returns (rows, n_cuts).
+    """
+    from .solve import distance_budget
+    if not pos_at:
+        return rows, 0
+    seq = defaultdict(list)
+    for ri, r in enumerate(rows):
+        for di, d in enumerate(r["dets"]):
+            if d["tid"] < 0:
+                continue
+            v = pos_at.get((r["f"], tuple(round(float(c), 1) for c in d["xyxy"])))
+            if v:
+                seq[d["tid"]].append((r["t"], v[1], v[2], ri, di))
+    nxt = max((d["tid"] for r in rows for d in r["dets"]), default=-1) + 1
+    cuts = 0
+    for tid, v in seq.items():
+        v.sort()
+        new = None
+        for a, b in zip(v, v[1:]):
+            dt = b[0] - a[0]
+            if dt <= 0:
+                continue
+            d = float(np.hypot(b[1] - a[1], b[2] - a[2]))
+            if d > mult * distance_budget(dt):
+                new = nxt
+                nxt += 1
+                cuts += 1
+            if new is not None:
+                rows[b[3]]["dets"][b[4]]["tid"] = new
+    return rows, cuts
+
+
 def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12,
                         metric: str = "hellinger", head=None):
     """Cut tracks where the robot's APPEARANCE changes discontinuously.
@@ -1899,6 +1955,11 @@ def main(argv=None) -> int:
     ap.add_argument("video")
     ap.add_argument("--tracks", type=Path, required=True)
     ap.add_argument("--identity", type=Path, default=None)
+    ap.add_argument("--step-cut", type=float, default=1.5, metavar="MULT",
+                    help="cut a track where it moves further between two of its own "
+                         "detections than MULT x the measured displacement bound. 0 "
+                         "disables. See split_impossible_steps -- this is the only "
+                         "check that can see a bad detection INSIDE a track.")
     ap.add_argument("--positions", type=Path, default=None)
     ap.add_argument("--match", required=True)
     ap.add_argument("--no-split", action="store_true",
@@ -2237,6 +2298,15 @@ def main(argv=None) -> int:
             else:
                 print("[robots] identity.json has no voteList -- votes stay on "
                       "segment 0 (legacy file; OCR is no longer on the live path)")
+    # WITHIN-TRACK kinematic cuts, after the appearance and vote splits and before the
+    # curator's. A track that teleports inside itself is not a robot for its whole
+    # length, and every constraint downstream assumes it is.
+    if args.step_cut > 0 and pos_at:
+        rows, n_step = split_impossible_steps(rows, pos_at, args.step_cut)
+        if n_step:
+            print(f"[robots] cut {n_step} track(s) where the track's OWN motion was "
+                  f"impossible (> {args.step_cut}x the measured displacement bound)")
+
     # Curator corrections LAST, so they override every heuristic above rather than
     # being argued with by one. A cut a person asked for is better evidence than any
     # threshold we tuned.

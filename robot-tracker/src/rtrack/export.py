@@ -195,6 +195,42 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         print(f"[export] visibility not computed ({type(e).__name__}); "
               f"the app will draw no visibility overlay")
 
+    # OCCLUDERS, projected onto the floor plane. Also a property of the CALIBRATION, so
+    # every match on this camera ships the same shapes.
+    #
+    # These are SHADOWS, not footprints, and the difference matters to anyone reading
+    # the plot. An occluder is drawn as a silhouette in the IMAGE -- the outline of a
+    # structure robots pass behind. Projecting that outline onto the floor gives the
+    # region of floor whose contact point the structure hides, which is what a route
+    # reader wants. But a silhouette's upper edge lies well beyond the structure's base,
+    # so the projected wedge is larger than the hub and runs off the near edge of the
+    # field entirely: on 2026mawor the two hubs reach y = -3.5 m and -4.6 m. Consumers
+    # must clip to the field rather than assume these sit inside it.
+    #
+    # Forward projection only. The image polygon goes THROUGH the homography the same
+    # way a detection does; nothing is inverted.
+    occ_polys = None
+    try:
+        import numpy as _np
+        from .occluders import load as _occ_load, to_pixels as _occ_px
+        from .project import project_points as _pp
+        _cam = calib_stem or stem
+        _doc = _occ_load(_cam)
+        if _doc:
+            _H2, _lens2 = load_calib(_cam)
+            occ_polys = []
+            for _r in _occ_px(_doc, (1920, 1080)):
+                if not _r.get("closed"):
+                    continue          # an edge is a line robots cross, not an area
+                _XY = _pp(_np.asarray(_r["poly"], _np.float32), _H2, ref, _lens2)
+                occ_polys.append({
+                    "name": _r["name"],
+                    "poly": [[round(float(x), 3), round(float(y), 3)] for x, y in _XY]})
+            print(f"[export] {len(occ_polys)} occluder region(s) projected for {_cam}")
+    except Exception as e:
+        print(f"[export] occluders not projected ({type(e).__name__}); "
+              f"the app will draw no occluder overlay")
+
     doc = {
         "schemaVersion": SCHEMA_VERSION,
         "generator": {"name": "rtrack", "version": GENERATOR_VERSION,
@@ -220,7 +256,12 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
                   # "low-y" or "high-y": which touchline the camera sits behind. A
                   # renderer should put that side at the BOTTOM, so the plot matches
                   # what someone watching the video saw. null = unknown, draw as-is.
-                  "cameraSide": cam_side},
+                  "cameraSide": cam_side,
+                  # Structures robots pass BEHIND, as floor shadows in field metres.
+                  # See the note above build(): larger than the structure and not
+                  # necessarily inside the field, so clip before drawing. Null when the
+                  # camera has none drawn -- which is not the same as "nothing occludes".
+                  "occluderPolysM": occ_polys},
         "calibration": {"mode": calib.get("mode", "static-homography"),
                         "pointCount": calib.get("pointCount"),
                         "reprojErrorM": calib.get("reprojErrorM")},
@@ -298,7 +339,13 @@ def main(argv=None) -> int:
     C.ensure_dirs()
     stem = video_id(args.video)
     doc = build(stem, args.match, args.hz,
-                calib_stem=video_id(args.calib_from) if args.calib_from else None,
+                # A CALIBRATION STEM IS NOT A VIDEO ID. video_id() resolves a YouTube id or a file in
+                # data/raw/, and a calibration is named after the CAMERA -- which may have no video of
+                # its own at all. 2026necmp1's calibration was clicked on qm1's footage and is now named
+                # for the event, so `--calib-from 2026necmp1` raised "2026necmp1.mp4 does not exist" and
+                # killed the export. load_calib only ever reads calib/<stem>.json, so the validation was
+                # never buying anything.
+                calib_stem=args.calib_from or None,
                 allow_stale=args.allow_stale)
 
     problems = validate(doc)

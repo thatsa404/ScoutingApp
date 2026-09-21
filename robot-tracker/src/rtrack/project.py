@@ -385,7 +385,13 @@ def main(argv=None) -> int:
     args = ap.parse_args(argv)
     C.ensure_dirs()
     stem = video_id(args.video)
-    cal = video_id(args.calib_from) if args.calib_from else None
+    # A CALIBRATION STEM IS NOT A VIDEO ID. video_id() resolves a YouTube id or a file in
+    # data/raw/, and a calibration is named after the CAMERA -- which may have no video of
+    # its own at all. 2026necmp1's calibration was clicked on qm1's footage and is now named
+    # for the event, so `--calib-from 2026necmp1` raised "2026necmp1.mp4 does not exist" and
+    # killed the export. load_calib only ever reads calib/<stem>.json, so the validation was
+    # never buying anything.
+    cal = args.calib_from or None
     if cal:
         print(f"[project] reusing calibration from {cal}")
     run(stem, args.tracks, args.out or (C.STAGE2_DIR / f"{stem}_positions.json"),
