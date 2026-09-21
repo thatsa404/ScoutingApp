@@ -48,7 +48,7 @@ def tba_mod_teams(match_key: str):
         return ()
 
 
-STEPS = ["track", "stitch", "appear", "votes", "robots", "curate",
+STEPS = ["track", "stitch", "appear", "votes", "prepos", "robots", "curate",
          "send", "resolve", "viewcheck", "project", "export", "gallery"]
 # A lock older than this is assumed to be from a crashed run. Generous,
 # because a match with --relay legitimately blocks for its whole --wait
@@ -292,10 +292,48 @@ def _main(argv=None) -> int:
         print(f"    votes: no {gallery.name} yet -- first match of the event, "
               f"identity will come from the curator")
 
+    # FIELD POSITIONS BEFORE THE SOLVE, NOT AFTER IT.
+    #
+    # rtrack.robots consumes out/stage2/<stem>_positions.json: the kinematic hard
+    # constraint, the geometric duplicate merge and the field-space clash checks all
+    # need metres. But `project` sat at step 10 and `robots` at step 5, so that file
+    # could only ever be a PREVIOUS run's -- and on a match being solved for the first
+    # time it does not exist at all. Every match the watcher handles is a first solve,
+    # so in the one unattended path that matters the constraint was silently inert.
+    #
+    # It went unnoticed because nothing reports a constraint that is not applied. The
+    # symptom finally surfaced as routes: 2026mawor_qm13 attributed 41.6 m/s and
+    # 37.3 m/s jumps to 3205, oscillating between opposite corners of the field, with
+    # zero "kinematically impossible" lines anywhere in the watcher log.
+    #
+    # Projecting the STITCHED tracks is sound even though the solver renumbers them
+    # afterwards: positions_by_det re-keys on (frame, box), which survives splitting and
+    # merging precisely because a box is a fact about the video and a track id is not.
+    #
+    # Written to its own path so it cannot be confused with the canonical positions
+    # file, which is still produced from the LABELLED tracks after the solve and is what
+    # export and the custody window read.
+    prepos = C.STAGE2_DIR / f"{stem}_prepos.json"
+    if args.calib_from or (C.CALIB_DIR / f"{stem}.json").exists():
+        if do("prepos", newer(prepos, st)):
+            pp = ["project", stem, "--tracks", st, "--out", prepos]
+            if args.calib_from:
+                pp += ["--calib-from", args.calib_from]
+            # Not fatal. A camera without a calibration still solves -- it just solves
+            # on pixels, which is what it did before this step existed.
+            if not run(*pp):
+                print("    prepos: projection failed; solving without field positions")
+        else:
+            print("    prepos: up to date")
+    else:
+        print(f"    prepos: no calibration for {stem} -- solving without field positions")
+
     def solve() -> bool:
         a = ["robots", stem, "--tracks", st, "--match", args.match, "--deconflict", 3]
         if args.calib_from:
             a += ["--calib-from", args.calib_from]
+        if prepos.exists():
+            a += ["--positions", prepos]
         if have_votes and votes.exists():
             a += ["--identity", votes]
         if corr.exists():
