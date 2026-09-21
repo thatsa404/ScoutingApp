@@ -1,6 +1,6 @@
 {
  "schemaVersion": 1,
- "updatedAt": "2026-09-21T11:21:33Z",
+ "updatedAt": "2026-09-21T12:01:57Z",
  "gallery": {
   "2026necmp": {
    "1768": 588,
@@ -102,9 +102,9 @@
     "716"
    ],
    "curated": true,
-   "meanCustody": 0.8772,
-   "bytes": 179890,
-   "exportedAt": "2026-09-21T11:19:56Z",
+   "meanCustody": 0.8771,
+   "bytes": 179875,
+   "exportedAt": "2026-09-21T12:00:16Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -124,9 +124,9 @@
     "11483"
    ],
    "curated": true,
-   "meanCustody": 0.8296,
-   "bytes": 165402,
-   "exportedAt": "2026-09-21T11:21:03Z",
+   "meanCustody": 0.8131,
+   "bytes": 162337,
+   "exportedAt": "2026-09-21T12:01:27Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -146,9 +146,9 @@
     "157"
    ],
    "curated": true,
-   "meanCustody": 0.8764,
-   "bytes": 176243,
-   "exportedAt": "2026-09-21T11:21:20Z",
+   "meanCustody": 0.8704,
+   "bytes": 175143,
+   "exportedAt": "2026-09-21T12:01:43Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -170,7 +170,7 @@
    "curated": true,
    "meanCustody": 0.821,
    "bytes": 167028,
-   "exportedAt": "2026-09-21T11:21:27Z",
+   "exportedAt": "2026-09-21T12:01:50Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -190,9 +190,9 @@
     "999"
    ],
    "curated": true,
-   "meanCustody": 0.7666,
-   "bytes": 162230,
-   "exportedAt": "2026-09-21T11:21:33Z",
+   "meanCustody": 0.7623,
+   "bytes": 160008,
+   "exportedAt": "2026-09-21T12:01:57Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -256,9 +256,9 @@
     "190"
    ],
    "curated": true,
-   "meanCustody": 0.8264,
-   "bytes": 163974,
-   "exportedAt": "2026-09-21T11:20:05Z",
+   "meanCustody": 0.8252,
+   "bytes": 163728,
+   "exportedAt": "2026-09-21T12:00:30Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -280,7 +280,7 @@
    "curated": true,
    "meanCustody": 0.7744,
    "bytes": 54738,
-   "exportedAt": "2026-09-21T11:20:09Z",
+   "exportedAt": "2026-09-21T12:00:35Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -300,9 +300,9 @@
     "2370"
    ],
    "curated": true,
-   "meanCustody": 0.8369,
-   "bytes": 166928,
-   "exportedAt": "2026-09-21T11:20:17Z",
+   "meanCustody": 0.8359,
+   "bytes": 166702,
+   "exportedAt": "2026-09-21T12:00:42Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -322,9 +322,9 @@
     "10393"
    ],
    "curated": true,
-   "meanCustody": 0.8317,
-   "bytes": 168700,
-   "exportedAt": "2026-09-21T11:20:24Z",
+   "meanCustody": 0.8291,
+   "bytes": 168282,
+   "exportedAt": "2026-09-21T12:00:49Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -344,9 +344,9 @@
     "8544"
    ],
    "curated": true,
-   "meanCustody": 0.8306,
-   "bytes": 167226,
-   "exportedAt": "2026-09-21T11:20:30Z",
+   "meanCustody": 0.8259,
+   "bytes": 166198,
+   "exportedAt": "2026-09-21T12:00:55Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -366,9 +366,9 @@
     "1740"
    ],
    "curated": true,
-   "meanCustody": 0.8074,
-   "bytes": 164230,
-   "exportedAt": "2026-09-21T11:20:39Z",
+   "meanCustody": 0.8006,
+   "bytes": 163072,
+   "exportedAt": "2026-09-21T12:01:03Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -388,9 +388,9 @@
     "8724"
    ],
    "curated": true,
-   "meanCustody": 0.8754,
-   "bytes": 175189,
-   "exportedAt": "2026-09-21T11:20:44Z",
+   "meanCustody": 0.8738,
+   "bytes": 174859,
+   "exportedAt": "2026-09-21T12:01:08Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -410,9 +410,9 @@
     "8567"
    ],
    "curated": true,
-   "meanCustody": 0.8901,
-   "bytes": 178164,
-   "exportedAt": "2026-09-21T11:20:52Z",
+   "meanCustody": 0.8886,
+   "bytes": 177892,
+   "exportedAt": "2026-09-21T12:01:17Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },

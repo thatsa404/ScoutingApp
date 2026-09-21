@@ -68,6 +68,53 @@ match contain a jump that large.
 
 MAX_PAIR_GAP_S = 25.0     # beyond this the kinematic bound stops discriminating
 KIN_CAP = 3.0             # multiples of the distance budget the penalty keeps scaling
+
+# HOW FAR A ROBOT ACTUALLY GETS IN dt SECONDS, in field metres.
+#
+# This replaces `ROBOT_MAX_SPEED_MS * dt + 1.0`, which took a drivetrain top speed and
+# assumed it was held for the whole interval. Robots do not do that -- they accelerate,
+# turn, queue and stop -- so the linear bound was roughly right for one sample interval
+# and useless past a second. Worse than useless: the field diagonal is 18.4 m, so at
+# kin_hard 1.5 the bound exceeded the largest distance that exists on the field for any
+# gap beyond 2.5 s. The constraint was mathematically incapable of forbidding anything
+# there, which is where most surviving cross-field jumps sat.
+#
+# Measured as the p99.9 of displacement over every pair of samples within one track,
+# 660 tracks across two events, taking the larger of the two per bin:
+#
+#     dt      p99.9 mawor   p99.9 necmp1   old model   old x1.5
+#     0.15       0.96          0.82           1.82        2.74
+#     0.62       2.57          2.63           4.44        6.66
+#     1.25       4.53          4.58           7.88       11.81
+#     2.50       7.32          7.29          14.75       22.12   <- past the diagonal
+#     5.00      10.79          9.49          28.50       42.75
+#
+# The two events agree closely in the tail, which is the point: the envelope describes
+# ROBOTS, so one curve serves both cameras. Their MEDIANS differ a lot (mawor's noisier
+# projection), but a bound is set by the tail.
+#
+# p99.9 rather than max deliberately. A track that swapped identity contributes its swap
+# as a displacement, so the max is contaminated by exactly the thing this bound exists to
+# catch. kin_hard supplies the headroom on top.
+EMPIRICAL_P999_M = ((0.15, 0.96), (0.27, 1.20), (0.41, 1.76), (0.62, 2.63),
+                    (0.88, 3.33), (1.25, 4.58), (1.75, 5.69), (2.50, 7.32),
+                    (3.50, 8.86), (5.00, 10.79))
+
+
+def distance_budget(dt: float) -> float:
+    """Metres a robot can plausibly cover in `dt` seconds. Interpolates the measured
+    envelope; below the first point it holds that value, because that bin already
+    contains the position noise a stationary robot shows."""
+    if dt <= EMPIRICAL_P999_M[0][0]:
+        return EMPIRICAL_P999_M[0][1]
+    for (t0, d0), (t1, d1) in zip(EMPIRICAL_P999_M, EMPIRICAL_P999_M[1:]):
+        if dt <= t1:
+            return d0 + (d1 - d0) * (dt - t0) / (t1 - t0)
+    # Past the last measured point, continue at the final slope rather than flattening:
+    # a robot with 10 s really can cross the field, and pretending otherwise would
+    # forbid legitimate long gaps.
+    (ta, da), (tb, db) = EMPIRICAL_P999_M[-2], EMPIRICAL_P999_M[-1]
+    return db + (db - da) / (tb - ta) * (dt - tb)
                           # over; see _pair_cost. Raise to make gross teleports cost
                           # more than the vote evidence that buys them.
 # Worth more than any evidence term but finite: a contradicted curator label should
@@ -101,7 +148,7 @@ def _pair_cost(a: dict, b: dict, w: Weights) -> tuple[int, int]:
     kin = 0
     if "end" in a and "start" in b:
         d = float(np.hypot(b["start"][0] - a["end"][0], b["start"][1] - a["end"][1]))
-        budget = C.ROBOT_MAX_SPEED_MS * max(gap, 0.1) + 1.0
+        budget = distance_budget(gap)
         if d > budget:
             # CAP WAS 3.0, i.e. 360 points for ANY violation however gross -- a 6 m/s
             # overshoot and a 130 m/s teleport cost exactly the same. Against vote
@@ -173,7 +220,7 @@ def pair_forbidden(a: dict, b: dict, mult: float) -> bool:
     if gap > MAX_PAIR_GAP_S:
         return False
     d = float(np.hypot(b["start"][0] - a["end"][0], b["start"][1] - a["end"][1]))
-    return d > mult * (C.ROBOT_MAX_SPEED_MS * max(gap, 0.1) + 1.0)
+    return d > mult * (distance_budget(gap))
 
 
 def paths_forbidden(a: dict, b: dict, mult: float) -> bool:
@@ -200,7 +247,7 @@ def paths_forbidden(a: dict, b: dict, mult: float) -> bool:
                 tb, xb, yb = pb[k]
                 dt = abs(tb - ta)
                 d = float(np.hypot(xb - xa, yb - ya))
-                if d > mult * (C.ROBOT_MAX_SPEED_MS * max(dt, 0.1) + 1.0):
+                if d > mult * (distance_budget(dt)):
                     return True
                 k += 1
     return False

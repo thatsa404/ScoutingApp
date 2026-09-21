@@ -2319,6 +2319,66 @@ def main(argv=None) -> int:
     # attempt here.
     info = track_info(rows, positions, pos_at=pos_at)
     con = conflicts(rows)
+
+    # SAME-TEAM PINS SEPARATED BY AN IMPOSSIBLE TRANSITION.
+    #
+    # split_conflicts above resolves same-team pins that are CO-DETECTED -- two tracks
+    # on screen together, so at most one can carry the team. It cannot see a pair that
+    # never shares a frame yet still cannot be one robot, because the transition between
+    # them is physically impossible.
+    #
+    # Measured on 2026mawor_qm5: the curator named 9644 at t=76.7 s (inside track 217)
+    # and again at t=83.8 s (inside track 29). Both labels are defensible on their own
+    # crop. But 217 ends at (5.5, 1.3) and 29 begins at (12.1, 7.9) one sample later --
+    # 9.3 m in 0.067 s. Neither track has an internal discontinuity worth the name
+    # (worst internal step 0.39 m and 0.52 m), so they are two clean tracks of two
+    # DIFFERENT robots, and one of the two labels is on the wrong one.
+    #
+    # Cutting is the wrong remedy here precisely because neither track is chimeric;
+    # there is nothing to cut. The right one is the same as split_conflicts': keep the
+    # better-supported pin, demote the other to a preference, and say which. Without
+    # this the solve reaches the kinematic exclusion, finds both tracks pinned to one
+    # team, and applies the curator override -- the human wins, and the route teleports.
+    if args.kin_hard > 0:
+        from .solve import pair_forbidden as _pf, paths_forbidden as _pathsf
+        _byteam = defaultdict(list)
+        for _t, _tm in pinned.items():
+            if _t in info and "start" in info[_t]:
+                _byteam[_tm].append(_t)
+        _imp = []
+        for _tm, _ts in _byteam.items():
+            _ts.sort(key=lambda t: info[t]["t0"])
+            for _i, _a in enumerate(_ts):
+                for _b in _ts[_i + 1:]:
+                    if info[_a]["t1"] <= info[_b]["t0"]:
+                        _bad = _pf(info[_a], info[_b], args.kin_hard)
+                    elif info[_b]["t1"] <= info[_a]["t0"]:
+                        _bad = _pf(info[_b], info[_a], args.kin_hard)
+                    elif _b in con.get(_a, ()):
+                        continue          # co-detected: split_conflicts owns this one
+                    else:
+                        _bad = _pathsf(info[_a], info[_b], args.kin_hard)
+                    if not _bad:
+                        continue
+                    # Keep the one with more evidence behind it. Detection count is the
+                    # honest proxy here: a curator's label on a 250-detection track has
+                    # far more of the match standing behind it than the same label on a
+                    # fragment, and both pins are otherwise identical in kind.
+                    _keep, _drop = ((_a, _b) if info[_a]["n"] >= info[_b]["n"]
+                                    else (_b, _a))
+                    if _drop not in pinned:
+                        continue
+                    del pinned[_drop]
+                    preferred[_drop] = _tm
+                    _imp.append((_tm, _keep, _drop, info[_keep]["n"], info[_drop]["n"]))
+        if _imp:
+            print(f"[corrections] {len(_imp)} same-team pin pair(s) separated by a "
+                  f"KINEMATICALLY IMPOSSIBLE transition -- not co-detected, so "
+                  f"split_conflicts could not see them. Weaker pin demoted to a "
+                  f"preference:")
+            for _tm, _k, _d, _nk, _nd in _imp:
+                print(f"[corrections]   {_tm}: kept #{_k} ({_nk} dets), demoted "
+                      f"#{_d} ({_nd} dets)")
     frag_emb = {}
     if args.app_weight > 0:
         from .embed import load_head as _lh2
