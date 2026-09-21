@@ -79,7 +79,28 @@ def project_points(pts_px: np.ndarray, H: np.ndarray, ref: dict,
 # chain the positions themselves take, so the answer cannot disagree with them. An
 # inverse would need re-distortion and a horizon guard, and would be a second
 # implementation of the thing it is checking.
-VIS_GRID_XY = (320, 180)        # video samples
+# VIDEO SAMPLES. This must be dense enough for the smallest the FIELD can be inside
+# the frame, not for the frame. 320x180 was fine for a camera whose field fills the
+# picture and badly wrong for one whose field does not: on 2026mawor the field occupies
+# rows 481-711 of 1080 -- 21% of the frame height -- so only ~38 of 180 grid rows landed
+# on it at all. The samples that survived were too scattered for the 5x5 close to
+# bridge, the contour came out as a zig-zag through the middle of the field, and the
+# export declared 52% of a fully-visible field unseen. The route plot then hatched the
+# whole near half as "outside camera coverage", which is the exact misreading this
+# overlay exists to prevent.
+#
+# Measured convergence, frac of field reported visible:
+#
+#     grid        2026mawor   2026necmp1     cost (mawor / necmp1)
+#     320x180       0.484       0.865          5 ms / 5 ms
+#     640x360       0.990       0.871          4 ms / 17 ms
+#     960x540       0.993       0.872          9 ms / 39 ms
+#     1920x1080     0.993       0.872         33 ms / 160 ms
+#
+# 960x540 is the first grid where both cameras have converged, and 40 ms once per export
+# is not worth optimising. necmp1 barely moves because its field already fills the frame
+# -- which is why this went unnoticed.
+VIS_GRID_XY = (960, 540)        # video samples
 VIS_MASK_XY = (400, 200)        # field raster the contour is traced on
 
 
