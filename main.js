@@ -8497,6 +8497,14 @@ async function renderTracksTab() {
     ]);
 
     const pub = new Map((man.matches || []).map(m => [m.key, m]));
+    // RELAY TRACKS COUNT AS PUBLISHED. rtrack.export posts routes to the relay as it
+    // writes public/tracks/, so a match finishes and is viewable long before anyone
+    // commits the manifest -- and this tab read ONLY the committed manifest. The result
+    // was a match that had been curated, solved, exported and pushed still showing
+    // "curated · awaiting rerun" with no Routes link, which is the opposite of the
+    // truth and exactly the feedback the watcher exists to provide.
+    const relayTracks = new Map(
+        (items || []).filter(it => it.kind === 'tracks' && it.id).map(it => [it.id, it]));
     const onRelay = new Map();
     for (const it of items || []) onRelay.set(`${it.kind}:${it.id}`, it);
     const gal = (man.gallery || {})[eventKey] || {};
@@ -8514,18 +8522,30 @@ async function renderTracksTab() {
     const relayKeys = (items || [])
         .filter(it => it.kind === 'bundle' || it.kind === 'answer' || it.kind === 'calib')
         .map(it => it.id);
-    const keys = new Set([...matches.map(m => m.key), ...pub.keys(), ...relayKeys]);
+    const keys = new Set([...matches.map(m => m.key), ...pub.keys(), ...relayKeys,
+                          ...relayTracks.keys()]);
     const rows = [...keys]
         .filter(k => !eventKey || k.startsWith(eventKey + '_'))
         .map(k => {
             const dbm = matches.find(m => m.key === k);
             const p = pub.get(k);
+            const rt = relayTracks.get(k);
             const teams = (p?.teams) || [...(dbm?.red || []), ...(dbm?.blue || [])].map(String);
             const known = teams.filter(t => gal[t]).length;
             return {
                 key: k, teams,
-                published: !!p, curated: !!p?.curated,
-                exportedAt: p?.exportedAt ? Date.parse(p.exportedAt) : null,
+                published: !!p || !!rt,
+                curated: !!p?.curated,
+                // Live = on the relay but not in the committed manifest. Worth saying
+                // out loud rather than smoothing over: it is the difference between
+                // "viewable now" and "will survive a cache clear on someone else's
+                // device", and it is the cue that public/tracks/ wants committing.
+                live: !!rt && !p,
+                // git stamps an ISO string, the relay a ms epoch. Both end up ms here;
+                // prefer whichever is NEWER so a fresh relay push wins over a stale
+                // commit rather than being masked by it.
+                exportedAt: Math.max(p?.exportedAt ? Date.parse(p.exportedAt) : 0,
+                                     rt?.at || 0) || null,
                 custody: p?.meanCustody ?? null,
                 bundle: onRelay.get(`bundle:${k}`) || null,
                 answer: onRelay.get(`answer:${k}`) || null,
@@ -8635,6 +8655,7 @@ async function renderTracksTab() {
             const state = answerNewer ? pill('curated · awaiting rerun', '#a78bfa')
                         : outstanding ? (r.published ? pill('bundle waiting · re-curate', '#f59e0b')
                                                      : pill('NEEDS CURATION', '#f59e0b'))
+                        : r.live ? pill('published · live, uncommitted', '#2dd4bf')
                         : r.published ? (r.curated ? pill('published · curated', '#22c55e')
                                                    : pill('published · auto', '#60a5fa'))
                         : pill('no tracks', '#475569');
@@ -8679,6 +8700,12 @@ async function renderTracksTab() {
         <code>calib/&lt;camera&gt;_occluders.json</code> -- the name the solver looks for
         on its own. Keep the camera id in the tool EXACTLY as listed here, or the file
         lands under a name nothing reads.
+        <br><br>
+        <b>published · live, uncommitted</b> means the watcher finished the match and
+        pushed its routes to the relay, where they are viewable now and for seven days.
+        They become permanent when <code>public/tracks/</code> is committed &mdash; until
+        then a device that never fetched them will not find them after the relay entry
+        expires.
         <br><br>
         <b>Models</b> is how many of the match's teams the appearance gallery already knows.
         At 6/6 the tracker labels the match ~84% correctly before anyone touches it; at 0/6

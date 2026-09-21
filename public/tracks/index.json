@@ -1,6 +1,6 @@
 {
  "schemaVersion": 1,
- "updatedAt": "2026-09-21T00:14:10Z",
+ "updatedAt": "2026-09-21T00:28:57Z",
  "gallery": {
   "2026necmp": {
    "1768": 588,
@@ -153,6 +153,28 @@
    "galleryTotal": 6
   },
   {
+   "key": "2026mawor_qm12",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 12,
+   "videoId": "2026mawor_qm12",
+   "teams": [
+    "5422",
+    "8544",
+    "1474",
+    "5494",
+    "6333",
+    "9644"
+   ],
+   "curated": true,
+   "meanCustody": 0.8253,
+   "bytes": 168142,
+   "exportedAt": "2026-09-21T00:28:24Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
    "key": "2026mawor_qm2",
    "eventKey": "2026mawor",
    "compLevel": "qm",
@@ -259,6 +281,28 @@
    "meanCustody": 0.8318,
    "bytes": 169971,
    "exportedAt": "2026-09-21T00:13:53Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm7",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 7,
+   "videoId": "2026mawor_qm7",
+   "teams": [
+    "5000",
+    "4628",
+    "190",
+    "3205",
+    "6333",
+    "1740"
+   ],
+   "curated": true,
+   "meanCustody": 0.8145,
+   "bytes": 165629,
+   "exportedAt": "2026-09-21T00:24:42Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
