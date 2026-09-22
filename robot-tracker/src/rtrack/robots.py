@@ -908,14 +908,30 @@ def split_impossible_steps(rows, pos_at, mult: float = 1.5):
     from .solve import distance_budget
     if not pos_at:
         return rows, 0
-    seq = defaultdict(list)
+    # ONE POSITION PER (track, frame). A track may carry more than one detection in a
+    # frame -- geometric_duplicates fuses a low/high pair by re-tagging rather than
+    # deleting, and a rebind can do the same -- and without this the sequence alternates
+    # between the two boxes. Every step then reads as impossible: on 2026mawor_qm10 one
+    # track held 3321 detections over ~2200 frames and generated sustained 4.8 m "steps"
+    # at 0.067 s, turning 1 real violation into 1291 cuts and parking 1200 fragments.
+    #
+    # The LOWEST box wins, the same convention geometric_duplicates keeps: only a box
+    # whose bottom edge is on the floor projects to the right place.
+    per_frame = {}
     for ri, r in enumerate(rows):
         for di, d in enumerate(r["dets"]):
             if d["tid"] < 0:
                 continue
             v = pos_at.get((r["f"], tuple(round(float(c), 1) for c in d["xyxy"])))
-            if v:
-                seq[d["tid"]].append((r["t"], v[1], v[2], ri, di))
+            if not v:
+                continue
+            key = (d["tid"], r["f"])
+            prev = per_frame.get(key)
+            if prev is None or d["xyxy"][3] > prev[0]:
+                per_frame[key] = (d["xyxy"][3], r["t"], v[1], v[2], ri, di)
+    seq = defaultdict(list)
+    for (tid, _f), (_y2, t, x, y, ri, di) in per_frame.items():
+        seq[tid].append((t, x, y, ri, di))
     nxt = max((d["tid"] for r in rows for d in r["dets"]), default=-1) + 1
     cuts = 0
     for tid, v in seq.items():

@@ -1,0 +1,57 @@
+{
+ "schemaVersion": 1,
+ "kind": "occluders",
+ "camera": "2026mawor",
+ "coordinates": "normalised-image",
+ "frameSize": [
+  1920,
+  1080
+ ],
+ "createdAt": "2026-09-20T23:50:51.831Z",
+ "regions": [
+  {
+   "name": "blue hub",
+   "type": "area",
+   "points": [
+    [
+     0.328,
+     0.4843
+    ],
+    [
+     0.3757,
+     0.5034
+    ],
+    [
+     0.3974,
+     0.4261
+    ],
+    [
+     0.3272,
+     0.3965
+    ]
+   ]
+  },
+  {
+   "name": "red hub",
+   "type": "area",
+   "points": [
+    [
+     0.6455,
+     0.497
+    ],
+    [
+     0.6916,
+     0.5013
+    ],
+    [
+     0.6994,
+     0.3954
+    ],
+    [
+     0.6198,
+     0.3827
+    ]
+   ]
+  }
+ ]
+}

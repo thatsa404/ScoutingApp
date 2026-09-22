@@ -1,6 +1,6 @@
 {
  "schemaVersion": 1,
- "updatedAt": "2026-09-21T14:40:15Z",
+ "updatedAt": "2026-09-21T15:35:11Z",
  "gallery": {
   "2026necmp": {
    "1768": 588,
@@ -124,9 +124,9 @@
     "11483"
    ],
    "curated": true,
-   "meanCustody": 0.7213,
-   "bytes": 144584,
-   "exportedAt": "2026-09-21T14:30:49Z",
+   "meanCustody": 0.8656,
+   "bytes": 172363,
+   "exportedAt": "2026-09-21T15:35:11Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
