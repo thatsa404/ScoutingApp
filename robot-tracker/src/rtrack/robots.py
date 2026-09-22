@@ -30,6 +30,7 @@ Three ideas do the work:
 from __future__ import annotations
 
 import argparse
+import hashlib
 import json
 from collections import Counter, defaultdict
 from pathlib import Path
@@ -64,6 +65,58 @@ def load_tracks(p: Path):
             if l.strip()]
     rows.sort(key=lambda r: r["f"])
     return rows
+
+
+def _row_counts(rows) -> dict[str, int]:
+    return {"tracks": len({d["tid"] for r in rows for d in r["dets"] if d["tid"] >= 0}),
+            "detections": sum(len(r["dets"]) for r in rows)}
+
+
+def _fingerprint(path: Path | None) -> dict | None:
+    if path is None or not path.exists():
+        return None
+    return {"path": str(path), "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+            "bytes": path.stat().st_size}
+
+
+def _argument_record(args) -> dict:
+    return {k: (str(v) if isinstance(v, Path) else v) for k, v in vars(args).items()}
+
+
+def _ensure_source_ids(rows) -> None:
+    """Attach the immutable stitched-track id before any transform mutates ``tid``."""
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                d.setdefault("source_tid", d["tid"])
+
+
+def continuation_edges(rows, candidates: list[dict]) -> list[dict]:
+    """Resolve source-track continuation hypotheses onto the final segment IDs.
+
+    Endpoint evidence belongs to an immutable source track, while the solver sees
+    segments minted by later cut passes. This explicit bridge replaces lossy track-ID
+    rewrites and lets curator labels reject an edge without losing its provenance.
+    """
+    wanted = {c["keep"] for c in candidates} | {c["absorbed"] for c in candidates}
+    by_source = defaultdict(list)
+    for r in rows:
+        for d in r["dets"]:
+            src = d.get("source_tid", d["tid"])
+            if d["tid"] >= 0 and src in wanted:
+                by_source[src].append((r["t"], d["tid"]))
+    out = []
+    for c in candidates:
+        left = [v for v in by_source.get(c["keep"], ()) if v[0] <= c["endS"] + 1e-6]
+        right = [v for v in by_source.get(c["absorbed"], ()) if v[0] >= c["startS"] - 1e-6]
+        if not left or not right:
+            continue
+        a = max(left, key=lambda v: v[0])[1]
+        b = min(right, key=lambda v: v[0])[1]
+        if a != b:
+            out.append({"a": a, "b": b, "cos": c["cos"], "region": c["region"],
+                        "gapS": c["gapS"], "source": [c["keep"], c["absorbed"]]})
+    return out
 
 
 def conflicts(rows) -> dict[int, set[int]]:
@@ -116,6 +169,30 @@ def positions_by_det(positions: dict | None, tracks_p) -> dict | None:
         if b:
             out[(sm["f"], b)] = (sm["t"], sm["x"], sm["y"])
     return out
+
+
+def compatible_join_head(npz_path: Path, event: str):
+    """Return a whitening head only when cache and head declare one representation.
+
+    Rebind and stitch-join thresholds are calibrated in whitened space.  Re-identifying
+    a robot may fall back to raw embeddings, but using raw distances for an irreversible
+    continuity decision is unsafe, so that path fails closed.
+    """
+    if not Path(npz_path).exists():
+        return None, f"{Path(npz_path).name} is missing"
+    from .embed import EMBEDDING_SPACE, HEAD_SPACE, load_head
+    head = load_head(event)
+    if head is None:
+        return None, f"no compatible whitening head for event {event}"
+    try:
+        z = np.load(npz_path, allow_pickle=False)
+        cache_space = str(z["embeddingSpace"].item())
+    except (KeyError, ValueError, TypeError):
+        return None, f"{Path(npz_path).name} has no embedding-space metadata"
+    if cache_space != EMBEDDING_SPACE or getattr(head, "output_space", None) != HEAD_SPACE:
+        return None, (f"embedding-space mismatch (cache={cache_space!r}, "
+                      f"head={getattr(head, 'output_space', None)!r})")
+    return head, None
 
 
 JOIN_GAP_MIN_S = 0.30   # a pause this long is a stitch join, not a dropped frame
@@ -424,7 +501,7 @@ REBIND_MARGIN = 1.25    # best must beat the runner-up by this factor
 def occluder_rebind(rows, regions, npz_path, head=None, ident=None,
                     max_cos: float = REBIND_MAX_COS,
                     margin: float = REBIND_MARGIN):
-    """Rejoin tracks across a structure a human marked, using APPEARANCE to choose.
+    """Propose continuations across a marked structure, using APPEARANCE to choose.
 
     WHY THIS LIVES HERE AND NOT IN rtrack.stitch. Stitch has the geometry to find these
     -- measured on 2026necmp1_qm24, 33 of the 72 handoffs it refuses are hub -> the same
@@ -440,12 +517,11 @@ def occluder_rebind(rows, regions, npz_path, head=None, ident=None,
     between #82 and #10 is exactly what it is good at: 0.788 AUC within an alliance,
     against a 2-3 way choice.
 
-    Runs BEFORE any split, for the same reason the duplicate merge does: after 95
-    appearance splits a track's evidence is shattered into fragments too short to
-    describe, and the tids no longer match the cached npz.
-
-    Refuses rather than guesses when appearance is not decisive either -- an unmerged
-    track is an honest gap, a wrong merge silently rewrites a robot's history.
+    The returned candidates are intentionally NON-DESTRUCTIVE.  Earlier versions
+    rewrote an absorbed track id before splitters had consumed appearance caches keyed
+    to the original id.  That made evidence disappear and fused different robots into
+    one history.  A candidate is diagnostic evidence or an optional solver edge; the
+    two source tracks remain independently splittable and curator labels can reject it.
     """
     import numpy as _np
     from .occluders import region_at, transit_budget_s, parked_at, PARKED_MAX_S
@@ -518,31 +594,10 @@ def occluder_rebind(rows, regions, npz_path, head=None, ident=None,
             continue
         absorb[b] = root
         merges.append({"keep": root, "absorbed": b, "region": rb,
+                       "endS": round(span[best][1], 3), "startS": round(t0b, 3),
                        "gapS": round(gap_s, 1), "cos": round(best_d, 3),
                        "runnerUp": round(cands[1][0], 3) if len(cands) > 1 else None})
-    if not absorb:
-        return rows, []
-    out = []
-    for r in rows:
-        dets = []
-        for d in r["dets"]:
-            t = d["tid"]
-            while t in absorb:
-                t = absorb[t]
-            dets.append(dict(d, tid=t))
-        out.append({**r, "dets": dets})
-    if ident is not None:
-        tks = ident.setdefault("tracks", {})
-        for mg in merges:
-            src = tks.pop(str(mg["absorbed"]), None)
-            if not src:
-                continue
-            dst = tks.setdefault(str(mg["keep"]), {"tally": {}, "voteList": []})
-            tal = dst.setdefault("tally", {})
-            for team, n in (src.get("tally") or {}).items():
-                tal[team] = tal.get(team, 0) + n
-            dst.setdefault("voteList", []).extend(src.get("voteList") or [])
-    return out, merges
+    return rows, merges
 
 
 DUP_SEP_M = 0.8
@@ -1374,7 +1429,8 @@ def drop_offview(rows, stem: str):
 
 
 def drop_offfield(rows, stem: str, slack: float = FIELD_SLACK_M,
-                  calib_stem: str | None = None):
+                  calib_stem: str | None = None,
+                  allow_unsafe_calibration: bool = False):
     """Remove detections whose foot point projects outside the field. Returns
     (rows, n_dropped, n_total) and leaves rows untouched when there is no calibration.
 
@@ -1405,6 +1461,9 @@ def drop_offfield(rows, stem: str, slack: float = FIELD_SLACK_M,
     # on 2026mawor_qm1, that means solving with 8.45 detections/frame instead of ~4.
     cal = calib_stem or stem
     if not (C.CALIB_DIR / f"{cal}.json").exists():
+        return rows, 0, sum(len(r["dets"]) for r in rows)
+    if (not PJ.calibration_status_for(cal)["usable"]
+            and not allow_unsafe_calibration):
         return rows, 0, sum(len(r["dets"]) for r in rows)
     H, lens = PJ.load_calib(cal)
     ref = json.loads((C.CALIB_DIR / "field_ref_2026.json").read_text(encoding="utf-8"))
@@ -1998,6 +2057,10 @@ def main(argv=None) -> int:
                     help="keep detections that project outside the field. The filter "
                          "needs a calibration and is a no-op without one; see "
                          "drop_offfield for what it does and does not remove")
+    ap.add_argument("--allow-unsafe-calibration", action="store_true",
+                    help="allow a calibration that failed reprojection admission checks "
+                         "to filter detections and drive geometric constraints. "
+                         "Diagnostic use only; the safe default quarantines it.")
     ap.add_argument("--no-view-filter", action="store_true",
                     help="keep detections recorded while the camera was not in its "
                          "calibrated pose. A no-op without a viewcheck run; see "
@@ -2066,6 +2129,9 @@ def main(argv=None) -> int:
                          "like one robot, and penalise it when they do not. 0 = off. "
                          "The solver has never had an appearance term; see "
                          "solve.APP_SAME for the calibration and what it costs.")
+    ap.add_argument("--rebind-weight", type=int, default=0, metavar="PTS",
+                    help="bonus for a compatible, non-destructive occluder continuation "
+                         "edge. 0 keeps candidates diagnostic-only (the safe default).")
     ap.add_argument("--hold-weight", type=int, default=600, metavar="PTS",
                     help="penalty for giving a team to a visible track while that team "
                          "is presumed behind a structure it vanished into. 0 = off. "
@@ -2156,6 +2222,24 @@ def main(argv=None) -> int:
     C.ensure_dirs()
     stem = video_id(args.video)
     rows = load_tracks(args.tracks)
+    _ensure_source_ids(rows)
+    run_stages = [{"stage": "stitched-input", **_row_counts(rows)}]
+    cal_name = args.calib_from or stem
+    cal_status = None
+    geometry_allowed = False
+    cal_path = C.CALIB_DIR / f"{cal_name}.json"
+    if cal_path.exists():
+        from .project import calibration_status_for
+        cal_status = calibration_status_for(cal_name)
+        geometry_allowed = cal_status["usable"] or args.allow_unsafe_calibration
+        if not cal_status["usable"]:
+            detail = "; ".join(cal_status["reasons"])
+            if args.allow_unsafe_calibration:
+                print(f"[robots] WARNING: unsafe calibration {cal_name} enabled for "
+                      f"diagnostic geometry: {detail}")
+            else:
+                print(f"[robots] calibration {cal_name} QUARANTINED: {detail}. "
+                      "Field filtering and kinematic constraints are inactive.")
     # Kept in lockstep with prepare_tracks, in this order. The two must segment
     # identically or every cross-boundary inference compares two id spaces -- see the
     # note in prepare_tracks.
@@ -2164,15 +2248,19 @@ def main(argv=None) -> int:
         if n_v:
             print(f"[robots] dropped {n_v}/{n_t} detection(s) recorded while the "
                   f"camera was not in its calibrated view (see rtrack.viewcheck)")
-    if not args.no_field_filter:
+    run_stages.append({"stage": "view-filter", **_row_counts(rows)})
+    if not args.no_field_filter and geometry_allowed:
         rows, n_off, n_tot = drop_offfield(rows, stem,
-                                           calib_stem=args.calib_from)
+                                           calib_stem=args.calib_from,
+                                           allow_unsafe_calibration=args.allow_unsafe_calibration)
         if n_off:
             print(f"[robots] dropped {n_off}/{n_tot} detection(s) projecting "
                   f"outside the field (+{FIELD_SLACK_M} m)")
-        elif not (C.CALIB_DIR / f"{args.calib_from or stem}.json").exists():
+        elif not cal_path.exists():
             print(f"[robots] no calibration for {args.calib_from or stem} -- "
                   f"field filter INACTIVE")
+    run_stages.append({"stage": "field-filter", **_row_counts(rows),
+                       "geometryAllowed": geometry_allowed})
     ip = args.identity or (C.STAGE3_DIR / f"{stem}_identity.json")
     # OCR is off the live path. identity.json is honoured when a previous run left one
     # behind, but its absence is the normal case now, not an error: measured, blanking
@@ -2181,7 +2269,11 @@ def main(argv=None) -> int:
     ident = (json.loads(ip.read_text(encoding="utf-8")) if ip.exists()
              else {"video": stem, "tracks": {}})
     pp = args.positions or (C.STAGE2_DIR / f"{stem}_positions.json")
-    positions = json.loads(pp.read_text(encoding="utf-8")) if pp.exists() else None
+    positions = (json.loads(pp.read_text(encoding="utf-8"))
+                 if pp.exists() and geometry_allowed else None)
+    if pp.exists() and not geometry_allowed:
+        print(f"[robots] positions from {pp.name} ignored while calibration is "
+              "quarantined")
 
     # Use the camera's drawn occluders when they exist. The watcher and the pipeline
     # pass neither this nor the weights, so anything left opt-in is effectively off in
@@ -2229,31 +2321,40 @@ def main(argv=None) -> int:
                 for team, n in (src.get("tally") or {}).items():
                     tal[team] = tal.get(team, 0) + n
                 dst.setdefault("voteList", []).extend(src.get("voteList") or [])
+    run_stages.append({"stage": "duplicate-merge", **_row_counts(rows)})
 
-    # Rejoin across the structures a human marked, BEFORE any split -- same reason as
-    # the duplicate merge above: afterwards the evidence is shattered and the tids no
-    # longer match the cached descriptors.
+    # Propose, but never fuse, continuations across marked structures.  The candidate
+    # calculation needs the original stitched ids; downstream segmentation remains in
+    # that same id space because no identity is rewritten here.
+    rebind_candidates = []
     if args.occluders:
         from .occluders import load as _occ_load, to_pixels as _occ_px
-        from .embed import load_head as _lh
         _doc = _occ_load(args.occluders)
         if _doc is None:
             print(f"[robots] no occluder file for {args.occluders} -- nothing to rebind")
         else:
             _regs = _occ_px(_doc, (1920, 1080))
-            rows, rb = occluder_rebind(
-                rows, _regs, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
-                head=_lh(str(args.match).split("_")[0]), ident=ident)
-            if rb:
-                print(f"[robots] {len(rb)} track(s) rejoined across a marked structure "
-                      f"using appearance:")
-                for mg in rb:
-                    ru = f", runner-up {mg['runnerUp']}" if mg["runnerUp"] else ""
-                    print(f"[robots]   #{mg['absorbed']} -> #{mg['keep']} at "
-                          f"{mg['region']}: gap {mg['gapS']}s, cos {mg['cos']}{ru}")
+            _head, _why = compatible_join_head(
+                C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
+                str(args.match).split("_")[0])
+            if _head is None:
+                print(f"[robots] occluder rebind DISABLED: {_why}")
             else:
-                print(f"[robots] no track pairs met the rebind test at "
-                      f"{len(_regs)} marked structure(s)")
+                rows, rebind_candidates = occluder_rebind(
+                    rows, _regs, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
+                    head=_head, ident=ident)
+                if rebind_candidates:
+                    print(f"[robots] {len(rebind_candidates)} non-destructive "
+                          "occluder continuation candidate(s):")
+                    for mg in rebind_candidates:
+                        ru = f", runner-up {mg['runnerUp']}" if mg["runnerUp"] else ""
+                        print(f"[robots]   #{mg['absorbed']} -> #{mg['keep']} at "
+                              f"{mg['region']}: gap {mg['gapS']}s, cos {mg['cos']}{ru}")
+                else:
+                    print(f"[robots] no track pairs met the rebind test at "
+                          f"{len(_regs)} marked structure(s)")
+    run_stages.append({"stage": "occluder-continuations", **_row_counts(rows),
+                       "candidates": len(rebind_candidates)})
 
     # The state the holding-cell events are derived from: after the duplicate merge
     # (so two boxes on one robot are already one track) but before ANY split (so a
@@ -2266,13 +2367,18 @@ def main(argv=None) -> int:
     # Undo bad stitch joins BEFORE anything else reasons about these tracks: a chimera
     # left whole poisons the descriptors, the votes and the assignment alike.
     if args.join_check:
-        from .embed import load_head as _lh3
-        rows, n_j = split_chimeric_joins(
-            rows, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
-            head=_lh3(str(args.match).split("_")[0]))
-        if n_j:
-            print(f"[robots] {n_j} stitch join(s) cut -- two robots had been joined "
-                  f"into one track")
+        _head, _why = compatible_join_head(
+            C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
+            str(args.match).split("_")[0])
+        if _head is None:
+            print(f"[robots] stitch join check DISABLED: {_why}")
+        else:
+            rows, n_j = split_chimeric_joins(
+                rows, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz", head=_head)
+            if n_j:
+                print(f"[robots] {n_j} stitch join(s) cut -- two robots had been joined "
+                      "into one track")
+    run_stages.append({"stage": "stitch-join-check", **_row_counts(rows)})
 
     if not args.no_alliance_split:
         rows, n_a, orig_a = split_on_alliance(rows)
@@ -2280,6 +2386,7 @@ def main(argv=None) -> int:
             ident = retally(ident, rows, orig_a)
             print(f"[robots] split {n_a} segment(s) where a track's bumper HUE "
                   f"changed alliance ({len(orig_a) - n_a} tracks affected)")
+    run_stages.append({"stage": "alliance-split", **_row_counts(rows)})
 
     if args.appear_thresh > 0:
         cnn_split = args.appear_backend == "cnn"
@@ -2299,6 +2406,7 @@ def main(argv=None) -> int:
                   f"(threshold {args.appear_thresh})")
         elif not ap_p.exists():
             print(f"[robots] {ap_p} missing -- run rtrack.appear first")
+    run_stages.append({"stage": "appearance-split", **_row_counts(rows)})
 
     if not args.no_split:
         rows, n_split, orig_of = split_chimeras(rows, ident)
@@ -2314,6 +2422,7 @@ def main(argv=None) -> int:
             else:
                 print("[robots] identity.json has no voteList -- votes stay on "
                       "segment 0 (legacy file; OCR is no longer on the live path)")
+    run_stages.append({"stage": "vote-split", **_row_counts(rows)})
     # WITHIN-TRACK kinematic cuts, after the appearance and vote splits and before the
     # curator's. A track that teleports inside itself is not a robot for its whole
     # length, and every constraint downstream assumes it is.
@@ -2322,6 +2431,7 @@ def main(argv=None) -> int:
         if n_step:
             print(f"[robots] cut {n_step} track(s) where the track's OWN motion was "
                   f"impossible (> {args.step_cut}x the measured displacement bound)")
+    run_stages.append({"stage": "kinematic-step-cut", **_row_counts(rows)})
 
     # Curator corrections LAST, so they override every heuristic above rather than
     # being argued with by one. A cut a person asked for is better evidence than any
@@ -2397,6 +2507,8 @@ def main(argv=None) -> int:
                                 for k, v in c["support"].items())
                 print(f"[corrections]   {c['team']}: kept #{c['kept']}, demoted "
                       f"{c['demoted']} -- together in {c['frames']} frames  [{sup}]")
+    run_stages.append({"stage": "curator-cuts", **_row_counts(rows),
+                       "resolvedLabels": (len(resolved) if args.corrections else 0)})
 
     # Built once from the tracks file on disk, then reused by every rebuild below.
     # The deconflict loop recomputes `info` after each round of cuts, and the FINAL
@@ -2472,6 +2584,10 @@ def main(argv=None) -> int:
             pre_split_rows, rows, C.STAGE3_DIR / f"{stem}_appearance_cnn.npz",
             head=_lh2(str(args.match).split("_")[0]))
         print(f"[robots] appearance term on {len(frag_emb)}/{len(info)} fragment(s)")
+    rebind_edges = continuation_edges(rows, rebind_candidates)
+    if rebind_edges:
+        print(f"[robots] resolved {len(rebind_edges)} occluder continuation edge(s) "
+              f"onto final segments ({'objective enabled' if args.rebind_weight else 'diagnostic-only'})")
     holds_x, holds_e = [], []
     if args.occluders and args.hold_weight > 0:
         from .occluders import load as _ol, to_pixels as _op
@@ -2508,14 +2624,16 @@ def main(argv=None) -> int:
             pinned[int(tid_s)] = team
         S.KIN_CAP = args.kin_cap
         W = S.Weights(park=args.park, alli=args.alli_weight, vote=args.vote_weight,
-                      kin=args.kin_weight, hold=args.hold_weight, app=args.app_weight)
+                      kin=args.kin_weight, hold=args.hold_weight, app=args.app_weight,
+                      rebind=args.rebind_weight)
 
         def run_solve(limit):
             a, t, m, u = S.solve(info, con, ident, red, blue, pinned or None,
                                  limit, W, preferred=preferred or None,
                                  opt_gap=args.opt_gap, hint=not args.no_hint, seed=args.seed,
                                  kin_hard=args.kin_hard, holds=(holds_x, holds_e),
-                                 emb=frag_emb or None)
+                                 emb=frag_emb or None,
+                                 continuations=rebind_edges or None)
             # UNKNOWN and INFEASIBLE are opposite problems and must not share a fate.
             # INFEASIBLE is proved: the constraints cannot all hold, and more time will
             # only prove it again -- fail now. UNKNOWN means the budget ran out before
@@ -2533,7 +2651,8 @@ def main(argv=None) -> int:
                                      longer, W, preferred=preferred or None,
                                      opt_gap=args.opt_gap, hint=not args.no_hint, seed=args.seed,
                                  kin_hard=args.kin_hard, holds=(holds_x, holds_e),
-                                 emb=frag_emb or None)
+                                 emb=frag_emb or None,
+                                 continuations=rebind_edges or None)
             if a is None:
                 raise SystemExit(f"[robots] CP-SAT found no solution ({m['status']})")
             return a, t, m, u
@@ -2570,6 +2689,7 @@ def main(argv=None) -> int:
                 pinned, preferred, clashes = CO.split_conflicts(pinned, rows, ident)
             info = track_info(rows, positions, pos_at=pos_at)
             con = conflicts(rows)
+            rebind_edges = continuation_edges(rows, rebind_candidates)
             for tid in mixed:
                 info.pop(tid, None)
             assign_k, teams_order, meta, unstable = run_solve(args.time_limit)
@@ -2731,6 +2851,31 @@ def main(argv=None) -> int:
         _write_clash_bundle(stem, args, rows, clashes, red, blue, positions)
 
     out = C.STAGE3_DIR / f"{stem}_robots.json"
+    run_stages.append({"stage": "final-solve", **_row_counts(rows),
+                       "parked": len(extra)})
+    manifest_path = C.STAGE3_DIR / f"{stem}_run.json"
+    manifest = {
+        "schemaVersion": 1,
+        "video": stem,
+        "match": args.match,
+        "arguments": _argument_record(args),
+        "inputs": {
+            "tracks": _fingerprint(args.tracks),
+            "identity": _fingerprint(ip),
+            "positions": _fingerprint(pp),
+            "corrections": _fingerprint(args.corrections),
+            "calibration": _fingerprint(cal_path),
+            "occluders": _fingerprint(C.CALIB_DIR / f"{args.occluders}_occluders.json")
+                         if args.occluders else None,
+            "appearanceCnn": _fingerprint(C.STAGE3_DIR / f"{stem}_appearance_cnn.npz"),
+        },
+        "calibration": cal_status,
+        "stages": run_stages,
+        "occluderContinuations": rebind_candidates,
+        "resolvedContinuationEdges": rebind_edges,
+        "solver": meta if args.solver == "cpsat" else None,
+    }
+    manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     out.write_text(json.dumps(
         {"video": stem, "teams": {"red": red, "blue": blue},
          "solver": args.solver,
@@ -2752,8 +2897,10 @@ def main(argv=None) -> int:
                                  else ("pixel-motion" if win else "NONE -- tracked span")),
          "custody": cust,
          "custodyConflicts": custody_conflicts(rows),
-         "parked": extra}, indent=2), encoding="utf-8")
+         "parked": extra,
+         "runManifest": manifest_path.name}, indent=2), encoding="utf-8")
     print(f"\n-> {out}")
+    print(f"-> {manifest_path}")
     return 0
 
 

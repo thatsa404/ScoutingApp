@@ -47,6 +47,57 @@ from .calibrate import load_field_ref
 
 SLACK_M = 0.6
 
+# A calibration residual is not a cosmetic diagnostic: projection is subsequently used
+# to discard detections and to impose hard physical constraints.  The limits are loose
+# compared with the good cameras in this repository (2026necmp1: 0.024/0.075 m;
+# GSxbsE42o5o: 0.098/0.260 m), but reject the MAWOR fit's 7.936 m outlier.
+CALIB_MIN_POINTS = 8
+CALIB_MAX_MEAN_REPROJ_M = 0.25
+CALIB_MAX_REPROJ_M = 0.75
+
+
+def calibration_status(doc: dict) -> dict:
+    """Return an auditable admission decision for a calibration document.
+
+    The homography can still be inspected with an unsafe calibration, but consumers
+    must opt in before treating its metres as evidence.  In particular, a rejected
+    fit may not silently filter detections or create hard kinematic exclusions.
+    """
+    reasons = []
+    points = doc.get("pointCount")
+    inliers = doc.get("inliers")
+    err = doc.get("reprojErrorM") or {}
+    mean, worst = err.get("mean"), err.get("max")
+    if not isinstance(points, int) or points < CALIB_MIN_POINTS:
+        reasons.append(f"need at least {CALIB_MIN_POINTS} points (got {points!r})")
+    if inliers is not None and (not isinstance(inliers, int) or inliers < CALIB_MIN_POINTS):
+        reasons.append(f"need at least {CALIB_MIN_POINTS} inliers (got {inliers!r})")
+    if not isinstance(mean, (int, float)) or not np.isfinite(mean):
+        reasons.append("missing or non-finite mean reprojection error")
+    elif mean > CALIB_MAX_MEAN_REPROJ_M:
+        reasons.append(f"mean reprojection error {mean:.3f} m exceeds "
+                       f"{CALIB_MAX_MEAN_REPROJ_M:.2f} m")
+    if not isinstance(worst, (int, float)) or not np.isfinite(worst):
+        reasons.append("missing or non-finite maximum reprojection error")
+    elif worst > CALIB_MAX_REPROJ_M:
+        reasons.append(f"maximum reprojection error {worst:.3f} m exceeds "
+                       f"{CALIB_MAX_REPROJ_M:.2f} m")
+    return {
+        "usable": not reasons,
+        "pointCount": points,
+        "inliers": inliers,
+        "reprojErrorM": {"mean": mean, "max": worst},
+        "lensPresent": bool(doc.get("lens")),
+        "reasons": reasons,
+    }
+
+
+def calibration_status_for(stem: str) -> dict:
+    p = C.CALIB_DIR / f"{stem}.json"
+    if not p.exists():
+        raise SystemExit(f"{p} not found -- run rtrack.calibrate first")
+    return calibration_status(json.loads(p.read_text(encoding="utf-8")))
+
 
 def load_calib(stem: str) -> tuple[np.ndarray, dict | None]:
     p = C.CALIB_DIR / f"{stem}.json"
@@ -259,7 +310,8 @@ def auto_start_check(doc: dict, window_s: float = 1.0) -> dict:
             "ok": bool(sep > 3.0 and not wrong and not no_hue)}
 
 
-def run(stem: str, tracks: Path, out: Path, calib_stem: str | None = None) -> dict:
+def run(stem: str, tracks: Path, out: Path, calib_stem: str | None = None,
+        allow_unsafe_calibration: bool = False) -> dict:
     """Project one track file into field metres.
 
     `calib_stem` lets a video reuse ANOTHER video's calibration, which is the normal
@@ -270,7 +322,18 @@ def run(stem: str, tracks: Path, out: Path, calib_stem: str | None = None) -> di
     different camera and needs its own.
     """
     ref = load_field_ref()
-    H, lens = load_calib(calib_stem or stem)
+    cal_name = calib_stem or stem
+    cal_status = calibration_status_for(cal_name)
+    if not cal_status["usable"] and not allow_unsafe_calibration:
+        detail = "; ".join(cal_status["reasons"])
+        raise SystemExit(
+            f"[project] REFUSING unsafe calibration {cal_name}: {detail}.\n"
+            "          Recalibrate before producing routes, or pass "
+            "--allow-unsafe-calibration only for a diagnostic experiment.")
+    if not cal_status["usable"]:
+        print(f"[project] WARNING: using unsafe calibration {cal_name} for a "
+              "diagnostic run: " + "; ".join(cal_status["reasons"]))
+    H, lens = load_calib(cal_name)
     FL, FW = ref["fieldSizeM"]
 
     rows = [json.loads(l) for l in tracks.read_text(encoding="utf-8").splitlines()
@@ -341,6 +404,7 @@ def run(stem: str, tracks: Path, out: Path, calib_stem: str | None = None) -> di
         "kinematicPct": round(100 * n_fast / max(len(samples), 1), 2),
         "tSpan": [round(min(s["t"] for s in samples), 2),
                   round(max(s["t"] for s in samples), 2)],
+        "calibration": cal_status,
     }
 
     out.parent.mkdir(parents=True, exist_ok=True)
@@ -382,6 +446,9 @@ def main(argv=None) -> int:
     ap.add_argument("--calib-from", default=None, metavar="VIDEO",
                     help="reuse another video's calibration -- use this whenever the "
                          "same camera filmed both matches (see run())")
+    ap.add_argument("--allow-unsafe-calibration", action="store_true",
+                    help="project with a calibration that failed admission checks. "
+                         "Diagnostic use only; export still requires its own override.")
     args = ap.parse_args(argv)
     C.ensure_dirs()
     stem = video_id(args.video)
@@ -395,7 +462,7 @@ def main(argv=None) -> int:
     if cal:
         print(f"[project] reusing calibration from {cal}")
     run(stem, args.tracks, args.out or (C.STAGE2_DIR / f"{stem}_positions.json"),
-        calib_stem=cal)
+        calib_stem=cal, allow_unsafe_calibration=args.allow_unsafe_calibration)
     return 0
 
 

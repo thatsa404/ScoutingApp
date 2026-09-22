@@ -69,6 +69,7 @@ vote time instead.
 from __future__ import annotations
 
 import json
+import hashlib
 from pathlib import Path
 
 import numpy as np
@@ -106,6 +107,13 @@ precise constant -- it is tuned on one event. It does survive the change from tr
 to per-label scoring, which moved every other number here, so it is not an artefact of
 the metric.
 """
+
+# Persisted alongside every CNN cache and head.  Distance thresholds are properties of
+# this representation, not of an array with 512 columns.  A cache without this marker
+# predates the compatibility contract and is deliberately not eligible for hard
+# rebind/join decisions.
+EMBEDDING_SPACE = "resnet18-imagenet-v1/raw"
+HEAD_SPACE = "pca-wccn-v1"
 
 _MODEL = None
 
@@ -185,9 +193,10 @@ def fit_head(V: np.ndarray, team: np.ndarray, npc: int = NPC) -> dict:
 def save_head(event: str, h: dict) -> Path:
     p = head_path(event)
     p.parent.mkdir(parents=True, exist_ok=True)
+    payload = {k: h[k] for k in ("npc", "teams", "tracks")}
+    payload.update({"inputSpace": EMBEDDING_SPACE, "outputSpace": HEAD_SPACE})
     np.savez_compressed(p, mu=h["mu"], M=h["M"],
-                        meta=np.array(json.dumps(
-                            {k: h[k] for k in ("npc", "teams", "tracks")})))
+                        meta=np.array(json.dumps(payload)))
     return p
 
 
@@ -203,4 +212,21 @@ def load_head(event: str):
         return None
     z = np.load(p, allow_pickle=False)
     mu, M = z["mu"], z["M"]
-    return lambda A: (np.asarray(A, np.float32) - mu) @ M
+    try:
+        meta = json.loads(str(z["meta"].item()))
+    except (KeyError, ValueError, TypeError):
+        meta = {}
+    digest = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
+
+    def transform(A):
+        return (np.asarray(A, np.float32) - mu) @ M
+
+    # Attributes make the representation contract available to downstream callers
+    # without changing the existing callable API.
+    # Legacy heads remain valid for existing re-identification galleries.  They lack
+    # the provenance required for *hard* continuity thresholds, so compatible_join_head
+    # will reject them there without silently downgrading ordinary reid votes.
+    transform.input_space = meta.get("inputSpace")
+    transform.output_space = meta.get("outputSpace")
+    transform.head_id = f"{event}:{digest}"
+    return transform

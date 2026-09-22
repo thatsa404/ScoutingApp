@@ -176,3 +176,44 @@ Known exported jump windows to retain as regression cases include:
 
 These cases are mostly cross-track handoffs. A successful change should improve route
 continuity without merely hiding the jumps through smoothing or increased gap filling.
+
+## Implementation status and QM15 regression (2026-09-21)
+
+The first implementation pass is complete. It changes the unsafe boundaries without
+pretending that a full joint-continuity optimiser has already been delivered:
+
+- CNN appearance caches now declare their embedding space and newly fitted whitening
+  heads declare their input/output spaces. Existing heads remain usable for ordinary
+  re-identification votes, but a cache/head pair without matching provenance cannot
+  drive rebind or stitch-join cuts.
+- `occluder_rebind()` no longer rewrites track IDs or mutates identity evidence. It
+  emits continuation hypotheses, retains immutable `source_tid` provenance through
+  later segmentation, and can resolve those hypotheses to optional soft solver edges
+  (`--rebind-weight`; default `0` pending event-specific calibration).
+- Calibration admission now requires at least eight points/inliers, mean reprojection
+  error at most `0.25 m`, and maximum reprojection error at most `0.75 m`. A rejected
+  calibration cannot field-filter detections or drive kinematic constraints in
+  `robots`; `project` and `export` refuse it unless an explicit diagnostic override is
+  passed.
+- Every solve writes `<stem>_run.json`: input hashes, arguments, calibration decision,
+  per-stage row counts, continuation candidates/edges, and solver metadata.
+- Export identifies physically impossible adjacent route samples and records an
+  explicit `reason: "teleport"` gap so the app will not draw a fabricated connecting
+  segment.
+
+The isolated `qm15` comparison used the existing stitched tracks, CNN votes, corrections,
+seed `0`, and `--no-hint`. The **safe** run quarantined the MAWOR calibration and disabled
+rebind because `2026mawor_head.npz` is absent; it reached **92% curator alignment**
+(`93/101`) and **69% mean custody** without using geometry. The controlled **diagnostic**
+run explicitly allowed the known-bad calibration so it could be compared to the current
+geometry path. It retained the same field filtering and kinematics but still disabled raw
+rebind; it reached **95% curator alignment** (`96/101`) and **59% mean custody**, with one
+deterministic deconfliction round (148 -> 151 tracks, 3 parked). This is direct evidence
+that raw-embedding rebind was reducing identity correctness without buying coverage.
+
+The diagnostic export finds 20 teleport gaps; the committed route triggers the same
+validator 19 times. The new exporter makes those discontinuities honest gaps, but does
+not yet reduce their count. That is expected: source tracks and vote/appearance split
+fragmentation still dominate the remaining failures. The next implementation phase is
+therefore the planned segment-graph/joint continuity solve, followed by a recalibrated
+MAWOR camera; it should not be replaced by smoothing or a larger rebind weight.

@@ -169,9 +169,11 @@ def run(stem: str, tracks_p: Path, out: Path, backend: str = "hist") -> None:
                             feat=np.array(feats, np.float32))
         print(f"[appear] {len(tids)} histogram descriptors -> {out}")
     if want_cnn:
-        from .embed import embed
+        from .embed import EMBEDDING_SPACE, embed
         cp = cnn_path(out)
-        np.savez_compressed(cp, tid=tid_a, t=t_a, feat=embed(crops))
+        np.savez_compressed(cp, tid=tid_a, t=t_a, feat=embed(crops),
+                            schemaVersion=np.array(2, np.int16),
+                            embeddingSpace=np.array(EMBEDDING_SPACE))
         print(f"[appear] {len(tids)} cnn embeddings -> {cp}")
 
 

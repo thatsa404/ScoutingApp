@@ -58,6 +58,9 @@ TRACK_HZ = 15.0
 # A gap longer than this is reported in `gaps` so a consumer can break the polyline
 # rather than drawing a straight line through a period nobody observed.
 GAP_S = 1.0
+# A line segment is a claim of continuous robot motion.  This deliberately generous
+# multiplier sits above normal projection noise but below the known 7-11 m qm15 jumps.
+ROUTE_JUMP_MULT = 1.5
 
 
 def _load(p: Path, what: str) -> dict:
@@ -66,8 +69,26 @@ def _load(p: Path, what: str) -> dict:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def _route_jump_gaps(samples: list[dict]) -> list[dict]:
+    """Return explicit polyline breaks for physically impossible adjacent samples."""
+    from .solve import distance_budget
+
+    gaps = []
+    for a, b in zip(samples, samples[1:]):
+        dt = float(b["t"] - a["t"])
+        if dt <= 0:
+            continue
+        dist = float(((b["x"] - a["x"]) ** 2 + (b["y"] - a["y"]) ** 2) ** 0.5)
+        limit = ROUTE_JUMP_MULT * distance_budget(dt)
+        if dist > limit:
+            gaps.append({"tStart": a["t"], "tEnd": b["t"], "reason": "teleport",
+                         "distanceM": round(dist, 3), "limitM": round(limit, 3)})
+    return gaps
+
+
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
-          calib_stem: str | None = None, allow_stale: bool = False) -> dict:
+          calib_stem: str | None = None, allow_stale: bool = False,
+          allow_unsafe_calibration: bool = False) -> dict:
     positions = _load(C.STAGE2_DIR / f"{stem}_positions.json",
                       "run rtrack.project against the LABELLED track file first")
     robots_doc = _load(C.STAGE3_DIR / f"{stem}_robots.json",
@@ -75,6 +96,19 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
     ref = _load(C.CALIB_DIR / "field_ref_2026.json", "field reference missing")
     calib = _load(C.CALIB_DIR / f"{calib_stem or stem}.json",
                   "this camera has no calibration -- run rtrack.calibrate")
+    cal_status = (positions.get("quality") or {}).get("calibration")
+    if cal_status is None:
+        from .project import calibration_status
+        cal_status = calibration_status(calib)
+    if not cal_status.get("usable") and not allow_unsafe_calibration:
+        detail = "; ".join(cal_status.get("reasons") or ["unknown calibration failure"])
+        raise SystemExit(
+            f"[export] REFUSING unsafe calibration {calib_stem or stem}: {detail}.\n"
+            "         Recalibrate before publishing, or pass --allow-unsafe-calibration "
+            "only for a diagnostic export.")
+    if not cal_status.get("usable"):
+        print("[export] WARNING: diagnostic export using unsafe calibration: "
+              + "; ".join(cal_status.get("reasons") or []))
 
     # STALENESS IS THE FAILURE MODE THIS PIPELINE ACTUALLY HAS. positions.json is
     # derived from labeled.jsonl by rtrack.project, and nothing re-derives it when the
@@ -169,8 +203,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             last_t = t
             picked.append({"t": t, "x": round(s["x"], 3), "y": round(s["y"], 3),
                            "conf": round(float(s.get("conf") or 0.0), 3)})
-        gaps = [{"tStart": a["t"], "tEnd": b["t"]}
+        gaps = [{"tStart": a["t"], "tEnd": b["t"], "reason": "unobserved"}
                 for a, b in zip(picked, picked[1:]) if b["t"] - a["t"] > GAP_S]
+        gaps.extend(_route_jump_gaps(picked))
+        gaps.sort(key=lambda g: (g["tStart"], g["tEnd"]))
         out_robots.append({
             "team": team,
             "alliance": alliance_of.get(team) or (ss[0].get("alliance") or "unknown"),
@@ -264,7 +300,8 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
                   "occluderPolysM": occ_polys},
         "calibration": {"mode": calib.get("mode", "static-homography"),
                         "pointCount": calib.get("pointCount"),
-                        "reprojErrorM": calib.get("reprojErrorM")},
+                        "reprojErrorM": calib.get("reprojErrorM"),
+                        "status": cal_status},
         "sampling": {"trackHz": TRACK_HZ, "outputHz": hz},
         # Sample times are relative to auto start, so auto is t in [0, autoEndT].
         # null when motion detection could not find the window -- consumers should then
@@ -281,6 +318,9 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "viewChecked": q.get("viewChecked", False),
             "viewMoved": q.get("viewMoved", 0),
             "kinematicViolations": q.get("kinematicViolations"),
+            "teleportGaps": sum(sum(1 for g in r["gaps"]
+                                      if g.get("reason") == "teleport")
+                                for r in out_robots),
             "meanCustody": round(
                 sum(r["custody"] for r in out_robots) / max(len(out_robots), 1), 4),
             "custodyConflicts": len(robots_doc.get("custodyConflicts") or []),
@@ -325,6 +365,9 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-stale", action="store_true",
                     help="export even when positions.json predates the labelling "
                          "(see build(); this published wrong routes once already)")
+    ap.add_argument("--allow-unsafe-calibration", action="store_true",
+                    help="write a route despite failed calibration admission checks. "
+                         "Diagnostic use only; publishing still requires --publish.")
     ap.add_argument("--calib-from", default=None, metavar="VIDEO",
                     help="reuse another video's calibration (same camera)")
     ap.add_argument("--no-relay", action="store_true",
@@ -346,7 +389,8 @@ def main(argv=None) -> int:
                 # killed the export. load_calib only ever reads calib/<stem>.json, so the validation was
                 # never buying anything.
                 calib_stem=args.calib_from or None,
-                allow_stale=args.allow_stale)
+                allow_stale=args.allow_stale,
+                allow_unsafe_calibration=args.allow_unsafe_calibration)
 
     problems = validate(doc)
     for p in problems:

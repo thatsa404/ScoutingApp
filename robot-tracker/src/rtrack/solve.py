@@ -129,6 +129,7 @@ class Weights:
     vote: int = 10
     hold: int = 0      # occlusion hold; see robots.hold_cells
     app: int = 0       # appearance agreement between adjacent tracks; see APP_SAME
+    rebind: int = 0    # non-destructive occluder continuation hypotheses
     alli: int = 250
     kin: int = 120
     gap: int = 2
@@ -257,6 +258,7 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
                     blue: list[str], time_limit: float = 30.0, *, opt_gap: float = 0.0,
                     hint: bool = True, seed: int = 0, kin_hard: float = 0.0,
                     holds: tuple = ((), ()), emb: dict | None = None,
+                    continuations: list[dict] | None = None,
                     forbid: dict[int, int] | None = None,
                     pinned: dict[int, str] | None = None,
                     w: Weights = Weights(),
@@ -447,6 +449,27 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
                 m.Add(z <= x[c, k])
                 terms.append((w.hold // 2) * z)
 
+    # An occluder candidate is evidence that two immutable source tracks might
+    # continue one robot. It is a soft solver edge, never a pre-solver ID rewrite:
+    # geometry, co-detection and curator pins remain free to reject it. The default
+    # weight is zero until event-specific A/B evidence calibrates it.
+    if w.rebind and continuations:
+        n_cont = 0
+        for edge in continuations:
+            a, b = edge.get("a"), edge.get("b")
+            if a not in info or b not in info or a == b:
+                continue
+            for k in range(len(teams)):
+                z = m.NewBoolVar(f"r{a}_{b}_{k}")
+                m.Add(z <= x[a, k])
+                m.Add(z <= x[b, k])
+                m.Add(z >= x[a, k] + x[b, k] - 1)
+                terms.append(w.rebind * z)
+                n_cont += 1
+        if n_cont:
+            print(f"[solve] {n_cont // len(teams)} non-destructive occluder "
+                  "continuation edge(s) in the objective")
+
     if forbid:
         # Forbid an exact previous assignment, so the next solve must differ somewhere.
         lits = [x[t, k] for t, k in forbid.items() if (t, k) in x]
@@ -577,7 +600,8 @@ def solve(info: dict, con: dict, ident: dict, red: list[str], blue: list[str],
           pinned: dict[int, str] | None = None, time_limit: float = 30.0,
           w: Weights = Weights(), preferred: dict[int, str] | None = None,
           *, opt_gap: float = 0.0, hint: bool = True, seed: int = 0,
-          kin_hard: float = 0.0, holds: tuple = ((), ()), emb: dict | None = None):
+          kin_hard: float = 0.0, holds: tuple = ((), ()), emb: dict | None = None,
+          continuations: list[dict] | None = None):
     """Solve, then solve again with that answer forbidden to expose what is uncertain.
 
     The second solve is the reason this module exists in CP-SAT rather than as a MILP.
@@ -590,14 +614,16 @@ def solve(info: dict, con: dict, ident: dict, red: list[str], blue: list[str],
     assign, teams, meta = build_and_solve(info, con, ident, red, blue, time_limit,
                                           pinned=pinned, w=w, preferred=preferred,
                                           opt_gap=opt_gap, hint=hint, seed=seed,
-                                          kin_hard=kin_hard, holds=holds, emb=emb)
+                                          kin_hard=kin_hard, holds=holds, emb=emb,
+                                          continuations=continuations)
     if assign is None:
         return None, None, meta, set()
 
     alt, _, meta2 = build_and_solve(info, con, ident, red, blue, time_limit,
                                     forbid=assign, pinned=pinned, w=w,
                                     preferred=preferred, opt_gap=opt_gap,
-                                    hint=hint, seed=seed, kin_hard=kin_hard, holds=holds, emb=emb)
+                                    hint=hint, seed=seed, kin_hard=kin_hard, holds=holds,
+                                    emb=emb, continuations=continuations)
     unstable: set[int] = set()
     if alt is not None:
         unstable = {t for t in assign if alt.get(t) != assign[t]}
