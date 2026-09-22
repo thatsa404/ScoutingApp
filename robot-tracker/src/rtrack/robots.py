@@ -2132,6 +2132,11 @@ def main(argv=None) -> int:
     ap.add_argument("--rebind-weight", type=int, default=0, metavar="PTS",
                     help="bonus for a compatible, non-destructive occluder continuation "
                          "edge. 0 keeps candidates diagnostic-only (the safe default).")
+    ap.add_argument("--continuity-weight", type=int, default=0, metavar="PTS",
+                    help="jointly reward selected local segment continuations. 0 keeps "
+                         "the production assignment-only solver unchanged.")
+    ap.add_argument("--continuity-gap", type=float, default=3.0, metavar="S",
+                    help="maximum gap for a local continuity-graph candidate.")
     ap.add_argument("--hold-weight", type=int, default=600, metavar="PTS",
                     help="penalty for giving a team to a visible track while that team "
                          "is presumed behind a structure it vanished into. 0 = off. "
@@ -2588,6 +2593,14 @@ def main(argv=None) -> int:
     if rebind_edges:
         print(f"[robots] resolved {len(rebind_edges)} occluder continuation edge(s) "
               f"onto final segments ({'objective enabled' if args.rebind_weight else 'diagnostic-only'})")
+    graph_edges = []
+    if args.continuity_weight > 0:
+        from .continuity import candidates as _continuity_candidates
+        graph_edges = _continuity_candidates(
+            info, con, max_gap_s=args.continuity_gap, weight=args.continuity_weight)
+        print(f"[robots] continuity graph proposed {len(graph_edges)} local edge(s) "
+              f"within {args.continuity_gap:g}s")
+    joint_edges = rebind_edges + graph_edges
     holds_x, holds_e = [], []
     if args.occluders and args.hold_weight > 0:
         from .occluders import load as _ol, to_pixels as _op
@@ -2633,7 +2646,7 @@ def main(argv=None) -> int:
                                  opt_gap=args.opt_gap, hint=not args.no_hint, seed=args.seed,
                                  kin_hard=args.kin_hard, holds=(holds_x, holds_e),
                                  emb=frag_emb or None,
-                                 continuations=rebind_edges or None)
+                                 continuations=joint_edges or None)
             # UNKNOWN and INFEASIBLE are opposite problems and must not share a fate.
             # INFEASIBLE is proved: the constraints cannot all hold, and more time will
             # only prove it again -- fail now. UNKNOWN means the budget ran out before
@@ -2652,7 +2665,7 @@ def main(argv=None) -> int:
                                      opt_gap=args.opt_gap, hint=not args.no_hint, seed=args.seed,
                                  kin_hard=args.kin_hard, holds=(holds_x, holds_e),
                                  emb=frag_emb or None,
-                                 continuations=rebind_edges or None)
+                                 continuations=joint_edges or None)
             if a is None:
                 raise SystemExit(f"[robots] CP-SAT found no solution ({m['status']})")
             return a, t, m, u
@@ -2690,6 +2703,11 @@ def main(argv=None) -> int:
             info = track_info(rows, positions, pos_at=pos_at)
             con = conflicts(rows)
             rebind_edges = continuation_edges(rows, rebind_candidates)
+            if args.continuity_weight > 0:
+                graph_edges = _continuity_candidates(
+                    info, con, max_gap_s=args.continuity_gap,
+                    weight=args.continuity_weight)
+            joint_edges = rebind_edges + graph_edges
             for tid in mixed:
                 info.pop(tid, None)
             assign_k, teams_order, meta, unstable = run_solve(args.time_limit)
@@ -2873,6 +2891,9 @@ def main(argv=None) -> int:
         "stages": run_stages,
         "occluderContinuations": rebind_candidates,
         "resolvedContinuationEdges": rebind_edges,
+        "continuityGraphCandidates": graph_edges,
+        "selectedContinuityEdges": (meta.get("selectedContinuations", [])
+                                     if args.solver == "cpsat" else []),
         "solver": meta if args.solver == "cpsat" else None,
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
@@ -2898,6 +2919,10 @@ def main(argv=None) -> int:
          "custody": cust,
          "custodyConflicts": custody_conflicts(rows),
          "parked": extra,
+         "continuity": {"enabled": bool(args.continuity_weight),
+                        "candidates": len(joint_edges),
+                        "selected": (meta.get("selectedContinuations", [])
+                                     if args.solver == "cpsat" else [])},
          "runManifest": manifest_path.name}, indent=2), encoding="utf-8")
     print(f"\n-> {out}")
     print(f"-> {manifest_path}")

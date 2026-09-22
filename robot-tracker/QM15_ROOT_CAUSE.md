@@ -217,3 +217,36 @@ not yet reduce their count. That is expected: source tracks and vote/appearance 
 fragmentation still dominate the remaining failures. The next implementation phase is
 therefore the planned segment-graph/joint continuity solve, followed by a recalibrated
 MAWOR camera; it should not be replaced by smoothing or a larger rebind weight.
+
+## Joint-continuity graph spike (2026-09-21)
+
+An opt-in prototype now builds a graph over immutable post-segmentation tracks.  A local
+edge requires ordered, non-overlapping, alliance-compatible segments with projected
+endpoints inside a measured transit budget. CP-SAT chooses those edges jointly with team
+assignment, limits every segment to one selected predecessor and successor, and export
+breaks a route at an unselected track handoff. The production default remains unchanged
+(`--continuity-weight 0`).
+
+The first `qm15` graph experiment used a correctly keyed stitched preprojection. Because
+that projection uses the rejected MAWOR calibration, it ran strictly as a mechanics test
+with geometric duplicate merging and hard kinematic exclusions disabled. It proposed 236
+local edges and selected 97 at a 100-point edge reward. Against an otherwise identical
+assignment-only control:
+
+| Metric | Control | Graph spike |
+|---|---:|---:|
+| Curator alignment | 95% (96/101) | 95% (96/101) |
+| Mean custody | 58.86% | 58.46% |
+| Teleport detections | 5 | 10 |
+| Explicit unlinked handoff gaps | 0 | 32 |
+
+The spike therefore validates the mechanics—not the current objective. The graph makes
+unsupported handoffs explicit, but its geometry-only edge reward is not selective enough
+to improve identity and can pull assignments toward convenient local links. Do not enable
+it for production.
+
+The next graph iteration needs calibrated, typed edge likelihoods (compatible appearance,
+motion, occluder, and curator evidence) and a path/flow objective that prices *both*
+choosing a weak edge and leaving a segment disconnected. A repaired MAWOR calibration is
+also a prerequisite for using geometric candidate eligibility or hard exclusions as more
+than a diagnostic signal.

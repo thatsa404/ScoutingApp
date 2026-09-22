@@ -191,6 +191,11 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
               f"(t {lo:.0f}..{hi:.0f} s relative to auto start)")
 
     custody = robots_doc.get("custody") or {}
+    continuity_doc = robots_doc.get("continuity") or {}
+    continuity_enabled = bool(continuity_doc.get("enabled"))
+    selected_edges = {(int(e["a"]), int(e["b"]))
+                      for e in continuity_doc.get("selected", [])
+                      if e.get("a") is not None and e.get("b") is not None}
     out_robots = []
     for team in sorted(by_team, key=lambda t: (alliance_of.get(t, "z"),
                                                station_of.get(t, 9))):
@@ -202,17 +207,23 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
                 continue
             last_t = t
             picked.append({"t": t, "x": round(s["x"], 3), "y": round(s["y"], 3),
-                           "conf": round(float(s.get("conf") or 0.0), 3)})
+                           "conf": round(float(s.get("conf") or 0.0), 3),
+                           "_tid": int(s["tid"])})
         gaps = [{"tStart": a["t"], "tEnd": b["t"], "reason": "unobserved"}
                 for a, b in zip(picked, picked[1:]) if b["t"] - a["t"] > GAP_S]
         gaps.extend(_route_jump_gaps(picked))
+        if continuity_enabled:
+            gaps.extend({"tStart": a["t"], "tEnd": b["t"], "reason": "unlinked"}
+                        for a, b in zip(picked, picked[1:])
+                        if a["_tid"] != b["_tid"]
+                        and (a["_tid"], b["_tid"]) not in selected_edges)
         gaps.sort(key=lambda g: (g["tStart"], g["tEnd"]))
         out_robots.append({
             "team": team,
             "alliance": alliance_of.get(team) or (ss[0].get("alliance") or "unknown"),
             "station": station_of.get(team),
             "custody": round((custody.get(team, {}).get("pct") or 0.0) / 100.0, 4),
-            "samples": picked,
+            "samples": [{k: v for k, v in s.items() if k != "_tid"} for s in picked],
             "gaps": gaps,
         })
 
@@ -320,6 +331,9 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "kinematicViolations": q.get("kinematicViolations"),
             "teleportGaps": sum(sum(1 for g in r["gaps"]
                                       if g.get("reason") == "teleport")
+                                for r in out_robots),
+            "unlinkedGaps": sum(sum(1 for g in r["gaps"]
+                                     if g.get("reason") == "unlinked")
                                 for r in out_robots),
             "meanCustody": round(
                 sum(r["custody"] for r in out_robots) / max(len(out_robots), 1), 4),

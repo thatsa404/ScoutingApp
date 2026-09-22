@@ -449,26 +449,38 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
                 m.Add(z <= x[c, k])
                 terms.append((w.hold // 2) * z)
 
-    # An occluder candidate is evidence that two immutable source tracks might
+    # A continuation candidate is evidence that two immutable source tracks might
     # continue one robot. It is a soft solver edge, never a pre-solver ID rewrite:
-    # geometry, co-detection and curator pins remain free to reject it. The default
-    # weight is zero until event-specific A/B evidence calibrates it.
-    if w.rebind and continuations:
+    # geometry, co-detection and curator pins remain free to reject it. A candidate can
+    # provide its own experiment weight; rebind falls back to w.rebind.
+    continuity_vars = []
+    if continuations:
         n_cont = 0
+        incoming, outgoing = defaultdict(list), defaultdict(list)
         for edge in continuations:
             a, b = edge.get("a"), edge.get("b")
-            if a not in info or b not in info or a == b:
+            bonus = int(edge.get("weight", w.rebind))
+            if bonus <= 0 or a not in info or b not in info or a == b:
                 continue
             for k in range(len(teams)):
                 z = m.NewBoolVar(f"r{a}_{b}_{k}")
                 m.Add(z <= x[a, k])
                 m.Add(z <= x[b, k])
                 m.Add(z >= x[a, k] + x[b, k] - 1)
-                terms.append(w.rebind * z)
+                terms.append(bonus * z)
+                continuity_vars.append((edge, k, z))
+                outgoing[a].append(z)
+                incoming[b].append(z)
                 n_cont += 1
+        # A selected segment belongs to one physical history at this boundary: it may
+        # have one predecessor and one successor, not three simultaneous handoffs.
+        for vs in incoming.values():
+            m.AddAtMostOne(vs)
+        for vs in outgoing.values():
+            m.AddAtMostOne(vs)
         if n_cont:
-            print(f"[solve] {n_cont // len(teams)} non-destructive occluder "
-                  "continuation edge(s) in the objective")
+            print(f"[solve] {n_cont // len(teams)} non-destructive continuation "
+                  "edge(s) in the objective")
 
     if forbid:
         # Forbid an exact previous assignment, so the next solve must differ somewhere.
@@ -588,11 +600,14 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
     print("[solve] objective composition (share of total magnitude):")
     for kname in ("vote", "alliance", "park", "pair", "pin"):
         print(f"          {kname:<9}{comp[kname]:>9}  {100*abs(comp[kname])/tot:>5.1f}%")
+    selected_continuations = [dict(edge, team=teams[k])
+                              for edge, k, z in continuity_vars if solver.Value(z)]
     meta = {"status": solver.StatusName(status),
             "objective": solver.ObjectiveValue(),
             "bound": solver.BestObjectiveBound(),
             "wall": solver.WallTime(), "pairs": npairs,
-            "vars": len(x), "parked": [t for t in tids if t not in assign]}
+            "vars": len(x), "parked": [t for t in tids if t not in assign],
+            "selectedContinuations": selected_continuations}
     return assign, teams, meta
 
 
