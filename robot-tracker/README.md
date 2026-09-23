@@ -1009,6 +1009,19 @@ fitting (vertical/horizontal span and quadrant coverage), an all-point least-squ
 error printed alongside RANSAC, a warning when RANSAC keeps ≤4 points, and `--plate`
 to calibrate against a median-stacked image with no robots obscuring the carpet.
 
+### Remote calibration: selecting AprilTags by identity
+
+The browser calibrator now draws the known 2026 AprilTag locations on the field
+diagram. To record a tag, use the loupe to place the video point as usual, then tap the
+numbered tag marker on the field diagram. That click commits the exact field-render
+coordinate immediately; it does not require the printed tag to be large enough for the
+phone to decode. Tapping elsewhere on the field diagram still opens the loupe for an
+ordinary floor-plane point.
+
+The submitted envelope keeps the legacy `points` array and adds `aprilTags` records with
+`pointIndex`, `tagId`, and both pixel locations. The homography path remains compatible,
+while the tag identities are available to the full camera-pose solver.
+
 ### The lower residual was the WORSE fit
 
 Two errors compounded here; both are worth keeping written down.
