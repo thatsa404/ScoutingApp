@@ -9,6 +9,10 @@ Two ways to supply correspondences:
   interactive   click a point in the video, then the matching point on the field PNG
                 uv run -m rtrack.calibrate GSxbsE42o5o --frame 200 --interactive
 
+  AprilTag points posted by the remote calibrator retain an ``aprilTags`` envelope
+  alongside the legacy pixel pairs. The homography still consumes ``points``; the
+  tag identities are preserved for the separate full camera-pose solver.
+
   headless      supply them as JSON, for scripted iteration
                 uv run -m rtrack.calibrate GSxbsE42o5o --frame 200 --points pts.json
 
@@ -569,6 +573,11 @@ def main(argv: list[str] | None = None) -> int:
                         doc["points"] = pts
                         print(f"[calibrate] seeding {len(pts)} existing point(s) into "
                               f"the bundle -- --fresh starts empty instead")
+                    tags = fit.get("aprilTags")
+                    if isinstance(tags, list) and tags:
+                        doc["aprilTags"] = tags
+                        print(f"[calibrate] preserving {len(tags)} AprilTag point(s) "
+                              "in the next remote bundle")
                     # The LAST FIT rides back too, so the person who clicked the points
                     # can see what they produced without walking to the machine. The
                     # numbers alone are not enough -- a low residual can be the worse fit
@@ -602,6 +611,7 @@ def main(argv: list[str] | None = None) -> int:
               f"[calibrate] push it:  uv run -m rtrack.relay push-calib {stem}")
         return 0
 
+    point_meta = None
     if args.interactive:
         seed = None
         if not args.fresh:
@@ -619,6 +629,8 @@ def main(argv: list[str] | None = None) -> int:
         # envelope is worth it -- it records WHICH frame the points were clicked on,
         # which is the first thing you want when a calibration looks wrong.
         pairs = raw["points"] if isinstance(raw, dict) else raw
+        if isinstance(raw, dict) and isinstance(raw.get("aprilTags"), list):
+            point_meta = raw["aprilTags"]
         if isinstance(raw, dict) and raw.get("frame") is not None:
             print(f"[calibrate] points clicked on frame {raw['frame']}"
                   + (f" of {raw['videoId']}" if raw.get("videoId") else ""))
@@ -705,6 +717,8 @@ def main(argv: list[str] | None = None) -> int:
         "points": pairs,
         **report,
     }
+    if point_meta:
+        doc["aprilTags"] = point_meta
     dest = C.CALIB_DIR / f"{stem}.json"
     dest.write_text(json.dumps(doc, indent=2), encoding="utf-8")
 

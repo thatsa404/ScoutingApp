@@ -22,6 +22,10 @@
     * spread across all four quadrants; clustering near the camera fits only there
     * FLOOR-PLANE features only: tape crossings, carpet seams, guardrail BASE corners
     * never anything with height -- a point 1 m up silently wrecks the fit
+
+  AprilTags are a second, explicit field-point mode. Tap the tag in the video with the
+  loupe as usual, then tap its numbered marker on the field diagram. The field marker
+  supplies the known field location; the phone does not have to decode a 15 px tag.
 -->
 <style>
   :root{
@@ -97,6 +101,7 @@
   .bar{position:sticky;bottom:0;background:var(--panel);border-top:1px solid var(--line);
        padding:10px 12px calc(10px + var(--safe));margin:12px -12px calc(-12px - var(--safe));
        display:flex;gap:10px;align-items:center}
+  #tagKey{margin:8px 0 0;color:var(--dim);font-size:11.5px;line-height:1.35}
 </style>
 </head>
 <body>
@@ -143,6 +148,8 @@
       <img id="fImg" alt="field">
       <canvas id="fCv"></canvas>
     </div>
+    <div id="tagKey">Yellow markers are known AprilTag locations. Tap one to pair it directly;
+      green markers have already been used. Other field locations still use the loupe.</div>
 
     <div id="loupeWrap">
       <div id="loupeStage"></div>
@@ -192,9 +199,28 @@ const ID_PARAM = 'video', ID_FIELD = '#vid';
 const ZOOM = 6;                       // loupe magnification
 let DOC = null;
 let PAIRS = [];                       // [[vx,vy,fx,fy], ...] in SOURCE pixels
+let APRIL_TAG_IDS = [];               // tag id for each pair, or null for floor points
 let SENT = false;                     // points reached the relay; gates the Back warning
 let pending = null;                   // {vx,vy} once the video point is placed
 let loupe = null;                     // {which:'v'|'f', x, y, drag:{...}}
+
+// WPILib 2026 Rebuilt tag centres, in field metres. The browser only needs centres:
+// selecting a tag deliberately records a field-render correspondence, while the home
+// solver can use the tag id later for the full 3-D pose fit. The display PNG is mirrored
+// horizontally and vertically relative to the WPILib axes, so fieldPixel() applies the
+// render's visual transform rather than assuming the image is a metric field map.
+const APRIL_TAGS = [
+  [1,11.878,7.425],[2,11.915,4.638],[3,11.312,4.390],[4,11.312,4.035],
+  [5,11.915,3.431],[6,11.878,0.644],[7,11.953,0.644],[8,12.271,3.431],
+  [9,12.519,3.679],[10,12.519,4.035],[11,12.271,4.638],[12,11.953,7.425],
+  [13,16.533,7.403],[14,16.533,6.972],[15,16.533,4.324],[16,16.533,3.892],
+  [17,4.663,0.644],[18,4.626,3.431],[19,5.229,3.679],[20,5.229,4.035],
+  [21,4.626,4.638],[22,4.663,7.425],[23,4.588,7.425],[24,4.270,4.638],
+  [25,4.022,4.390],[26,4.022,4.035],[27,4.270,3.431],[28,4.588,0.644],
+  [29,0.008,0.666],[30,0.008,1.098],[31,0.008,3.746],[32,0.008,4.178],
+].map(([id,x,y]) => ({id,x,y}));
+const TAG_BY_ID = new Map(APRIL_TAGS.map(t => [t.id, t]));
+const FIELD_FALLBACK = { fieldRectPx:{x0:504.2,y0:86.0,x1:3394.8,y1:1496.0}, pxPerMeter:174.74 };
 
 function needToken(msg) {
   const r = document.getElementById('tokRow');
@@ -297,6 +323,14 @@ function start(doc) {
   // reprojection comes back from the machine, and that is precisely the moment when
   // re-clicking all twelve is most unwelcome.
   PAIRS = Array.isArray(doc.points) ? doc.points.map(p => p.slice()) : [];
+  // New calibration envelopes carry explicit tag ids. Older envelopes only have the
+  // four pixel coordinates, so those remain ordinary floor correspondences.
+  const tagRecords = Array.isArray(doc.aprilTags) ? doc.aprilTags : [];
+  APRIL_TAG_IDS = PAIRS.map((_, i) => {
+    const rec = tagRecords.find(t => Number(t.pointIndex) === i);
+    if (rec && TAG_BY_ID.has(Number(rec.tagId))) return Number(rec.tagId);
+    return Number.isInteger(tagRecords[i]) && TAG_BY_ID.has(tagRecords[i]) ? tagRecords[i] : null;
+  });
   $('#setup').hidden = true; $('#work').hidden = false;
   if (PAIRS.length) {
     setTimeout(() => say($('#workMsg'),
@@ -331,11 +365,50 @@ function sc(w) {
   return { k: cv.width / (img.naturalWidth || 1), h: cv.height / (img.naturalHeight || 1) };
 }
 
+function fieldPixel(tag) {
+  const f = DOC?.fieldRef || FIELD_FALLBACK;
+  const r = f.fieldRectPx || FIELD_FALLBACK.fieldRectPx;
+  const ppm = Number(f.pxPerMeter || FIELD_FALLBACK.pxPerMeter);
+  // The supplied field PNG is a display reference: its left/right and top/bottom are
+  // opposite the WPILib camera-facing axes. This is also why the selectable marker is
+  // not calculated by simply copying the export formula from field metres.
+  return { x: r.x1 - tag.x * ppm, y: r.y0 + tag.y * ppm };
+}
+
+function fieldTagAt(x, y) {
+  const f = DOC?.fieldRef || FIELD_FALLBACK;
+  const r = f.fieldRectPx || FIELD_FALLBACK.fieldRectPx;
+  const ppm = Number(f.pxPerMeter || FIELD_FALLBACK.pxPerMeter);
+  const maxDist = Math.max(70, Math.min(130, 0.34 * ppm));
+  let best = null, bestD = Infinity;
+  for (const tag of APRIL_TAGS) {
+    if (APRIL_TAG_IDS.includes(tag.id)) continue;
+    const p = fieldPixel(tag), d = Math.hypot(x - p.x, y - p.y);
+    if (d < bestD) { best = tag; bestD = d; }
+  }
+  return bestD <= maxDist ? best : null;
+}
+
 function paint(w) {
   const { cv } = P(w);
   if (!cv.width && !size(w)) return;
   const ctx = cv.getContext('2d'), { k, h } = sc(w);
   ctx.clearRect(0, 0, cv.width, cv.height);
+  if (w === 'f') {
+    // Draw all known tags first so the numbered targets remain available even when the
+    // source PNG is too small to make the printed tag itself legible.
+    APRIL_TAGS.forEach(tag => {
+      const p = fieldPixel(tag), x = p.x * k, y = p.y * h;
+      const used = APRIL_TAG_IDS.includes(tag.id);
+      ctx.strokeStyle = used ? '#22c55e' : '#facc15';
+      ctx.fillStyle = used ? 'rgba(34,197,94,.18)' : 'rgba(250,204,21,.18)';
+      ctx.lineWidth = used ? 3 : 2;
+      ctx.beginPath(); ctx.arc(x, y, used ? 10 : 8, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+      ctx.fillStyle = used ? '#86efac' : '#fef08a';
+      ctx.font = 'bold 18px system-ui';
+      ctx.fillText(String(tag.id), x + 11, y - 9);
+    });
+  }
   PAIRS.forEach((p, i) => {
     const x = (w === 'v' ? p[0] : p[2]) * k, y = (w === 'v' ? p[1] : p[3]) * h;
     ctx.strokeStyle = '#22c55e'; ctx.lineWidth = 2;
@@ -343,7 +416,8 @@ function paint(w) {
     ctx.beginPath(); ctx.moveTo(x - 11, y); ctx.lineTo(x + 11, y);
     ctx.moveTo(x, y - 11); ctx.lineTo(x, y + 11); ctx.stroke();
     ctx.fillStyle = '#22c55e'; ctx.font = 'bold 12px system-ui';
-    ctx.fillText(String(i + 1), x + 10, y - 10);
+    const label = w === 'f' && APRIL_TAG_IDS[i] ? `#${i + 1} · T${APRIL_TAG_IDS[i]}` : String(i + 1);
+    ctx.fillText(label, x + 10, y - 10);
   });
   if (pending && w === 'v') {
     const x = pending.vx * k, y = pending.vy * h;
@@ -355,7 +429,7 @@ function paint(w) {
 function stage() {
   const need = pending ? 'field' : 'video';
   $('#stage').innerHTML = pending
-    ? `Now tap the SAME spot on the <b>field diagram</b> (lower image).`
+    ? `Now tap the matching <b>numbered AprilTag</b> on the field diagram (lower image), or tap another floor feature to place it manually.`
     : `Tap a floor feature in the <b>video frame</b> (upper image). Tape crossings, carpet seams, guardrail base corners — nothing with height.`;
   $('#vPane').classList.toggle('active', !pending);
   $('#fPane').classList.toggle('active', !!pending);
@@ -367,7 +441,20 @@ for (const w of ['v', 'f']) {
     if (w === 'f' && !pending) return;         // need the video point first
     const r = P(w).cv.getBoundingClientRect();
     const { k, h } = sc(w);
-    openLoupe(w, (ev.clientX - r.left) / k, (ev.clientY - r.top) / h);
+    const x = (ev.clientX - r.left) / k, y = (ev.clientY - r.top) / h;
+    if (w === 'f') {
+      const tag = fieldTagAt(x, y);
+      if (tag) {
+        const fp = fieldPixel(tag);
+        PAIRS.push([pending.vx, pending.vy, Math.round(fp.x * 10) / 10, Math.round(fp.y * 10) / 10]);
+        APRIL_TAG_IDS.push(tag.id);
+        pending = null;
+        say($('#workMsg'), `AprilTag ${tag.id} paired with the video point.`, 'ok');
+        stage(); render();
+        return;
+      }
+    }
+    openLoupe(w, x, y);
   });
 }
 
@@ -431,6 +518,7 @@ $('#lOk').onclick = () => {
   if (which === 'v') { pending = { vx: Math.round(x * 10) / 10, vy: Math.round(y * 10) / 10 }; }
   else if (pending) {
     PAIRS.push([pending.vx, pending.vy, Math.round(x * 10) / 10, Math.round(y * 10) / 10]);
+    APRIL_TAG_IDS.push(null);
     pending = null;
   }
   loupe = null; $('#loupeWrap').style.display = 'none';
@@ -439,6 +527,7 @@ $('#lOk').onclick = () => {
 
 $('#undo').onclick = () => {
   if (pending) pending = null; else PAIRS.pop();
+  if (!pending && APRIL_TAG_IDS.length > PAIRS.length) APRIL_TAG_IDS.pop();
   stage(); render();
 };
 
@@ -448,8 +537,8 @@ function render() {
   $('#count').textContent = `${n} point${n === 1 ? '' : 's'}` + (n < 8 ? ` — need ${8 - n} more` : ' ✓');
   $('#count').style.color = n >= 8 ? '#86efac' : '#9aa0a6';
   $('#tbl').innerHTML = n === 0 ? '' :
-    '<tr><th>#</th><th>video x,y</th><th>field x,y</th></tr>' +
-    PAIRS.map((p, i) => `<tr><td>${i + 1}</td><td>${p[0]}, ${p[1]}</td><td>${p[2]}, ${p[3]}</td></tr>`).join('');
+    '<tr><th>#</th><th>video x,y</th><th>field x,y</th><th>source</th></tr>' +
+    PAIRS.map((p, i) => `<tr><td>${i + 1}</td><td>${p[0]}, ${p[1]}</td><td>${p[2]}, ${p[3]}</td><td>${APRIL_TAG_IDS[i] ? `AprilTag ${APRIL_TAG_IDS[i]}` : 'floor click'}</td></tr>`).join('');
 }
 
 addEventListener('resize', () => { if (DOC) { size('v'); size('f'); render(); } });
@@ -461,7 +550,13 @@ $('#submit').onclick = async () => {
   if (PAIRS.length < 8) say($('#workMsg'), `Sending only ${PAIRS.length} points — RANSAC cannot identify a bad click with so few.`, '');
   const payload = { schemaVersion: 1, videoId: DOC.videoId || id,
                     frame: DOC.frame ?? null, createdAt: new Date().toISOString(),
-                    points: PAIRS };
+                    points: PAIRS,
+                    // Keep the legacy point array for the homography path, and add the
+                    // identity needed by a future 3-D AprilTag pose solver.
+                    aprilTags: APRIL_TAG_IDS.flatMap((tagId, pointIndex) => tagId
+                      ? [{ pointIndex, tagId, video: PAIRS[pointIndex].slice(0, 2),
+                          field: PAIRS[pointIndex].slice(2, 4) }]
+                      : []) };
   try {
     const r = await fetch(`${url}/points/${encodeURIComponent(id)}`, {
       method: 'POST',
