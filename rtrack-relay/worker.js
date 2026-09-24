@@ -82,7 +82,8 @@
 // each, so an event day is nowhere near it.
 // ─────────────────────────────────────────────────────────────────────────────
 
-const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl', 'tracks']);
+const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl', 'tracks',
+                       'gallery-bundle', 'gallery-answer', 'gallery-status']);
 
 // KV caps values at 25 MiB. Curation bundles are ~1.8-7 MB depending on how many
 // frames and what JPEG quality rtrack.curate was told to use, so this is headroom
@@ -96,8 +97,61 @@ const TTL_S = 86400;   // one event day
 // day one's routes on day three. They are also small (a 5 Hz export is ~170 KB against a
 // bundle's 4 MB), so a longer life costs almost nothing. Anything absent here gets
 // TTL_S.
-const TTL_BY_KIND = { tracks: 7 * 86400 };
+const TTL_BY_KIND = {
+  tracks: 7 * 86400,
+  'gallery-bundle': 7 * 86400,
+  'gallery-answer': 30 * 86400,
+  'gallery-status': 30 * 86400,
+};
 const ttlFor = kind => TTL_BY_KIND[kind] ?? TTL_S;
+
+// Gallery reviews are submitted one team at a time in the Tracks tab, but the
+// relay key is one bundle-wide answer. Merge schema-2 submissions by team so a
+// later team submission does not erase earlier teams. A second submission for
+// the same team intentionally replaces that team's prior selection.
+function mergeGalleryAnswer(existing, incoming) {
+  if (!existing || existing.schemaVersion !== 2 || incoming.schemaVersion !== 2) {
+    return incoming;
+  }
+  if (existing.bundleHash && incoming.bundleHash && existing.bundleHash !== incoming.bundleHash) {
+    return null;
+  }
+
+  const selections = new Map();
+  for (const item of Array.isArray(existing.selections) ? existing.selections : []) {
+    if (item?.team != null) selections.set(String(item.team), item);
+  }
+  for (const item of Array.isArray(incoming.selections) ? incoming.selections : []) {
+    if (item?.team != null) {
+      const prior = selections.get(String(item.team));
+      const next = { team: String(item.team),
+        include: Array.isArray(item.include) ? item.include : [] };
+      if (Array.isArray(item.reviewed)) next.reviewed = item.reviewed;
+      else if (Array.isArray(prior?.reviewed)) next.reviewed = prior.reviewed;
+      selections.set(String(item.team), next);
+    }
+  }
+
+  const teamStates = new Map();
+  for (const item of Array.isArray(existing.teamStates) ? existing.teamStates : []) {
+    if (item?.team != null) teamStates.set(String(item.team), item);
+  }
+  for (const item of Array.isArray(incoming.teamStates) ? incoming.teamStates : []) {
+    if (item?.team != null) teamStates.set(String(item.team), {
+      team: String(item.team), state: item.state,
+    });
+  }
+
+  return {
+    ...existing,
+    ...incoming,
+    selections: [...selections.values()],
+    teamStates: [...teamStates.values()],
+    firstSubmittedAt: existing.firstSubmittedAt || existing.submittedAt || incoming.submittedAt,
+    mergedAt: new Date().toISOString(),
+    submissionCount: Number(existing.submissionCount || 1) + 1,
+  };
+}
 
 // THE INDEX IS A KEY, NOT A list() CALL, and that is a hard requirement rather than an
 // optimisation. KV list() is capped at 1000 operations PER DAY on the free plan --
@@ -180,7 +234,7 @@ export default {
     const kvKey = `${kind}:${id}`;
 
     // Paths a curator's device is allowed to write. Everything else is home-machine only.
-    const DEVICE_WRITABLE = new Set(['answer', 'points', 'occl']);
+    const DEVICE_WRITABLE = new Set(['answer', 'points', 'occl', 'gallery-answer']);
 
     // Returns 'full' | 'device' | null.
     const level = () => {
@@ -206,16 +260,52 @@ export default {
         return json({ ok: false, error: `payload ${body.length} > ${MAX_BYTES} bytes; `
                       + 'lower --frames or the JPEG quality in rtrack.curate' }, 413);
       }
-      try { JSON.parse(body); } catch { return json({ ok: false, error: 'invalid JSON' }, 400); }
+      let payload;
+      try { payload = JSON.parse(body); } catch { return json({ ok: false, error: 'invalid JSON' }, 400); }
+      if (kind === 'gallery-bundle' && body.length > 4 * 1024 * 1024) {
+        return json({ ok: false, error: 'gallery review bundle exceeds 4 MiB' }, 413);
+      }
+      let storedPayload = payload;
+      if (kind === 'gallery-answer' && payload.schemaVersion === 2) {
+        const existing = await env.RTRACK_KV.get(kvKey, 'json');
+        const merged = mergeGalleryAnswer(existing, payload);
+        if (!merged) {
+          return json({ ok: false, error: 'gallery answer belongs to a different bundle' }, 409);
+        }
+        storedPayload = merged;
+      }
+      const storedBody = JSON.stringify(storedPayload);
       const at = Date.now();
-      await env.RTRACK_KV.put(kvKey, body, {
+      await env.RTRACK_KV.put(kvKey, storedBody, {
         expirationTtl: ttlFor(kind),
-        metadata: { bytes: body.length, at },
+        metadata: { bytes: storedBody.length, at },
       });
       // After the value is stored, never before: a manifest entry for a value that failed
       // to write would advertise a bundle that 404s.
-      await touchIndex(env, kind, id, { bytes: body.length, at });
-      return json({ ok: true, key: kvKey, bytes: body.length });
+      const reviewMeta = kind.startsWith('gallery-') ? {
+        season: storedPayload.season ?? null,
+        match: storedPayload.match ?? (Array.isArray(storedPayload.teams)
+          ? storedPayload.teams.flatMap(t => [...(t.candidates || []), ...(t.currentGallery || [])])
+              .map(image => image?.source?.match).find(Boolean) ?? null
+          : null),
+        reviewId: storedPayload.reviewId ?? id,
+        galleryVersion: storedPayload.galleryVersion ?? storedPayload.baseGalleryVersion ?? null,
+        schemaVersion: storedPayload.schemaVersion ?? null,
+        teamIds: Array.isArray(storedPayload.teams) ? storedPayload.teams.map(t => String(t.team)) : null,
+        currentImagesByTeam: Array.isArray(storedPayload.teams)
+          ? Object.fromEntries(storedPayload.teams.map(t => [String(t.team), (t.currentGallery || []).length])) : null,
+        candidatesByTeam: Array.isArray(storedPayload.teams)
+          ? Object.fromEntries(storedPayload.teams.map(t => [String(t.team), (t.candidates || []).length])) : null,
+        candidateCount: Array.isArray(storedPayload.candidates)
+          ? storedPayload.candidates.length
+          : Array.isArray(storedPayload.teams) ? storedPayload.teams.reduce((n, t) => n + (t.candidates || []).length, 0) : null,
+        decisionCount: Array.isArray(storedPayload.decisions) ? storedPayload.decisions.length : null,
+        selectionCount: Array.isArray(storedPayload.selections) ? storedPayload.selections.length : null,
+        state: kind === 'gallery-answer' ? 'answered' : payload.state ?? 'ready',
+      } : {};
+      await touchIndex(env, kind, id, { bytes: storedBody.length, at, ...reviewMeta });
+      return json({ ok: true, key: kvKey, bytes: storedBody.length,
+                    merged: kind === 'gallery-answer' && payload.schemaVersion === 2 });
     }
 
     if (request.method === 'GET') {

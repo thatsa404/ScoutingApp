@@ -61,7 +61,8 @@ def _env() -> tuple[str, str]:
 # Every kind the worker accepts; keep in step with KINDS in rtrack-relay/worker.js.
 # Enumerated here ONCE so a new kind cannot be creatable but not clearable, which is
 # exactly what happened when occl and tracks were added.
-KINDS = ("bundle", "answer", "calib", "points", "occl", "tracks")
+KINDS = ("bundle", "answer", "calib", "points", "occl", "tracks",
+         "gallery-bundle", "gallery-answer", "gallery-status")
 
 
 def put(kind: str, ident: str, doc: dict) -> dict:
@@ -111,13 +112,16 @@ def main(argv=None) -> int:
 
     for name, helptext in (("push-bundle", "upload a curation bundle"),
                            ("push-calib", "upload a calibration frame"),
-                           ("push-tracks", "upload exported routes for the app")):
+                           ("push-tracks", "upload exported routes for the app"),
+                           ("push-gallery-bundle", "upload a gallery-review bundle"),
+                           ("push-gallery-status", "upload gallery-review status")):
         p = sub.add_parser(name, help=helptext)
         p.add_argument("ident", help="match key, or video id for calib")
         p.add_argument("--file", type=Path, default=None)
 
     for name, kind in (("wait-answer", "answer"), ("wait-points", "points"),
-                       ("wait-occl", "occl")):
+                       ("wait-occl", "occl"),
+                       ("wait-gallery-answer", "gallery-answer")):
         p = sub.add_parser(name, help=f"block until {kind} come back")
         p.add_argument("ident")
         p.add_argument("--timeout", type=float, default=DEFAULT_TIMEOUT_S)
@@ -151,19 +155,25 @@ def main(argv=None) -> int:
         print(f"[relay] {r.status_code} {r.text[:120]}")
         return 0
 
-    if args.cmd in ("push-bundle", "push-calib", "push-tracks"):
+    if args.cmd in ("push-bundle", "push-calib", "push-tracks",
+                    "push-gallery-bundle", "push-gallery-status"):
         kind = {"push-bundle": "bundle", "push-calib": "calib",
-                "push-tracks": "tracks"}[args.cmd]
+                "push-tracks": "tracks", "push-gallery-bundle": "gallery-bundle",
+                "push-gallery-status": "gallery-status"}[args.cmd]
         # Same shape as the wait-* destination table, and for the same reason: three
         # kinds through a two-way ternary is where a wrong default would hide.
         default = {
             "bundle": C.STAGE3_DIR / f"{args.ident}_curate_frames.json",
             "calib":  C.STAGE3_DIR / f"{args.ident}_calib_frame.json",
             "tracks": C.STAGE3_DIR / f"{args.ident}.json",
+            "gallery-bundle": C.OUT_DIR / "gallery" / "review" / f"{args.ident}.json",
+            "gallery-status": C.OUT_DIR / "gallery" / "replay" / f"{args.ident}.json",
         }[kind]
         src = args.file or default
         if not src.exists():
             raise SystemExit(f"[relay] {src} not found")
+        if kind == "gallery-bundle" and src.stat().st_size > 4 * 1024 * 1024:
+            raise SystemExit(f"[relay] gallery bundle exceeds 4 MiB: {src}")
         doc = json.loads(src.read_text(encoding="utf-8"))
         res = put(kind, args.ident, doc)
         mb = res.get("bytes", 0) / 1e6
@@ -174,7 +184,7 @@ def main(argv=None) -> int:
         return 0
 
     kind = {"wait-answer": "answer", "wait-points": "points",
-            "wait-occl": "occl"}[args.cmd]
+            "wait-occl": "occl", "wait-gallery-answer": "gallery-answer"}[args.cmd]
     doc = wait(kind, args.ident, args.timeout)
     if doc is None:
         return 1
@@ -186,6 +196,7 @@ def main(argv=None) -> int:
                   / f"{args.ident}_corrections.json",
         "points": C.STAGE3_DIR / f"{args.ident}_points.json",
         "occl":   C.CALIB_DIR / f"{args.ident}_occluders.json",
+        "gallery-answer": C.OUT_DIR / "gallery" / "review" / f"{args.ident}_answer.json",
     }
     out = args.out or dests[kind]
     out.parent.mkdir(parents=True, exist_ok=True)
