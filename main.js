@@ -8792,7 +8792,8 @@ function galleryProvenanceLabel(image) {
 
 function galleryImageCard(image, selected, onChange, readOnly = false) {
     const card = document.createElement('label');
-    card.style.cssText = `display:inline-flex;vertical-align:top;flex-direction:column;gap:5px;min-width:150px;max-width:220px;padding:7px;border:1px solid ${selected ? '#2563eb' : '#334155'};border-radius:7px;background:${selected ? '#172554' : '#0f172a'};cursor:${readOnly ? 'default' : 'pointer'};`;
+    card.className = 'galleryImageCard';
+    card.style.cssText = `display:inline-flex;vertical-align:top;flex-direction:column;gap:5px;min-width:150px;max-width:220px;padding:7px;border:1px solid ${selected ? '#2563eb' : '#334155'};border-radius:7px;background:${selected ? '#172554' : '#0f172a'};cursor:${readOnly ? 'default' : 'pointer'};box-sizing:border-box;`;
     const thumb = galleryThumb(image);
     if (thumb) {
         const media = document.createElement('div');
@@ -8810,20 +8811,32 @@ function galleryImageCard(image, selected, onChange, readOnly = false) {
         missing.style.cssText = 'height:150px;display:grid;place-items:center;color:#64748b;font-size:.78em;';
         card.appendChild(missing);
     }
-    const provenance = document.createElement('div');
-    provenance.textContent = galleryProvenanceLabel(image);
-    provenance.style.cssText = `font-size:.68em;color:${image?.role === 'current' ? '#86efac' : '#fbbf24'};font-weight:600;`;
-    card.appendChild(provenance);
+    if (readOnly) {
+        const provenance = document.createElement('div');
+        provenance.textContent = galleryProvenanceLabel(image);
+        provenance.style.cssText = `font-size:.68em;color:${image?.role === 'current' ? '#86efac' : '#fbbf24'};font-weight:600;`;
+        card.appendChild(provenance);
+    }
+    let selectionRow = null;
     if (!readOnly) {
+        selectionRow = document.createElement('div');
+        selectionRow.style.cssText = 'display:flex;align-items:center;gap:6px;min-width:0;';
         const input = document.createElement('input');
         input.type = 'checkbox'; input.checked = !!selected;
-        input.style.cssText = 'width:18px;height:18px;accent-color:#2563eb;';
+        input.style.cssText = 'width:18px;height:18px;accent-color:#2563eb;flex:0 0 auto;margin:0;';
         let currentSelected = !!selected;
+        const applySelected = checked => {
+            currentSelected = !!checked;
+            input.checked = currentSelected;
+            card.style.borderColor = currentSelected ? '#2563eb' : '#334155';
+            card.style.background = currentSelected ? '#172554' : '#0f172a';
+            card.setAttribute('aria-checked', String(currentSelected));
+        };
         const toggle = () => {
-            currentSelected = !currentSelected;
+            applySelected(!currentSelected);
             onChange(currentSelected);
         };
-        input.onchange = () => { currentSelected = !!input.checked; onChange(currentSelected); };
+        input.onchange = () => { applySelected(input.checked); onChange(currentSelected); };
         const imageElement = card.querySelector('img');
         if (imageElement) {
             imageElement.title = 'Click image to select or deselect';
@@ -8836,15 +8849,16 @@ function galleryImageCard(image, selected, onChange, readOnly = false) {
                 toggle();
             };
         }
-        card.appendChild(input);
+        selectionRow.appendChild(input);
+        card.appendChild(selectionRow);
     }
     const source = image.source || {};
     const info = document.createElement('div');
-    info.style.cssText = 'font-size:.72em;color:#94a3b8;line-height:1.35;';
+    info.style.cssText = 'font-size:.7em;color:#94a3b8;line-height:1.2;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;';
     info.textContent = readOnly
         ? `${source.match || 'prior review'} · ${source.time ?? '—'}s`
-        : `${source.match || ''} · track ${source.sourceTrack ?? '—'} · ${source.time ?? '—'}s · ${Math.round(image.quality?.boxArea || source.boxArea || 0)} px²`;
-    card.appendChild(info);
+        : `${String(source.match || '').replace(/^\d+[^_]*_/, '')} · T${source.sourceTrack ?? '—'} · ${source.time ?? '—'}s`;
+    if (selectionRow) selectionRow.appendChild(info); else card.appendChild(info);
     return card;
 }
 
@@ -8857,7 +8871,18 @@ function renderGalleryReviewPanelV2(host, relay, bundle, selectedTeam) {
     host.innerHTML = '';
     const shell = document.createElement('div');
     shell.style.cssText = 'border:1px solid #2563eb;border-radius:8px;padding:14px;margin-bottom:14px;';
-    shell.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;"><div><b>Gallery review · team ${galleryEsc(team)}</b><div style="font-size:.76em;color:#64748b;margin-top:3px;">Select only candidate images that are strong representations of this robot. Current examples are reference-only.</div></div><button id="galleryReviewClose" style="padding:6px 10px;background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:6px;cursor:pointer;">Close</button></div>`;
+    shell.innerHTML = `<style>
+      @media (max-width: 640px) {
+        .galleryImageStrip { display:grid !important; grid-template-columns:repeat(2,minmax(0,1fr)); overflow:visible !important; gap:7px !important; }
+        .galleryImageStrip .galleryImageCard { min-width:0 !important; max-width:none !important; width:100%; }
+        .galleryImageStrip .galleryImageCard > div:first-child { height:125px !important; }
+        .galleryImageStrip .galleryImageCard img,
+        .galleryImageStrip .galleryImageCard svg { height:125px !important; }
+      }
+      @media (max-width: 340px) {
+        .galleryImageStrip { grid-template-columns:1fr; }
+      }
+    </style><div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;"><div><b>Gallery review · team ${galleryEsc(team)}</b><div style="font-size:.76em;color:#64748b;margin-top:3px;">Select only candidate images that are strong representations of this robot. Current examples are reference-only.</div></div><button id="galleryReviewClose" style="padding:6px 10px;background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:6px;cursor:pointer;">Close</button></div>`;
     const currentTitle = document.createElement('h4');
     currentTitle.textContent = `Current gallery (${group.currentGallery.length})`;
     const provenanceCounts = group.currentGallery.reduce((counts, image) => {
@@ -8869,17 +8894,17 @@ function renderGalleryReviewPanelV2(host, relay, bundle, selectedTeam) {
         .map(([label, count]) => `${count} ${label}`).join(' · ');
     if (provenanceSummary) currentTitle.textContent += ` · ${provenanceSummary}`;
     currentTitle.style.cssText = 'margin:16px 0 7px;color:#cbd5e1;font-size:.86em;';
-    shell.appendChild(currentTitle);
     const current = document.createElement('div');
+    current.className = 'galleryImageStrip';
     current.style.cssText = 'display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;';
     group.currentGallery.forEach(image => current.appendChild(galleryImageCard(image, false, null, true)));
     if (!group.currentGallery.length) { current.textContent = 'No reviewed gallery images yet.'; current.style.color = '#64748b'; }
-    shell.appendChild(current);
     const candidateTitle = document.createElement('h4');
-    candidateTitle.textContent = `Candidate images (${group.candidates.length}) · larger detections are prioritized`;
+    candidateTitle.textContent = `Candidate images (${group.candidates.length})`;
     candidateTitle.style.cssText = 'margin:16px 0 7px;color:#cbd5e1;font-size:.86em;';
     shell.appendChild(candidateTitle);
     const candidates = document.createElement('div');
+    candidates.className = 'galleryImageStrip';
     candidates.style.cssText = 'display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;';
     const selected = new Set((draft.selections?.[team] || []).map(String));
     group.candidates.forEach(image => {
@@ -8888,7 +8913,8 @@ function renderGalleryReviewPanelV2(host, relay, bundle, selectedTeam) {
             if (checked) next.add(String(image.cropHash)); else next.delete(String(image.cropHash));
             draft.selections[team] = [...next]; draft.touched[team] = true;
             saveGalleryDraft(bundle, draft);
-            renderGalleryReviewPanelV2(host, relay, bundle, team);
+            const status = document.getElementById('gallerySubmitStatus');
+            if (status) status.textContent = `${next.size} selected for this team`;
         }));
     });
     shell.appendChild(candidates);
@@ -8903,6 +8929,9 @@ function renderGalleryReviewPanelV2(host, relay, bundle, selectedTeam) {
     actions.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px;padding-top:10px;border-top:1px solid #1e293b;';
     actions.innerHTML = `<button id="gallerySubmit" style="padding:8px 14px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;">Submit selected teams</button><button id="galleryNext" style="display:none;padding:8px 14px;background:#16a34a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;">Next gallery</button><button id="galleryClearDraft" style="padding:8px 12px;background:transparent;color:#f87171;border:1px solid #7f1d1d;border-radius:6px;cursor:pointer;">Clear draft</button><span id="gallerySubmitStatus" style="font-size:.78em;color:#64748b;">${selected.size} selected for this team</span>`;
     shell.appendChild(actions);
+    currentTitle.style.marginTop = '18px';
+    shell.appendChild(currentTitle);
+    shell.appendChild(current);
     host.appendChild(shell);
     document.getElementById('galleryReviewClose').onclick = () => { _galleryReviewBundle = null; renderTracksTab(); };
     document.getElementById('galleryClearDraft').onclick = () => { localStorage.removeItem(galleryDraftKey(bundle)); renderGalleryReviewPanelV2(host, relay, bundle, team); };
