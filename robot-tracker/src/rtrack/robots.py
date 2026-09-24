@@ -1358,7 +1358,8 @@ def drop_offview(rows, stem: str):
 
 
 def drop_offfield(rows, stem: str, slack: float = FIELD_SLACK_M,
-                  calib_stem: str | None = None):
+                  calib_stem: str | None = None,
+                  allow_unsafe_calibration: bool = False):
     """Remove detections whose foot point projects outside the field. Returns
     (rows, n_dropped, n_total) and leaves rows untouched when there is no calibration.
 
@@ -1389,6 +1390,9 @@ def drop_offfield(rows, stem: str, slack: float = FIELD_SLACK_M,
     # on 2026mawor_qm1, that means solving with 8.45 detections/frame instead of ~4.
     cal = calib_stem or stem
     if not (C.CALIB_DIR / f"{cal}.json").exists():
+        return rows, 0, sum(len(r["dets"]) for r in rows)
+    if (not PJ.calibration_status_for(cal)["usable"]
+            and not allow_unsafe_calibration):
         return rows, 0, sum(len(r["dets"]) for r in rows)
     H, lens = PJ.load_calib(cal)
     ref = json.loads((C.CALIB_DIR / "field_ref_2026.json").read_text(encoding="utf-8"))

@@ -47,6 +47,50 @@ from .calibrate import load_field_ref
 
 SLACK_M = 0.6
 
+# Gallery admission uses calibrated field bounds as a hard filter, so an obviously
+# bad calibration must not silently decide which appearance samples are eligible.
+CALIB_MIN_POINTS = 8
+CALIB_MAX_MEAN_REPROJ_M = 0.25
+CALIB_MAX_REPROJ_M = 0.75
+
+
+def calibration_status(doc: dict) -> dict:
+    """Return an auditable admission decision for a calibration document."""
+    reasons = []
+    points = doc.get("pointCount")
+    inliers = doc.get("inliers")
+    err = doc.get("reprojErrorM") or {}
+    mean, worst = err.get("mean"), err.get("max")
+    if not isinstance(points, int) or points < CALIB_MIN_POINTS:
+        reasons.append(f"need at least {CALIB_MIN_POINTS} points (got {points!r})")
+    if inliers is not None and (not isinstance(inliers, int) or inliers < CALIB_MIN_POINTS):
+        reasons.append(f"need at least {CALIB_MIN_POINTS} inliers (got {inliers!r})")
+    if not isinstance(mean, (int, float)) or not np.isfinite(mean):
+        reasons.append("missing or non-finite mean reprojection error")
+    elif mean > CALIB_MAX_MEAN_REPROJ_M:
+        reasons.append(f"mean reprojection error {mean:.3f} m exceeds "
+                       f"{CALIB_MAX_MEAN_REPROJ_M:.2f} m")
+    if not isinstance(worst, (int, float)) or not np.isfinite(worst):
+        reasons.append("missing or non-finite maximum reprojection error")
+    elif worst > CALIB_MAX_REPROJ_M:
+        reasons.append(f"maximum reprojection error {worst:.3f} m exceeds "
+                       f"{CALIB_MAX_REPROJ_M:.2f} m")
+    return {
+        "usable": not reasons,
+        "pointCount": points,
+        "inliers": inliers,
+        "reprojErrorM": {"mean": mean, "max": worst},
+        "lensPresent": bool(doc.get("lens")),
+        "reasons": reasons,
+    }
+
+
+def calibration_status_for(stem: str) -> dict:
+    path = C.CALIB_DIR / f"{stem}.json"
+    if not path.exists():
+        raise SystemExit(f"{path} not found -- run rtrack.calibrate first")
+    return calibration_status(json.loads(path.read_text(encoding="utf-8")))
+
 
 def load_calib(stem: str) -> tuple[np.ndarray, dict | None]:
     p = C.CALIB_DIR / f"{stem}.json"
