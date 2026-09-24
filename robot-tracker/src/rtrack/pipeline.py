@@ -7,7 +7,7 @@ Sequences what already exists rather than reimplementing any of it:
 
     track -> stitch -> appear -> reid votes -> robots -> curate
       -> [push bundle, wait for answers] -> robots again -> project -> export
-      -> gallery
+      -> gallery-review prepare [-> optional relay push]
 
 RESUMABLE BY DEFAULT. Every step is skipped when its output is already present and
 newer than its input, because these steps cost minutes and the loop gets re-run after a
@@ -110,6 +110,12 @@ def _main(argv=None) -> int:
                     help="process even if the clip cannot be confirmed to hold this "
                          "match. See the gate in _main(); this is the override, not a "
                          "routine flag.")
+    ap.add_argument("--legacy-gallery", action="store_true",
+                    help="explicitly update the legacy event gallery from solver labels; "
+                         "this is unreviewed migration data and is not authoritative")
+    ap.add_argument("--gallery-allow-unsafe-calibration", action="store_true",
+                    help="diagnostic only: allow a quarantined calibration for gallery "
+                         "field filtering; records the unsafe status in the bundle")
     ap.add_argument("--prep-only", action="store_true",
                     help="run only track/stitch/appear and stop. These are the "
                          "expensive steps and NONE of them depend on the appearance "
@@ -200,6 +206,9 @@ def _main(argv=None) -> int:
     positions = C.STAGE2_DIR / f"{stem}_positions.json"
     out = C.STAGE3_DIR / f"{args.match}.json"
     gallery = C.STAGE3_DIR / f"{event}_gallery{_sfx}.npz"
+    season = int(str(event)[:4]) if str(event)[:4].isdigit() else C.YEAR
+    reviewed_latest = C.OUT_DIR / "gallery" / str(season) / "latest.json"
+    gallery_available = gallery.exists() or (args.appearance == "cnn" and reviewed_latest.exists())
 
     si = STEPS.index(args.start) if args.start else -1
     def do(step: str, fresh: bool) -> bool:
@@ -265,7 +274,7 @@ def _main(argv=None) -> int:
     have_votes = False
     if args.no_votes:
         print("    votes: SKIPPED by --no-votes; identity from geometry and hue only")
-    elif gallery.exists():
+    elif gallery_available:
         if do("votes", newer(votes, appear, gallery)):
             have_votes = run("reid", "votes", stem, "--event", event,
                              "--match", args.match, "--tracks", st,
@@ -280,7 +289,7 @@ def _main(argv=None) -> int:
                 # 20 matches were solved on geometry and bumper hue alone and the
                 # resulting 23-39% auto-ID was read as the descriptor's performance.
                 # A wrong number that looks like a right one costs more than a stop.
-                print(f"    !! votes FAILED but {gallery.name} exists -- appearance "
+                print(f"    !! votes FAILED but appearance evidence exists -- "
                       f"evidence is available and was not used. Refusing to solve "
                       f"identity without it; fix the error above and re-run. "
                       f"(--no-votes to proceed deliberately without appearance.)")
@@ -289,7 +298,8 @@ def _main(argv=None) -> int:
             have_votes = True
             print("    votes: up to date")
     else:
-        print(f"    votes: no {gallery.name} yet -- first match of the event, "
+        print(f"    votes: no legacy gallery or reviewed season gallery yet -- "
+              f"first appearance-dependent match, "
               f"identity will come from the curator")
 
     # FIELD POSITIONS BEFORE THE SOLVE, NOT AFTER IT.
@@ -415,15 +425,41 @@ def _main(argv=None) -> int:
     if not run(*ea):
         return 1
 
-    # Gallery LAST: it learns from the curated labelling, and only helps the NEXT match.
-    if not run("reid", "gallery", stem, "--event", event, "--labeled", labeled,
-               "--backend", args.appearance):
-        return 1
+    # Gallery LAST: reviewed appearance learning is explicitly separate from route
+    # curation.  The old command remains available only as a migration/control path;
+    # it learns from every solver-named detection and is therefore unreviewed.
+    if args.legacy_gallery:
+        if not run("reid", "gallery", stem, "--event", event, "--labeled", labeled,
+                   "--backend", args.appearance):
+            return 1
+        print("[pipeline] WARNING: legacy gallery updated from solver-labelled routes; "
+              "treat it as unreviewed control data")
+    else:
+        try:
+            from .gallery_review import prepare as prepare_gallery_review
+            review_bundle = prepare_gallery_review(args.match, season=season,
+                                                   corrections_path=corr,
+                                                   calib_stem=args.calib_from or event,
+                                                   allow_unsafe_calibration=args.gallery_allow_unsafe_calibration)
+            if args.relay:
+                if not run("relay", "push-gallery-bundle", review_bundle.stem,
+                           "--file", review_bundle):
+                    return 1
+                print(f"[pipeline] gallery review queued without blocking route publication: "
+                      f"{review_bundle.stem}")
+            else:
+                print(f"[pipeline] gallery review bundle ready: {review_bundle}")
+                print(f"[pipeline] push it with: rtrack.relay push-gallery-bundle "
+                      f"{review_bundle.stem} --file {review_bundle.name}")
+        except Exception as e:
+            # Gallery review is an optional downstream artifact. A missing or
+            # quarantined calibration must prevent unbounded gallery learning, but it
+            # must not block publication of the already-curated route.
+            print(f"[pipeline] gallery review not prepared: {e}")
 
-    # Rebuild the manifest AFTER the gallery update. export already wrote one, but that
-    # happens a step too early: the gallery does not yet contain THIS match's teams, so
-    # the match would publish reading 0/6 models -- its own six teams uncounted -- and
-    # stay that way until some later publish happened to rebuild the file.
+    # Refresh the public track manifest after export.  Reviewed gallery publication is
+    # intentionally separate: a route export must not wait for gallery review, and a
+    # gallery answer must not silently rewrite historical routes.
     try:
         from .export import write_manifest
         n = write_manifest(C.REPO_ROOT / "public" / "tracks")

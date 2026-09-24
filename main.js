@@ -8480,6 +8480,571 @@ async function _relayIndex(url) {
     } catch { return null; }
 }
 
+// ── Reviewed appearance gallery queue --------------------------------------
+// Gallery review is deliberately a delta workflow.  The Tracks tab shows relay
+// metadata first and fetches the bounded image bundle only when a person opens it.
+let _galleryReviewBundle = null;
+let _galleryReviewId = null;
+let _galleryReviewQueue = [];
+
+function galleryNextTarget(reviewId, team) {
+    const current = _galleryReviewQueue.findIndex(item =>
+        item.reviewId === reviewId && String(item.team) === String(team));
+    if (current >= 0) return _galleryReviewQueue[current + 1] || null;
+    return _galleryReviewQueue[0] || null;
+}
+
+function galleryEsc(value) {
+    const el = document.createElement('span');
+    el.textContent = value == null ? '' : String(value);
+    return el.innerHTML;
+}
+
+function legacyGalleryReviewItems(items) {
+    const out = new Map();
+    for (const item of items || []) {
+        if (!item?.id || !item.kind?.startsWith('gallery-')) continue;
+        const row = out.get(item.id) || { id: item.id };
+        row[item.kind] = item;
+        out.set(item.id, row);
+    }
+    return [...out.values()].sort((a, b) => (b['gallery-bundle']?.at || 0)
+        - (a['gallery-bundle']?.at || 0));
+}
+
+async function legacyLoadGalleryReviewBundle(relay, reviewId) {
+    if (!relay || !reviewId) return null;
+    try {
+        const response = await fetch(`${relay}/gallery-bundle/${encodeURIComponent(reviewId)}`,
+                                     { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bundle = await response.json();
+        if (bundle.kind !== 'galleryReviewBundle' || bundle.schemaVersion !== 1
+            || !Array.isArray(bundle.candidates)) throw new Error('invalid gallery bundle');
+        return bundle;
+    } catch (error) {
+        alert(`Could not load gallery review: ${error.message}`);
+        return null;
+    }
+}
+
+function galleryDraftKey(bundle) {
+    return `galleryReview:${bundle.reviewId}:${bundle.bundleHash}`;
+}
+
+function legacyReadGalleryDraft(bundle) {
+    try {
+        const draft = JSON.parse(localStorage.getItem(galleryDraftKey(bundle)) || 'null');
+        return draft?.bundleHash === bundle.bundleHash ? draft : { decisions: {}, teamStates: {} };
+    } catch { return { decisions: {}, teamStates: {} }; }
+}
+
+function saveGalleryDraft(bundle, draft) {
+    localStorage.setItem(galleryDraftKey(bundle), JSON.stringify({
+        bundleHash: bundle.bundleHash, decisions: draft.decisions || {},
+        selections: draft.selections || {}, touched: draft.touched || {},
+        teamStates: draft.teamStates || {}, updatedAt: new Date().toISOString(),
+    }));
+}
+
+function galleryDecisionFor(bundle, draft, candidate) {
+    return draft.decisions?.[candidate.candidateId] || null;
+}
+
+function legacyRenderGalleryReviewPanel(host, relay, bundle) {
+    const draft = readGalleryDraft(bundle);
+    _galleryReviewBundle = bundle;
+    const actionColor = { accept: '#22c55e', relabel: '#60a5fa', reject: '#ef4444',
+                          mixed: '#f59e0b', split: '#c084fc', defer: '#64748b' };
+    host.innerHTML = `
+      <div style="border:1px solid #2563eb;border-radius:8px;padding:12px;margin-bottom:14px;">
+        <div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;">
+          <div><b>Gallery review</b> · ${galleryEsc(bundle.reviewId.slice(0, 12))}
+            <div style="font-size:.76em;color:#64748b;margin-top:3px;">
+              ${bundle.candidates.length} tracklets · ${bundle.candidates.reduce((n, c) => n + c.views.length, 0)} views ·
+              base ${galleryEsc((bundle.galleryVersion || '').slice(0, 12))}</div></div>
+          <button id="galleryReviewClose" style="padding:6px 10px;background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:6px;cursor:pointer;">Close</button>
+        </div>
+        <p style="font-size:.8em;color:#94a3b8;line-height:1.5;">Review the source tracklet as a group. Accept only when the visible robot is consistently the proposed team. Relabel, reject, or mark mixed when it is not safe gallery evidence.</p>
+        <div id="galleryCandidateList"></div>
+        <div id="galleryTeamStates" style="border-top:1px solid #1e293b;margin-top:8px;padding-top:10px;"></div>
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:12px;padding-top:10px;border-top:1px solid #1e293b;">
+          <button id="gallerySubmit" style="padding:8px 14px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;">Submit review</button>
+          <button id="galleryClearDraft" style="padding:8px 12px;background:transparent;color:#f87171;border:1px solid #7f1d1d;border-radius:6px;cursor:pointer;">Clear draft</button>
+          <span id="galleryDraftStatus" style="font-size:.78em;color:#64748b;"></span>
+        </div>
+      </div>`;
+    document.getElementById('galleryReviewClose').onclick = () => {
+        _galleryReviewBundle = null; _galleryReviewId = null; renderTracksTab();
+    };
+    const list = document.getElementById('galleryCandidateList');
+    for (const candidate of bundle.candidates) {
+        const decision = galleryDecisionFor(bundle, draft, candidate);
+        const card = document.createElement('div');
+        card.style.cssText = 'border-top:1px solid #1e293b;padding:12px 0;';
+        const proposed = galleryEsc(candidate.proposedTeam || 'unassigned');
+        const source = `${galleryEsc(candidate.source?.match || '')} · track ${galleryEsc(candidate.source?.sourceTrack)} · ${galleryEsc(candidate.source?.startS)}–${galleryEsc(candidate.source?.endS)}s`;
+        card.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;align-items:baseline;flex-wrap:wrap;">
+          <b>${proposed}</b><span style="font-size:.76em;color:#64748b;">${source}</span>
+          <span class="galleryCandidateState" style="font-size:.75em;color:${actionColor[decision?.action] || '#64748b'};">${galleryEsc(decision?.action || 'unreviewed')}</span></div>
+          <div style="display:flex;gap:8px;overflow-x:auto;padding:8px 0;">${candidate.views.map(v => v.thumbnail?.startsWith('data:image/jpeg;base64,')
+              ? `<img src="${v.thumbnail}" alt="gallery candidate" style="height:150px;width:auto;border-radius:5px;border:1px solid #334155;">`
+              : '<span style="color:#64748b;padding:30px 8px;">thumbnail unavailable</span>').join('')}</div>
+          <div style="display:flex;gap:6px;flex-wrap:wrap;"><button data-action="accept">Accept</button><button data-action="relabel">Relabel</button><button data-action="reject">Reject</button><button data-action="mixed">Mixed</button><button data-action="split">Split</button><button data-action="defer">Defer</button></div>`;
+        card.querySelectorAll('button[data-action]').forEach(button => {
+            button.style.cssText = 'padding:5px 9px;background:transparent;color:#cbd5e1;border:1px solid #334155;border-radius:5px;cursor:pointer;font-size:.78em;';
+            button.onclick = () => {
+                const action = button.dataset.action;
+                let team = candidate.proposedTeam;
+                if (action === 'relabel') {
+                    team = prompt('Team number for this tracklet:', candidate.proposedTeam || '');
+                    if (!team) return;
+                }
+                draft.decisions[candidate.candidateId] = {
+                    action, team, acceptedViewHashes: action === 'accept' || action === 'relabel'
+                        ? candidate.views.map(v => v.cropHash).filter(Boolean) : [],
+                };
+                saveGalleryDraft(bundle, draft);
+                renderGalleryReviewPanel(host, relay, bundle);
+            };
+        });
+        list.appendChild(card);
+    }
+    const stateHost = document.getElementById('galleryTeamStates');
+    const proposedTeams = [...new Set(bundle.candidates.map(c => String(c.proposedTeam || '')).filter(Boolean))].sort();
+    if (proposedTeams.length) {
+        stateHost.innerHTML = `<div style="font-size:.78em;color:#94a3b8;margin-bottom:6px;">Team gallery state</div>`;
+        for (const team of proposedTeams) {
+            const row = document.createElement('label');
+            row.style.cssText = 'display:inline-flex;align-items:center;gap:5px;margin:0 12px 5px 0;font-size:.78em;color:#cbd5e1;';
+            row.innerHTML = `<span>${galleryEsc(team)}</span><select data-team-state="${galleryEsc(team)}" style="background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px;padding:3px;"><option value="">unchanged</option><option value="needs-more">needs more</option><option value="sufficient">sufficient</option><option value="robot-changed">robot changed</option></select>`;
+            const select = row.querySelector('select');
+            select.value = draft.teamStates?.[team] || '';
+            select.onchange = () => {
+                if (select.value) draft.teamStates[team] = select.value;
+                else delete draft.teamStates[team];
+                saveGalleryDraft(bundle, draft);
+            };
+            stateHost.appendChild(row);
+        }
+    }
+    document.getElementById('galleryClearDraft').onclick = () => {
+        localStorage.removeItem(galleryDraftKey(bundle));
+        renderGalleryReviewPanel(host, relay, bundle);
+    };
+    document.getElementById('gallerySubmit').onclick = async () => {
+        const decisions = Object.entries(draft.decisions || {}).map(([candidateId, value]) => ({
+            candidateId, ...value,
+        }));
+        if (!decisions.length) return alert('Review at least one tracklet first.');
+        const payload = { kind: 'galleryReviewAnswer', schemaVersion: 1,
+            reviewId: bundle.reviewId, bundleHash: bundle.bundleHash,
+            baseGalleryVersion: bundle.galleryVersion, submittedAt: new Date().toISOString(),
+            decisions, teamStates: Object.entries(draft.teamStates || {}).map(([team, state]) => ({ team, state })) };
+        const token = localStorage.getItem('rtrackToken') || '';
+        try {
+            const response = await fetch(`${relay}/gallery-answer/${encodeURIComponent(bundle.reviewId)}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Rtrack-Token': token },
+                body: JSON.stringify(payload),
+            });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            localStorage.removeItem(galleryDraftKey(bundle));
+            alert('Gallery review submitted.');
+            _galleryReviewBundle = null; _galleryReviewId = null; renderTracksTab();
+        } catch (error) { alert(`Gallery review failed: ${error.message}`); }
+    };
+}
+
+function legacyRenderGalleryReviewQueue(host, relay, items) {
+    const reviews = galleryReviewItems(items);
+    const replayItems = (items || []).filter(item => item?.kind === 'gallery-status');
+    const block = document.createElement('div');
+    block.style.cssText = 'border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;';
+    block.innerHTML = `<h4 style="margin:0 0 2px;font-size:.9em;color:#e2e8f0;">Gallery review</h4>
+      <p style="margin:0 0 8px;font-size:.76em;color:#64748b;">Human-approved appearance evidence · bundles are bounded deltas, not the season gallery.</p>`;
+    if (replayItems.length) {
+        const counts = {};
+        for (const item of replayItems) counts[item.state || 'unknown'] = (counts[item.state || 'unknown'] || 0) + 1;
+        block.innerHTML += `<p style="margin:5px 0 8px;color:#94a3b8;font-size:.78em;">Replay: ${Object.entries(counts).map(([state, count]) => `${galleryEsc(state)} ${count}`).join(' · ')}</p>`;
+    }
+    if (!relay) { block.innerHTML += '<p style="margin:0;color:#f59e0b;font-size:.82em;">Configure the relay above to review gallery candidates.</p>'; host.prepend(block); return; }
+    if (!reviews.length) { block.innerHTML += '<p style="margin:0;color:#64748b;font-size:.82em;">No gallery review bundles waiting.</p>'; host.prepend(block); return; }
+    const table = document.createElement('table');
+    table.style.cssText = 'width:100%;border-collapse:collapse;font-size:.84em;';
+    table.innerHTML = '<tr style="color:#64748b;text-align:left;"><th style="padding:6px 4px;">Review</th><th style="padding:6px 4px;">Candidates</th><th style="padding:6px 4px;">State</th><th style="padding:6px 4px;text-align:right;">Action</th></tr>';
+    reviews.forEach(review => {
+        const bundle = review['gallery-bundle'];
+        const answer = review['gallery-answer'];
+        const tr = document.createElement('tr');
+        tr.style.borderTop = '1px solid #1e293b';
+        tr.innerHTML = `<td style="padding:7px 4px;font-weight:600;">${galleryEsc(review.id.slice(0, 12))}</td>
+          <td style="padding:7px 4px;">${galleryEsc(bundle?.candidateCount ?? '—')}</td>
+          <td style="padding:7px 4px;color:${answer ? '#22c55e' : '#f59e0b'};">${answer ? 'submitted' : 'ready'}</td>
+          <td style="padding:7px 4px;text-align:right;"><button class="galleryOpen" style="padding:5px 10px;background:#2563eb;color:#fff;border:0;border-radius:5px;cursor:pointer;">${answer ? 'View' : 'Review'}</button></td>`;
+        tr.querySelector('.galleryOpen').onclick = async () => {
+            const loaded = await loadGalleryReviewBundle(relay, review.id);
+            if (loaded) renderGalleryReviewPanel(host, relay, loaded);
+        };
+        table.appendChild(tr);
+    });
+    block.appendChild(table);
+    host.prepend(block);
+}
+
+// Team-oriented gallery review.  This definition intentionally follows the original
+// first-slice helpers above so old cached bundles can remain readable in source history;
+// the team-oriented schema-2 implementation is the one used by renderTracksTab.
+function galleryReviewItemsV2(items) {
+    const out = new Map();
+    for (const item of items || []) {
+        if (!item?.id || !item.kind?.startsWith('gallery-')) continue;
+        const row = out.get(item.id) || { id: item.id };
+        row[item.kind] = item;
+        out.set(item.id, row);
+    }
+    return [...out.values()].sort((a, b) => (b['gallery-bundle']?.at || 0)
+        - (a['gallery-bundle']?.at || 0));
+}
+
+function galleryAnswerHasTeam(answer, team) {
+    if (!answer) return false;
+    const wanted = String(team);
+    return (Array.isArray(answer.selections)
+        && answer.selections.some(item => String(item?.team) === wanted))
+        || (Array.isArray(answer.teamStates)
+        && answer.teamStates.some(item => String(item?.team) === wanted));
+}
+
+async function hydrateGalleryAnswersV2(relay, reviews) {
+    return Promise.all(reviews.map(async review => {
+        const indexedAnswer = review['gallery-answer'];
+        if ((indexedAnswer?.kind === 'galleryReviewAnswer'
+             && Array.isArray(indexedAnswer.selections)) || !review.id) return review;
+        try {
+            const response = await fetch(`${relay}/gallery-answer/${encodeURIComponent(review.id)}`, {
+                cache: 'no-store',
+            });
+            if (!response.ok) return review;
+            const answer = await response.json();
+            return answer?.kind === 'galleryReviewAnswer'
+                ? { ...review, 'gallery-answer': answer } : review;
+        } catch { return review; }
+    }));
+}
+
+async function loadGalleryReviewBundleV2(relay, reviewId) {
+    if (!relay || !reviewId) return null;
+    try {
+        const response = await fetch(`${relay}/gallery-bundle/${encodeURIComponent(reviewId)}`,
+                                     { cache: 'no-store' });
+        if (!response.ok) throw new Error(`HTTP ${response.status}`);
+        const bundle = await response.json();
+        if (bundle.kind !== 'galleryReviewBundle' || bundle.schemaVersion !== 2
+            || !Array.isArray(bundle.teams)) throw new Error('outdated or invalid team gallery bundle');
+        return bundle;
+    } catch (error) {
+        alert(`Could not load gallery review: ${error.message}`);
+        return null;
+    }
+}
+
+function readGalleryDraftV2(bundle) {
+    try {
+        const draft = JSON.parse(localStorage.getItem(galleryDraftKey(bundle)) || 'null');
+        return draft?.bundleHash === bundle.bundleHash
+            ? draft : { bundleHash: bundle.bundleHash, selections: {}, touched: {}, teamStates: {} };
+    } catch { return { bundleHash: bundle.bundleHash, selections: {}, touched: {}, teamStates: {} }; }
+}
+
+function galleryThumb(image) {
+    return typeof image?.thumbnail === 'string'
+        && image.thumbnail.startsWith('data:image/jpeg;base64,') ? image.thumbnail : null;
+}
+
+function galleryDetectionOverlay(image) {
+    const size = image?.source?.cropSize;
+    const box = image?.source?.detectionBox;
+    if (!Array.isArray(size) || size.length !== 2 || !Array.isArray(box) || box.length !== 4
+        || !size[0] || !size[1]) return null;
+    const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
+    svg.setAttribute('viewBox', `0 0 ${size[0]} ${size[1]}`);
+    svg.setAttribute('preserveAspectRatio', 'xMidYMid meet');
+    svg.setAttribute('aria-label', 'actual detector box');
+    svg.style.cssText = 'position:absolute;inset:0;width:100%;height:150px;pointer-events:none;';
+    const rect = document.createElementNS('http://www.w3.org/2000/svg', 'rect');
+    rect.setAttribute('x', box[0]); rect.setAttribute('y', box[1]);
+    rect.setAttribute('width', Math.max(0, box[2] - box[0]));
+    rect.setAttribute('height', Math.max(0, box[3] - box[1]));
+    rect.setAttribute('fill', 'none'); rect.setAttribute('stroke', '#f59e0b');
+    rect.setAttribute('stroke-width', Math.max(2, size[0] / 180));
+    rect.setAttribute('vector-effect', 'non-scaling-stroke');
+    svg.appendChild(rect);
+    return svg;
+}
+
+function galleryProvenanceLabel(image) {
+    if (image?.role === 'current') return 'Reviewed gallery image';
+    if (image?.role === 'curation-reference') return 'Curation fallback · human-labeled';
+    if (image?.role === 'candidate') return 'Track candidate';
+    return image?.role || 'Gallery image';
+}
+
+function galleryImageCard(image, selected, onChange, readOnly = false) {
+    const card = document.createElement('label');
+    card.style.cssText = `display:inline-flex;vertical-align:top;flex-direction:column;gap:5px;min-width:150px;max-width:220px;padding:7px;border:1px solid ${selected ? '#2563eb' : '#334155'};border-radius:7px;background:${selected ? '#172554' : '#0f172a'};cursor:${readOnly ? 'default' : 'pointer'};`;
+    const thumb = galleryThumb(image);
+    if (thumb) {
+        const media = document.createElement('div');
+        media.style.cssText = 'position:relative;width:100%;height:150px;';
+        const img = document.createElement('img');
+        img.src = thumb; img.alt = readOnly ? 'current gallery image' : 'candidate robot image';
+        img.style.cssText = 'width:100%;height:150px;object-fit:contain;background:#020617;border-radius:4px;';
+        media.appendChild(img);
+        const overlay = galleryDetectionOverlay(image);
+        if (overlay) media.appendChild(overlay);
+        card.appendChild(media);
+    } else {
+        const missing = document.createElement('div');
+        missing.textContent = 'image unavailable';
+        missing.style.cssText = 'height:150px;display:grid;place-items:center;color:#64748b;font-size:.78em;';
+        card.appendChild(missing);
+    }
+    const provenance = document.createElement('div');
+    provenance.textContent = galleryProvenanceLabel(image);
+    provenance.style.cssText = `font-size:.68em;color:${image?.role === 'current' ? '#86efac' : '#fbbf24'};font-weight:600;`;
+    card.appendChild(provenance);
+    if (!readOnly) {
+        const input = document.createElement('input');
+        input.type = 'checkbox'; input.checked = !!selected;
+        input.style.cssText = 'width:18px;height:18px;accent-color:#2563eb;';
+        let currentSelected = !!selected;
+        const toggle = () => {
+            currentSelected = !currentSelected;
+            onChange(currentSelected);
+        };
+        input.onchange = () => { currentSelected = !!input.checked; onChange(currentSelected); };
+        const imageElement = card.querySelector('img');
+        if (imageElement) {
+            imageElement.title = 'Click image to select or deselect';
+            imageElement.style.cursor = 'pointer';
+            imageElement.onclick = event => {
+                // Prevent the label's default activation from toggling the checkbox a
+                // second time. Selection is intentionally driven by the image itself.
+                event.preventDefault();
+                event.stopPropagation();
+                toggle();
+            };
+        }
+        card.appendChild(input);
+    }
+    const source = image.source || {};
+    const info = document.createElement('div');
+    info.style.cssText = 'font-size:.72em;color:#94a3b8;line-height:1.35;';
+    info.textContent = readOnly
+        ? `${source.match || 'prior review'} · ${source.time ?? '—'}s`
+        : `${source.match || ''} · track ${source.sourceTrack ?? '—'} · ${source.time ?? '—'}s · ${Math.round(image.quality?.boxArea || source.boxArea || 0)} px²`;
+    card.appendChild(info);
+    return card;
+}
+
+function renderGalleryReviewPanelV2(host, relay, bundle, selectedTeam) {
+    const draft = readGalleryDraftV2(bundle);
+    const group = bundle.teams.find(item => String(item.team) === String(selectedTeam)) || bundle.teams[0];
+    if (!group) return;
+    const team = String(group.team);
+    _galleryReviewBundle = bundle;
+    host.innerHTML = '';
+    const shell = document.createElement('div');
+    shell.style.cssText = 'border:1px solid #2563eb;border-radius:8px;padding:14px;margin-bottom:14px;';
+    shell.innerHTML = `<div style="display:flex;justify-content:space-between;gap:8px;align-items:center;flex-wrap:wrap;"><div><b>Gallery review · team ${galleryEsc(team)}</b><div style="font-size:.76em;color:#64748b;margin-top:3px;">Select only candidate images that are strong representations of this robot. Current examples are reference-only.</div></div><button id="galleryReviewClose" style="padding:6px 10px;background:transparent;color:#94a3b8;border:1px solid #334155;border-radius:6px;cursor:pointer;">Close</button></div>`;
+    const currentTitle = document.createElement('h4');
+    currentTitle.textContent = `Current gallery (${group.currentGallery.length})`;
+    const provenanceCounts = group.currentGallery.reduce((counts, image) => {
+        const key = image?.role === 'current' ? 'reviewed gallery' : 'curation fallback';
+        counts[key] = (counts[key] || 0) + 1;
+        return counts;
+    }, {});
+    const provenanceSummary = Object.entries(provenanceCounts)
+        .map(([label, count]) => `${count} ${label}`).join(' · ');
+    if (provenanceSummary) currentTitle.textContent += ` · ${provenanceSummary}`;
+    currentTitle.style.cssText = 'margin:16px 0 7px;color:#cbd5e1;font-size:.86em;';
+    shell.appendChild(currentTitle);
+    const current = document.createElement('div');
+    current.style.cssText = 'display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;';
+    group.currentGallery.forEach(image => current.appendChild(galleryImageCard(image, false, null, true)));
+    if (!group.currentGallery.length) { current.textContent = 'No reviewed gallery images yet.'; current.style.color = '#64748b'; }
+    shell.appendChild(current);
+    const candidateTitle = document.createElement('h4');
+    candidateTitle.textContent = `Candidate images (${group.candidates.length}) · larger detections are prioritized`;
+    candidateTitle.style.cssText = 'margin:16px 0 7px;color:#cbd5e1;font-size:.86em;';
+    shell.appendChild(candidateTitle);
+    const candidates = document.createElement('div');
+    candidates.style.cssText = 'display:flex;gap:8px;overflow-x:auto;padding-bottom:4px;';
+    const selected = new Set((draft.selections?.[team] || []).map(String));
+    group.candidates.forEach(image => {
+        candidates.appendChild(galleryImageCard(image, selected.has(String(image.cropHash)), checked => {
+            const next = new Set((draft.selections?.[team] || []).map(String));
+            if (checked) next.add(String(image.cropHash)); else next.delete(String(image.cropHash));
+            draft.selections[team] = [...next]; draft.touched[team] = true;
+            saveGalleryDraft(bundle, draft);
+            renderGalleryReviewPanelV2(host, relay, bundle, team);
+        }));
+    });
+    shell.appendChild(candidates);
+    const state = document.createElement('div');
+    state.style.cssText = 'display:flex;gap:8px;align-items:center;margin-top:12px;font-size:.8em;color:#94a3b8;';
+    state.innerHTML = `<span>Team state</span><select id="galleryTeamState" style="background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px;padding:4px;"><option value="">unchanged</option><option value="needs-more">needs more</option><option value="sufficient">sufficient</option><option value="robot-changed">robot changed</option></select>`;
+    shell.appendChild(state);
+    const stateSelect = state.querySelector('select');
+    stateSelect.value = draft.teamStates?.[team] || '';
+    stateSelect.onchange = () => { if (stateSelect.value) draft.teamStates[team] = stateSelect.value; else delete draft.teamStates[team]; draft.touched[team] = true; saveGalleryDraft(bundle, draft); };
+    const actions = document.createElement('div');
+    actions.style.cssText = 'display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-top:14px;padding-top:10px;border-top:1px solid #1e293b;';
+    actions.innerHTML = `<button id="gallerySubmit" style="padding:8px 14px;background:#2563eb;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;">Submit selected teams</button><button id="galleryNext" style="display:none;padding:8px 14px;background:#16a34a;color:#fff;border:0;border-radius:6px;cursor:pointer;font-weight:600;">Next gallery</button><button id="galleryClearDraft" style="padding:8px 12px;background:transparent;color:#f87171;border:1px solid #7f1d1d;border-radius:6px;cursor:pointer;">Clear draft</button><span id="gallerySubmitStatus" style="font-size:.78em;color:#64748b;">${selected.size} selected for this team</span>`;
+    shell.appendChild(actions);
+    host.appendChild(shell);
+    document.getElementById('galleryReviewClose').onclick = () => { _galleryReviewBundle = null; renderTracksTab(); };
+    document.getElementById('galleryClearDraft').onclick = () => { localStorage.removeItem(galleryDraftKey(bundle)); renderGalleryReviewPanelV2(host, relay, bundle, team); };
+    document.getElementById('gallerySubmit').onclick = async () => {
+        const groups = new Map(bundle.teams.map(group => [String(group.team), group]));
+        const selections = Object.entries(draft.selections || {}).filter(([t]) => draft.touched?.[t]).map(([t, include]) => ({
+            team: t,
+            include,
+            // A submitted team review acknowledges the complete candidate set
+            // shown for that team, including intentionally empty selections.
+            reviewed: (groups.get(String(t))?.candidates || []).map(candidate => candidate.candidateId).filter(Boolean),
+        }));
+        if (!selections.length) return alert('Select at least one team gallery, even if its candidate set is intentionally empty.');
+        const payload = { kind: 'galleryReviewAnswer', schemaVersion: 2, reviewId: bundle.reviewId,
+            bundleHash: bundle.bundleHash, baseGalleryVersion: bundle.galleryVersion,
+            submittedAt: new Date().toISOString(), selections,
+            teamStates: Object.entries(draft.teamStates || {}).filter(([t]) => draft.touched?.[t]).map(([t, state]) => ({ team: t, state })) };
+        const token = localStorage.getItem('rtrackToken') || '';
+        try {
+            const response = await fetch(`${relay}/gallery-answer/${encodeURIComponent(bundle.reviewId)}`, { method: 'POST', headers: { 'Content-Type': 'application/json', 'Rtrack-Token': token }, body: JSON.stringify(payload) });
+            const result = await response.json().catch(() => ({}));
+            if (!response.ok) throw new Error(result.error || `HTTP ${response.status}`);
+            localStorage.removeItem(galleryDraftKey(bundle));
+            const submit = document.getElementById('gallerySubmit');
+            const nextButton = document.getElementById('galleryNext');
+            const status = document.getElementById('gallerySubmitStatus');
+            if (submit) { submit.disabled = true; submit.textContent = 'Submitted'; submit.style.opacity = '.65'; }
+            if (status) { status.textContent = 'Gallery selections submitted.'; status.style.color = '#86efac'; }
+            const next = galleryNextTarget(bundle.reviewId, team);
+            if (next && nextButton) {
+                nextButton.style.display = 'inline-block';
+                nextButton.textContent = `Next gallery · team ${next.team}`;
+                nextButton.onclick = async () => {
+                    nextButton.disabled = true;
+                    const loaded = await loadGalleryReviewBundleV2(relay, next.reviewId);
+                    if (loaded) renderGalleryReviewPanelV2(host, relay, loaded, next.team);
+                    else nextButton.disabled = false;
+                };
+            } else if (status) {
+                status.textContent += ' No more galleries are waiting.';
+            }
+        } catch (error) { alert(`Gallery review failed: ${error.message}`); }
+    };
+}
+
+function galleryAllianceReviewStats(reviews, matches) {
+    const matchByKey = new Map((matches || []).map(match => [match.key, match]));
+    const byTeam = new Map();
+    for (const review of reviews || []) {
+        const bundle = review['gallery-bundle'];
+        const matchKey = bundle?.match;
+        const match = matchByKey.get(matchKey);
+        if (!match) continue;
+        for (const teamValue of bundle.teamIds || []) {
+            const team = String(teamValue);
+            if (!galleryAnswerHasTeam(review['gallery-answer'], team)) continue;
+            const color = (match.red || []).map(String).includes(team) ? 'red'
+                : (match.blue || []).map(String).includes(team) ? 'blue' : null;
+            if (!color) continue;
+            if (!byTeam.has(team)) byTeam.set(team, { red: new Set(), blue: new Set() });
+            byTeam.get(team)[color].add(matchKey);
+        }
+    }
+    return byTeam;
+}
+
+async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedReviews = null) {
+    const reviews = hydratedReviews
+        || await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items));
+    const allianceStats = galleryAllianceReviewStats(reviews, matches);
+    const replayItems = (items || []).filter(item => item?.kind === 'gallery-status');
+    const block = document.createElement('details');
+    block.open = localStorage.getItem('rtrackSection:gallery') !== 'closed';
+    block.ontoggle = () => localStorage.setItem('rtrackSection:gallery', block.open ? 'open' : 'closed');
+    block.style.cssText = 'border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;';
+    block.innerHTML = `<summary style="cursor:pointer;color:#e2e8f0;font-size:.9em;font-weight:700;">Gallery review by team</summary><p style="margin:8px 0;font-size:.76em;color:#64748b;">Compare reviewed examples with larger, context-padded track detections. Reviewed-match counts are split by the alliance color providing the appearance evidence.</p>`;
+    if (replayItems.length) {
+        const counts = {}; for (const item of replayItems) counts[item.state || 'unknown'] = (counts[item.state || 'unknown'] || 0) + 1;
+        block.innerHTML += `<p style="margin:5px 0 8px;color:#94a3b8;font-size:.78em;">Replay: ${Object.entries(counts).map(([state, count]) => `${galleryEsc(state)} ${count}`).join(' · ')}</p>`;
+    }
+    if (!relay) { block.innerHTML += '<p style="margin:0;color:#f59e0b;font-size:.82em;">Configure the relay above to review gallery candidates.</p>'; host.prepend(block); return; }
+    const rowsByTeam = new Map();
+    const outdatedRows = [];
+    for (const review of reviews) {
+        const bundle = review['gallery-bundle'];
+        const teams = Array.isArray(bundle?.teamIds) ? bundle.teamIds : [];
+        if (!teams.length) {
+            outdatedRows.push({ review, team: 'outdated bundle', current: '—', candidates: '—', disabled: true, batchCount: 1 });
+            continue;
+        }
+        teams.forEach(teamValue => {
+            const team = String(teamValue);
+            const contribution = {
+                review, team,
+                current: bundle.currentImagesByTeam?.[team] ?? '—',
+                candidates: bundle.candidatesByTeam?.[team] ?? '—',
+                submitted: galleryAnswerHasTeam(review['gallery-answer'], team),
+                at: bundle?.at || 0,
+            };
+            const group = rowsByTeam.get(team) || [];
+            group.push(contribution);
+            rowsByTeam.set(team, group);
+        });
+    }
+    const rows = [...rowsByTeam.entries()].map(([team, contributions]) => {
+        contributions.sort((a, b) => a.at - b.at);
+        const pending = contributions.filter(item => !item.submitted);
+        // A team is one season gallery. Match bundles are merely successive batches
+        // of candidate evidence, so expose one row and advance it oldest-first.
+        const active = pending[0] || contributions[contributions.length - 1];
+        return {
+            ...active,
+            team,
+            submitted: pending.length === 0,
+            batchCount: contributions.length,
+            pendingCount: pending.length,
+            pendingContributions: pending,
+        };
+    }).sort((a, b) => Number(a.team) - Number(b.team));
+    rows.push(...outdatedRows);
+    _galleryReviewQueue = rows.flatMap(row => (row.pendingContributions || []).map(item => ({
+        reviewId: item.review.id,
+        team: row.team,
+    })));
+    if (!rows.length) { block.innerHTML += '<p style="margin:0;color:#64748b;font-size:.82em;">No team gallery bundles waiting.</p>'; host.prepend(block); return; }
+    const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:.84em;';
+    table.innerHTML = '<tr style="color:#64748b;text-align:left;"><th style="padding:6px 4px;">Team</th><th style="padding:6px 4px;">Reviewed matches</th><th style="padding:6px 4px;">Current</th><th style="padding:6px 4px;">Candidates</th><th style="padding:6px 4px;">State</th><th style="padding:6px 4px;text-align:right;">Action</th></tr>';
+    rows.forEach(row => {
+        const tr = document.createElement('tr'); tr.style.borderTop = '1px solid #1e293b';
+        const submitted = !!row.submitted;
+        const batchNote = row.batchCount > 1
+            ? ` · ${row.pendingCount || 0}/${row.batchCount} batches pending` : '';
+        const state = row.disabled ? 'outdated' : submitted ? 'submitted' : `ready${batchNote}`;
+        const reviewed = allianceStats.get(String(row.team)) || { red: new Set(), blue: new Set() };
+        const count = (color, set) => `<span style="color:${set.size ? (color === 'red' ? '#f87171' : '#60a5fa') : '#fbbf24'};font-weight:${set.size ? 600 : 800};${set.size ? '' : 'background:#78350f;padding:2px 5px;border-radius:4px;'}">${color[0].toUpperCase()} ${set.size}</span>`;
+        tr.innerHTML = `<td style="padding:7px 4px;font-weight:600;">${galleryEsc(row.team)}</td><td style="padding:7px 4px;white-space:nowrap;">${count('red', reviewed.red)} · ${count('blue', reviewed.blue)}</td><td style="padding:7px 4px;">${galleryEsc(row.current)}</td><td style="padding:7px 4px;">${galleryEsc(row.candidates)}</td><td style="padding:7px 4px;color:${submitted ? '#22c55e' : '#f59e0b'};">${galleryEsc(state)}</td><td style="padding:7px 4px;text-align:right;"><button class="galleryOpen" ${row.disabled ? 'disabled' : ''} style="padding:5px 10px;background:#2563eb;color:#fff;border:0;border-radius:5px;cursor:pointer;">Review</button></td>`;
+        tr.querySelector('.galleryOpen').onclick = async () => { const loaded = await loadGalleryReviewBundleV2(relay, row.review.id); if (loaded) renderGalleryReviewPanelV2(host, relay, loaded, row.team); };
+        table.appendChild(tr);
+    });
+    block.appendChild(table); host.prepend(block);
+}
+
 async function renderTracksTab() {
     const host = document.getElementById('tools-tab-tracks');
     if (!host) return;
@@ -8529,6 +9094,9 @@ async function renderTracksTab() {
     const onRelay = new Map();
     for (const it of items || []) onRelay.set(`${it.kind}:${it.id}`, it);
     const gal = (man.gallery || {})[eventKey] || {};
+    const galleryReviews = relay
+        ? await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items || [])) : [];
+    const allianceReviewStats = galleryAllianceReviewStats(galleryReviews, matches);
 
     // Union of THREE sources, and the third is the one that matters most here:
     //   db.matches   the schedule — quals only, syncTBAMatches drops playoffs
@@ -8553,6 +9121,12 @@ async function renderTracksTab() {
             const rt = relayTracks.get(k);
             const teams = (p?.teams) || [...(dbm?.red || []), ...(dbm?.blue || [])].map(String);
             const known = teams.filter(t => gal[t]).length;
+            const sameAllianceReviewed = teams.filter(teamValue => {
+                const team = String(teamValue);
+                const color = (dbm?.red || []).map(String).includes(team) ? 'red'
+                    : (dbm?.blue || []).map(String).includes(team) ? 'blue' : null;
+                return color && (allianceReviewStats.get(team)?.[color]?.size || 0) > 0;
+            }).length;
             return {
                 key: k, teams,
                 published: !!p || !!rt,
@@ -8571,7 +9145,7 @@ async function renderTracksTab() {
                 bundle: onRelay.get(`bundle:${k}`) || null,
                 answer: onRelay.get(`answer:${k}`) || null,
                 calib: onRelay.get(`calib:${k}`) || null,
-                known, total: teams.length,
+                known, sameAllianceReviewed, total: teams.length,
                 n: dbm?.matchNumber ?? p?.matchNumber ?? 0,
             };
         })
@@ -8612,9 +9186,9 @@ async function renderTracksTab() {
     const cams = (items || []).filter(it => it.kind === 'calib').map(it => it.id).sort();
     const occlOn = new Set((items || []).filter(it => it.kind === 'occl').map(it => it.id));
     const cameraBlock = cams.length ? `
-      <div style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
-      <h4 style="margin:0 0 2px;font-size:0.9em;color:#e2e8f0;">Cameras</h4>
-      <p style="margin:0 0 8px;font-size:0.76em;color:#64748b;">
+      <details data-rtrack-section="cameras" style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
+      <summary style="cursor:pointer;font-size:0.9em;font-weight:700;color:#e2e8f0;">Cameras</summary>
+      <p style="margin:8px 0;font-size:0.76em;color:#64748b;">
         Done once per camera, then reused by every match shot on it.</p>
       <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
         <tr style="color:#64748b;text-align:left;">
@@ -8632,16 +9206,18 @@ async function renderTracksTab() {
             ${act('Occluders', q('occluders', 'video', id), false)}
           </td>
         </tr>`).join('')}
-      </table></div>` : '';
+      </table></details>` : '';
 
     body.innerHTML = `
       <p style="font-size:0.82em;margin:0 0 10px;">${relayNote}</p>
       ${cameraBlock}
+      <details data-rtrack-section="matches" style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
+      <summary style="cursor:pointer;font-size:0.9em;font-weight:700;color:#e2e8f0;">Matches</summary>
       <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
         <tr style="color:#64748b;text-align:left;">
           <th style="padding:6px 4px;">Match</th>
           <th style="padding:6px 4px;">State</th>
-          <th style="padding:6px 4px;">Models</th>
+          <th style="padding:6px 4px;">Same-color reviewed</th>
           <th style="padding:6px 4px;">Custody</th>
           <th style="padding:6px 4px;text-align:right;">Actions</th>
         </tr>
@@ -8681,8 +9257,8 @@ async function renderTracksTab() {
                                                    : pill('published · auto', '#60a5fa'))
                         : pill('no tracks', '#475569');
             const models = r.total
-                ? `<span style="color:${r.known === r.total ? '#22c55e' : r.known ? '#f59e0b' : '#64748b'};">
-                     ${r.known}/${r.total}</span>`
+                ? `<span title="Teams with reviewed gallery evidence from this alliance color" style="color:${r.sameAllianceReviewed === r.total ? '#22c55e' : r.sameAllianceReviewed ? '#f59e0b' : '#64748b'};">
+                     ${r.sameAllianceReviewed}/${r.total}</span>`
                 : '—';
             const acts = [
                 r.bundle ? act('Curate', q('curate', 'match', r.key), outstanding) : '',
@@ -8710,7 +9286,7 @@ async function renderTracksTab() {
               <td style="padding:7px 4px;text-align:right;white-space:nowrap;">${acts || '<span style="color:#475569;">—</span>'}</td>
             </tr>`;
         }).join('')}
-      </table>
+      </table></details>
       <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
         <b>Cameras</b> lists every camera the relay holds a frame for, pushed with
         <code>rtrack.relay push-calib &lt;camera&gt;</code>. Both tools describe the
@@ -8728,10 +9304,16 @@ async function renderTracksTab() {
         then a device that never fetched them will not find them after the relay entry
         expires.
         <br><br>
-        <b>Models</b> is how many of the match's teams the appearance gallery already knows.
-        At 6/6 the tracker labels the match ~84% correctly before anyone touches it; at 0/6
-        it is back to geometry alone and every robot needs naming.
+        <b>Same-color reviewed</b> is how many of the match's six teams have reviewed gallery evidence
+        from the same alliance color they occupy in this match. For example, 3/6 means
+        three teams have same-color reviewed evidence available.
       </p>`;
+    body.querySelectorAll('details[data-rtrack-section]').forEach(section => {
+        const key = `rtrackSection:${section.dataset.rtrackSection}`;
+        section.open = localStorage.getItem(key) !== 'closed';
+        section.ontoggle = () => localStorage.setItem(key, section.open ? 'open' : 'closed');
+    });
+    await renderGalleryReviewQueueV2(body, relay, items || [], matches, galleryReviews);
 }
 
 // ── Field Drawing Tab ────────────────────────────────────────────────────────

@@ -184,6 +184,39 @@ def _save_gallery(p: Path, g: dict[str, tuple[np.ndarray, int]]) -> None:
                         count=np.array([g[t][1] for t in teams], np.int32))
 
 
+def _reviewed_gallery(season: int, teams: list[str]) -> dict | None:
+    """Load the versioned reviewed prototype cache, if one has been published.
+
+    A missing or malformed reviewed cache is a normal migration state: appearance votes
+    fall back to the legacy event centroid rather than making the pipeline unusable.
+    """
+    latest = C.OUT_DIR / "gallery" / str(int(season)) / "latest.json"
+    if not latest.exists():
+        return None
+    try:
+        meta = json.loads(latest.read_text(encoding="utf-8"))
+        path = Path(meta["path"])
+        if not path.is_absolute():
+            path = C.TRACKER_ROOT / path
+        z = np.load(path, allow_pickle=False)
+        if str(z["kind"].item()) != "reviewed-gallery-v1":
+            return None
+        spaces = str(z["embeddingSpace"].item())
+        if spaces != "resnet18-imagenet-v1/raw":
+            print(f"[reid] reviewed gallery embedding space {spaces!r} is incompatible")
+            return None
+        proto_team = z["seasonTeam"].astype(str)
+        wanted = {f"{season}:{t}" for t in teams}
+        keep = np.array([x in wanted for x in proto_team], dtype=bool)
+        if not keep.any():
+            return None
+        return {"teams": proto_team[keep], "embedding": z["embedding"][keep],
+                "version": str(meta.get("version", z["manifestVersion"].item()))}
+    except (KeyError, OSError, ValueError, TypeError) as exc:
+        print(f"[reid] reviewed gallery unavailable ({exc}); using legacy gallery")
+        return None
+
+
 def build_gallery(stem: str, labeled_p: Path, event: str,
                   refs_only: bool = False, backend: str = "hist") -> None:
     """Accumulate per-team mean descriptors from one CURATED match into the event file.
@@ -387,13 +420,16 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
     if not npz_path.exists():
         raise SystemExit(f"[reid] {npz_path} missing -- run rtrack.appear "
                          f"--backend {'both' if backend == 'cnn' else 'hist'} first")
+    season = int(str(event)[:4]) if str(event)[:4].isdigit() else C.YEAR
+    reviewed = _reviewed_gallery(season, teams) if backend == "cnn" else None
     g = _load_gallery(gallery_path(event, backend))
-    if not g:
+    if not g and reviewed is None:
         raise SystemExit(f"[reid] {gallery_path(event, backend)} missing or empty -- "
-                         f"run 'reid gallery' on a curated match first")
-
-    known = [t for t in teams if t in g]
-    missing = [t for t in teams if t not in g]
+                         f"run 'reid gallery' on a curated match first, or publish "
+                         f"a reviewed gallery for season {season}")
+    known = ([str(t).split(":", 1)[1] for t in sorted(set(reviewed["teams"]))]
+             if reviewed is not None else [t for t in teams if t in g])
+    missing = [t for t in teams if t not in known]
     if not known:
         # NOT an error. FRC schedules spread teams out so nobody plays back-to-back --
         # measured on 2026mawor, matches 1-6 share NO teams at all and the gallery only
@@ -408,12 +444,18 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
     if missing:
         print(f"[reid] NOT in the gallery, cannot be voted for: {missing}")
 
-    C_mat = np.stack([g[t][0] for t in known])
-
     z = np.load(npz_path)
     tid_a, t_a, feat = z["tid"], z["t"], z["feat"]
 
     head = load_head(event) if backend == "cnn" else None
+    if reviewed is not None:
+        C_mat = reviewed["embedding"]
+        proto_teams = [str(t).split(":", 1)[1] for t in reviewed["teams"]]
+        gallery_version = reviewed["version"]
+    else:
+        C_mat = np.stack([g[t][0] for t in known])
+        proto_teams = known
+        gallery_version = None
     if backend == "cnn":
         if head is None:
             # Not an error. An event's first matches are curated before any head can be
@@ -440,7 +482,7 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
         # would put every vote on one side of any cut.
         pick = np.linspace(0, n - 1, min(max_votes, n)).astype(int)
         sims = F[pick] @ C_mat.T
-        vl = [[float(ts[p]), known[int(j)]]
+        vl = [[float(ts[p]), proto_teams[int(j)]]
               for p, j in zip(pick, sims.argmax(1))]
         tally = Counter(team for _t, team in vl)
         wins: dict[int, Counter] = defaultdict(Counter)
@@ -457,7 +499,7 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
             "team": top,
             "share": round(share, 3),
             "margin": round(float(np.median(sims.max(1) - np.sort(sims, 1)[:, -2]))
-                            if len(known) > 1 else 1.0, 4),
+                            if len(proto_teams) > 1 else 1.0, 4),
             "voteList": vl,
             "timeline": [[int(k * 6.0), c.most_common(1)[0][0], sum(c.values())]
                          for k, c in sorted(wins.items())],
@@ -467,6 +509,8 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
     doc = {"video": stem, "event": event, "teams": teams,
            "source": "appearance", "backend": backend,
            "head": (head is not None), "gallery": str(gallery_path(event, backend)),
+           "reviewedGallery": (gallery_version is not None),
+           "galleryVersion": gallery_version,
            "maxVotes": max_votes, "tracks": tracks}
     agree = sum(1 for v in tracks.values() if v["share"] >= 0.8)
     print(f"[reid] {len(tracks)} track(s) voted; {agree} with >=80% agreement")
