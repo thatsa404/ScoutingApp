@@ -32,6 +32,8 @@ import sys
 import time
 from pathlib import Path
 
+import numpy as np
+
 from . import config as C
 from .acquire import video_id
 
@@ -76,6 +78,38 @@ def newer(out: Path, *ins: Path) -> bool:
         return False
     t = out.stat().st_mtime
     return all(t >= i.stat().st_mtime - 1 for i in ins if i.exists())
+
+
+def _cnn_cache_current(path: Path) -> bool:
+    if not path.exists():
+        return False
+    from .embed import EMBEDDING_SPACE
+    try:
+        z = np.load(path, allow_pickle=False)
+        return (str(z["embeddingSpace"].item()) == EMBEDDING_SPACE and
+                "alliance" in z.files and "allianceConfidence" in z.files)
+    except (OSError, KeyError, ValueError, TypeError):
+        return False
+
+
+def _votes_current(path: Path, backend: str, latest: Path) -> bool:
+    if not path.exists() or backend != "cnn":
+        return path.exists()
+    from .embed import EMBEDDING_SPACE
+    from .reid import VOTE_POLICY_VERSION
+    try:
+        doc = json.loads(path.read_text(encoding="utf-8"))
+        if (doc.get("embeddingSpace") != EMBEDDING_SPACE or
+                doc.get("votePolicyVersion") != VOTE_POLICY_VERSION):
+            return False
+        if latest.exists():
+            meta = json.loads(latest.read_text(encoding="utf-8"))
+            if meta.get("embeddingSpace") != EMBEDDING_SPACE:
+                return False
+            return doc.get("galleryVersion") == meta.get("version")
+        return True
+    except (OSError, json.JSONDecodeError, TypeError):
+        return False
 
 
 def _main(argv=None) -> int:
@@ -195,9 +229,10 @@ def _main(argv=None) -> int:
     tracks = C.STAGE1_DIR / f"{stem}_tracks.jsonl"
     st = C.STAGE1_DIR / f"{stem}_tracks_stitched.jsonl"
     appear = C.STAGE3_DIR / f"{stem}_appearance.npz"
+    appear_cnn = C.STAGE3_DIR / f"{stem}_appearance_cnn.npz"
     # The cnn backend keeps its gallery, votes and npz under separate names; the two
     # descriptors are not comparable and one shared path would mix 48-d histograms
-    # with 512-d embeddings. See reid.gallery_path.
+    # with learned embeddings. See reid.gallery_path.
     _sfx = "_cnn" if args.appearance == "cnn" else ""
     votes = C.STAGE3_DIR / f"{stem}_reid{_sfx}.json"
     labeled = C.STAGE3_DIR / f"{stem}_labeled.jsonl"
@@ -256,7 +291,11 @@ def _main(argv=None) -> int:
         except Exception as e:
             print(f"[pipeline] motion check skipped ({type(e).__name__}: {e})")
 
-    if do("appear", newer(appear, st)):
+    appearance_fresh = newer(appear, st)
+    if args.appearance == "cnn":
+        appearance_fresh = (appearance_fresh and newer(appear_cnn, st) and
+                            _cnn_cache_current(appear_cnn))
+    if do("appear", appearance_fresh):
         if not run("appear", stem, "--tracks", st,
                    "--backend", "both" if args.appearance == "cnn" else "hist"):
             return 1
@@ -275,7 +314,11 @@ def _main(argv=None) -> int:
     if args.no_votes:
         print("    votes: SKIPPED by --no-votes; identity from geometry and hue only")
     elif gallery_available:
-        if do("votes", newer(votes, appear, gallery)):
+        vote_inputs = [appear_cnn if args.appearance == "cnn" else appear, gallery,
+                       reviewed_latest]
+        votes_fresh = (newer(votes, *vote_inputs) and
+                       _votes_current(votes, args.appearance, reviewed_latest))
+        if do("votes", votes_fresh):
             have_votes = run("reid", "votes", stem, "--event", event,
                              "--match", args.match, "--tracks", st,
                              "--backend", args.appearance)

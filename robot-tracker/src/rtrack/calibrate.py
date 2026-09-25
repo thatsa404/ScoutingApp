@@ -637,10 +637,28 @@ def main(argv: list[str] | None = None) -> int:
     else:
         ap.error("pass --interactive or --points")
 
-    if len(pairs) < 4:
-        raise SystemExit(f"need at least 4 correspondences, got {len(pairs)}")
+    # AprilTag clicks identify elevated 3-D landmarks. Their image centres are
+    # deliberately retained in the envelope for the camera-pose solver, but they
+    # must not be treated as points on the z=0 carpet by this planar homography.
+    # Doing so bends the floor fit toward the hub faces and makes the apparent
+    # residuals look like a bad calibration when the actual issue is mixed geometry.
+    fit_pairs = list(pairs)
+    if point_meta:
+        tag_indices = {
+            int(m["pointIndex"])
+            for m in point_meta
+            if isinstance(m, dict) and isinstance(m.get("pointIndex"), int)
+            and 0 <= m["pointIndex"] < len(pairs)
+        }
+        if tag_indices:
+            fit_pairs = [p for i, p in enumerate(pairs) if i not in tag_indices]
+            print(f"[calibrate] excluding {len(tag_indices)} elevated AprilTag point(s) "
+                  f"from the flat-ground fit; retaining them in the output metadata")
 
-    arr = np.array(pairs, np.float32)
+    if len(fit_pairs) < 4:
+        raise SystemExit(f"need at least 4 floor correspondences, got {len(fit_pairs)}")
+
+    arr = np.array(fit_pairs, np.float32)
     src, dst = arr[:, :2], arr[:, 2:]
 
     frame0 = grab_plate(stem) if args.plate else grab_frame(stem, args.frame)
@@ -652,7 +670,7 @@ def main(argv: list[str] | None = None) -> int:
     # if leave-one-out says it helps on points the fit never saw. Adding parameters
     # to a handful of points otherwise buys a smaller residual and a worse model.
     lens_params = None
-    if not args.no_lens and len(pairs) >= 8:
+    if not args.no_lens and len(fit_pairs) >= 8:
         plumb = None if args.no_plumb else trace_plumb(frame0)
         lp = _lens.solve(src.astype(np.float64), dst.astype(np.float64),
                          ref["pxPerMeter"],
@@ -673,7 +691,7 @@ def main(argv: list[str] | None = None) -> int:
         else:
             print("[lens] REJECTED -- no out-of-sample gain; keeping plain homography")
     elif not args.no_lens:
-        print(f"[lens] skipped: {len(pairs)} points is too few to fit distortion "
+        print(f"[lens] skipped: {len(fit_pairs)} floor points is too few to fit distortion "
               f"(need 8+)")
 
     H, report = compute(src, dst, ref, args.ransac, lens_params)

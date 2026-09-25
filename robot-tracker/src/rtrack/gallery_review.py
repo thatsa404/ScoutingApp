@@ -26,7 +26,8 @@ import numpy as np
 
 from . import config as C
 from .acquire import raw_path
-from .appear import MIN_BOX
+from .appear import MIN_BOX, appearance_crops
+from .embed import APPEARANCE_DIM, EMBEDDING_SPACE, embed_appearance
 from .corrections import MATCH_PX, resolve
 from .robots import drop_offfield, drop_offview
 from .project import calibration_status_for
@@ -185,6 +186,35 @@ def _anchor_map(rows: list[dict], labels: list[dict]) -> dict[int, set[str]]:
         if item.get("ok") and item.get("tid") is not None:
             result[int(item["tid"])].add(str(item["team"]))
     return result
+
+
+def _solver_proposals(rows: list[dict]) -> dict[tuple[int, int], str]:
+    """Map an exact source detection to its solver-proposed team.
+
+    Robot solving may split one tracker ID into several route fragments with different
+    teams.  A track-wide map would smear one fragment's identity across the others, so
+    audit candidates join on both frame and the preserved source tracker ID. Conflicts
+    fail closed and produce no candidate for that detection.
+    """
+    proposals: dict[tuple[int, int], str | None] = {}
+    for row in rows:
+        frame = int(row.get("f", -1))
+        for det in row.get("dets", []):
+            team = det.get("team")
+            tid = det.get("source_tid", det.get("orig_tid", det.get("tid", -1)))
+            if not team or not isinstance(tid, (int, float)) or int(tid) < 0:
+                continue
+            key = (frame, int(tid))
+            value = str(team)
+            if key in proposals and proposals[key] != value:
+                proposals[key] = None
+            else:
+                proposals[key] = value
+    return {key: team for key, team in proposals.items() if team is not None}
+
+
+def _solver_proposal_map(path: Path) -> dict[tuple[int, int], str]:
+    return _solver_proposals(_load_rows(path))
 
 
 def _appearance_rows(rows: list[dict], npz: Path,
@@ -540,7 +570,8 @@ def prepare(match: str, *, season: int, corrections_path: Path | None = None,
             current_images: int = MAX_CURRENT_IMAGES,
             no_thumbnails: bool = False, calib_stem: str | None = None,
             no_field_filter: bool = False,
-            allow_unsafe_calibration: bool = False) -> Path:
+            allow_unsafe_calibration: bool = False,
+            solver_proposals: bool = False) -> Path:
     rows_path = C.STAGE1_DIR / f"{match}_tracks_stitched.jsonl"
     npz_path = C.STAGE3_DIR / f"{match}_appearance_cnn.npz"
     corr_path = corrections_path or C.TRACKER_ROOT / "corrections" / f"{match}_corrections.json"
@@ -548,19 +579,30 @@ def prepare(match: str, *, season: int, corrections_path: Path | None = None,
     rows, field_filter = _filter_gallery_rows(
         match, rows, calib_stem=calib_stem, no_field_filter=no_field_filter,
         allow_unsafe_calibration=allow_unsafe_calibration)
-    corrections = _read_json(corr_path, label="corrections")
-    anchors = _anchor_map(rows, _human_labels(corrections))
-    if not anchors:
-        raise SystemExit("[gallery] no human team anchors were resolved")
     appearances = _appearance_rows(
         rows, npz_path, calib_stem=calib_stem or match.split("_", 1)[0])
-    by_tid: dict[int, list[dict]] = defaultdict(list)
     by_team: dict[str, list[dict]] = defaultdict(list)
-    for item in appearances:
-        by_tid[item["tid"]].append(item)
-    for tid, team_set in anchors.items():
-        if len(team_set) == 1:
-            by_team[next(iter(team_set))].extend(by_tid.get(tid, []))
+    anchor_source = "solver-proposal" if solver_proposals else "human-correction"
+    if solver_proposals:
+        labeled_path = C.STAGE3_DIR / f"{match}_labeled.jsonl"
+        proposal_map = _solver_proposal_map(labeled_path)
+        if not proposal_map:
+            raise SystemExit(f"[gallery] no solver proposals found in {labeled_path}")
+        for item in appearances:
+            team = proposal_map.get((int(item["f"]), int(item["tid"])))
+            if team:
+                by_team[team].append(item)
+    else:
+        corrections = _read_json(corr_path, label="corrections")
+        anchors = _anchor_map(rows, _human_labels(corrections))
+        if not anchors:
+            raise SystemExit("[gallery] no human team anchors were resolved")
+        by_tid: dict[int, list[dict]] = defaultdict(list)
+        for item in appearances:
+            by_tid[item["tid"]].append(item)
+        for tid, team_set in anchors.items():
+            if len(team_set) == 1:
+                by_team[next(iter(team_set))].extend(by_tid.get(tid, []))
 
     track_sources = _file_hash(rows_path)
     appearance_source = _file_hash(npz_path)
@@ -593,6 +635,7 @@ def prepare(match: str, *, season: int, corrections_path: Path | None = None,
                                           "boxArea": item["boxArea"],
                                           "boxWidth": item["boxWidth"],
                                           "boxHeight": item["boxHeight"],
+                                          "labelSource": anchor_source,
                                           "tracksSha256": track_sources,
                                           "appearanceSha256": appearance_source},
                                "quality": {"boxArea": item["boxArea"],
@@ -633,7 +676,8 @@ def prepare(match: str, *, season: int, corrections_path: Path | None = None,
                                            "candidates": [x["candidateId"] for x in g["candidates"]]}
                                           for g in nonempty_groups]}),
             "season": int(season), "match": match, "createdAt": _now(),
-            "embeddingSpace": "resnet18-imagenet-v1/raw", "galleryVersion": version,
+            "candidateLabelSource": anchor_source,
+            "embeddingSpace": EMBEDDING_SPACE, "galleryVersion": version,
             "fieldFilter": field_filter,
             "limits": {"currentImagesPerTeam": current_images,
                         "candidateImagesPerTeam": max_candidates,
@@ -803,11 +847,36 @@ def _source_embedding(match: str, tid: int, at: float) -> np.ndarray | None:
     if not path.exists():
         return None
     z = np.load(path, allow_pickle=False)
+    try:
+        if str(z["embeddingSpace"].item()) != EMBEDDING_SPACE:
+            return None
+    except (KeyError, ValueError, TypeError):
+        return None
     indexes = np.flatnonzero(z["tid"] == tid)
     if not len(indexes):
         return None
     i = int(indexes[np.argmin(np.abs(z["t"][indexes] - at))])
     return np.asarray(z["feat"][i], dtype=np.float32)
+
+
+def _object_crops(view_hash: str, view: dict, source: dict):
+    """Recover the exact accepted image as the two model crops.
+
+    This makes a gallery representation migration independent of old per-match CNN
+    caches.  The object and detector rectangle are both immutable review provenance.
+    """
+    path = object_dir() / f"{view_hash}.jpg"
+    box = view.get("detectionBox") or source.get("detectionBox")
+    if not path.exists() or not box:
+        return None
+    image = cv2.imread(str(path))
+    if image is None:
+        return None
+    upper, whole = appearance_crops(image, box)
+    if (upper.size == 0 or whole.size == 0 or
+            upper.shape[0] < 6 or upper.shape[1] < 6):
+        return None
+    return upper, whole
 
 
 def rebuild(season: int) -> Path:
@@ -820,7 +889,8 @@ def rebuild(season: int) -> Path:
             previous_version = str(_read_json(previous_latest, label="gallery latest").get("version"))
         except SystemExit:
             previous_version = None
-    embeddings, metadata = [], []
+    embeddings: list[np.ndarray | None] = []
+    upper_crops, whole_crops, crop_slots, metadata = [], [], [], []
     for decision in decisions:
         source = decision.get("source", {})
         match, tid = source.get("match"), source.get("sourceTrack")
@@ -850,18 +920,34 @@ def rebuild(season: int) -> Path:
                                      if v.get("cropHash") == view_hash), None)
             if view is None:
                 continue
-            feat = _source_embedding(match, int(tid), float(view.get("time", 0)))
-            if feat is None:
-                continue
+            pair = _object_crops(view_hash, view, source)
+            feat = None
+            if pair is None:
+                # Migration fallback for old decisions that predate retained objects.
+                # It is accepted only from a cache in the exact current space.
+                feat = _source_embedding(match, int(tid), float(view.get("time", 0)))
+                if feat is None:
+                    continue
             embeddings.append(feat)
+            if pair is not None:
+                crop_slots.append(len(embeddings) - 1)
+                upper_crops.append(pair[0])
+                whole_crops.append(pair[1])
             metadata.append((view_hash, f"{season}:{decision.get('team')}",
                              decision.get("revisionId", "r1"), match, int(tid),
                              float(view.get("time", 0))))
+    if upper_crops:
+        compiled = embed_appearance(upper_crops, whole_crops)
+        for slot, feat in zip(crop_slots, compiled):
+            embeddings[slot] = feat
     if embeddings:
         matrix = np.stack(embeddings).astype(np.float32)
     else:
-        matrix = np.zeros((0, 512), np.float32)
-    version = manifest_version(manifest)
+        matrix = np.zeros((0, APPEARANCE_DIM), np.float32)
+    manifest_ver = manifest_version(manifest)
+    version = _hash({"manifestVersion": manifest_ver,
+                     "embeddingSpace": EMBEDDING_SPACE,
+                     "galleryCompiler": 2})
     out_dir = C.OUT_DIR / "gallery" / str(season)
     out_dir.mkdir(parents=True, exist_ok=True)
     out = out_dir / f"{version}.npz"
@@ -872,11 +958,11 @@ def rebuild(season: int) -> Path:
         embedding=matrix, sourceMatch=np.array([m[3] for m in metadata]),
         sourceTrack=np.array([m[4] for m in metadata], np.int32),
         sourceTime=np.array([m[5] for m in metadata], np.float32),
-        manifestVersion=np.array(version), embeddingSpace=np.array("resnet18-imagenet-v1/raw"),
-        schemaVersion=np.array(1, np.int16), kind=np.array(GALLERY_KIND))
+        manifestVersion=np.array(manifest_ver), embeddingSpace=np.array(EMBEDDING_SPACE),
+        schemaVersion=np.array(2, np.int16), kind=np.array(GALLERY_KIND))
     latest = {"season": season, "version": version, "path": str(out),
-              "prototypeCount": len(metadata), "manifestVersion": version,
-              "embeddingSpace": "resnet18-imagenet-v1/raw", "updatedAt": _now()}
+              "prototypeCount": len(metadata), "manifestVersion": manifest_ver,
+              "embeddingSpace": EMBEDDING_SPACE, "updatedAt": _now()}
     _save_json(latest_path(season), latest)
     if previous_version and previous_version != version:
         # Import lazily to keep the review manifest/rebuild path usable without
@@ -918,6 +1004,9 @@ def main(argv=None) -> int:
     p.add_argument("--allow-unsafe-calibration", action="store_true",
                    help="diagnostic override; use a quarantined calibration explicitly")
     p.add_argument("--no-thumbnails", action="store_true")
+    p.add_argument("--solver-proposals", action="store_true",
+                   help="audit mode: propose candidates from exact solver-labelled "
+                        "detections instead of requiring human correction anchors")
     p = sub.add_parser("apply")
     p.add_argument("answer", type=Path)
     p.add_argument("--bundle", type=Path)
@@ -935,7 +1024,8 @@ def main(argv=None) -> int:
                 max_candidates=args.max_candidates, current_images=args.current_images,
                 no_thumbnails=args.no_thumbnails, calib_stem=args.calib_from,
                 no_field_filter=args.no_field_filter,
-                allow_unsafe_calibration=args.allow_unsafe_calibration)
+                allow_unsafe_calibration=args.allow_unsafe_calibration,
+                solver_proposals=args.solver_proposals)
     elif args.cmd == "apply":
         apply_answer(args.answer, bundle_path=args.bundle)
     elif args.cmd == "apply-batch":

@@ -23,10 +23,11 @@ Four decisions worth defending, because each one was wrong in an earlier draft:
 
    which is exact: 8.069 * 174.74 = 1410 = y1-y0, and 16.541 * 174.74 = 2890.6 = x1-x0.
 
-3. `t` IS MATCH-RELATIVE, 0 = AUTO START, derived by routes.detect_auto_window rather
-   than assumed. Scouting data in this app is keyed by match phase (auto / shift1-4 /
-   endgame), not by video timestamp, so match-relative time is what makes the two
-   joinable at all. `source.matchStartVideoSec` maps back to the video for seeking.
+3. `t` IS MATCH-RELATIVE, 0 = AUTO START, derived from the raw-detection match window
+   recorded by `rtrack.robots` rather than from projected-position noise. Scouting data
+   in this app is keyed by match phase (auto / shift1-4 / endgame), not by video
+   timestamp, so match-relative time is what makes the two joinable at all.
+   `source.matchStartVideoSec` maps back to the video for seeking.
 
 4. OUTPUT IS DECIMATED, THE TRACKER IS NOT. Measured on f1m3: 15 Hz native is 359 KB
    raw / 72 KB gzipped, 5 Hz is 120 KB / 26 KB. Route plots do not need 15 Hz. The
@@ -140,16 +141,24 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
     # already derived, rather than silently exporting video time as if it were match
     # time -- that would look right and join wrongly.
     # Auto START is measured (it moves with the match); auto DURATION comes from the
-    # rulebook via C.AUTO_S. detect_auto_window reports an end too, but it is not
-    # trustworthy -- see the note at C.AUTO_S. Since sample times are relative to t0,
-    # auto is simply t in [0, AUTO_S].
+    # rulebook via C.AUTO_S. Prefer the window recorded by robots.py, whose raw-motion
+    # detector is also what scopes custody and curation. The projected-position
+    # detector is only a fallback for older robot outputs; it can mistake a short
+    # staging/calibration burst for the start, as happened on qm15 at 7 s.
     auto_end = C.AUTO_S
-    try:
-        from .routes import detect_auto_window
-        t0, _t1 = detect_auto_window(positions)
-    except Exception:
-        t0 = (robots_doc.get("custodyWindow") or [0.0])[0]
-        print(f"[export] auto-window detection failed; using custody start t0={t0}")
+    recorded_window = robots_doc.get("custodyWindow")
+    if isinstance(recorded_window, (list, tuple)) and len(recorded_window) >= 2:
+        t0 = float(recorded_window[0])
+        print(f"[export] using recorded {robots_doc.get('custodyWindowSource', 'match')} "
+              f"window start t0={t0:.2f}s")
+    else:
+        try:
+            from .routes import detect_auto_window
+            t0, _t1 = detect_auto_window(positions)
+            print(f"[export] using legacy projected-position window start t0={t0:.2f}s")
+        except Exception:
+            t0 = 0.0
+            print("[export] auto-window detection failed; using t0=0")
 
     m = tba_mod.match_by_key(match_key)
     alliance_of, station_of = {}, {}

@@ -81,6 +81,8 @@
          border:2px solid var(--hot);border-radius:10px;touch-action:none}
   .loupeBar{display:flex;gap:8px;margin-top:8px}
   .loupeBar button{flex:1}
+  #tagChoices{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+  #tagChoices button{padding:7px 10px;font-size:13px}
   /* Last fit, sent back with the bundle. The numbers matter less than the overlay:
      a lower residual can be the WORSE fit when RANSAC has dropped a region's only
      constraint, so what confirms a calibration is seeing the lines sit on the field. */
@@ -154,6 +156,7 @@
     <div id="loupeWrap">
       <div id="loupeStage"></div>
       <canvas id="loupe"></canvas>
+      <div id="tagChoices" hidden></div>
       <div class="loupeBar">
         <button id="lCancel">Cancel</button>
         <button id="lOk" class="go">Place point</button>
@@ -203,6 +206,8 @@ let APRIL_TAG_IDS = [];               // tag id for each pair, or null for floor
 let SENT = false;                     // points reached the relay; gates the Back warning
 let pending = null;                   // {vx,vy} once the video point is placed
 let loupe = null;                     // {which:'v'|'f', x, y, drag:{...}}
+let tagPicker = null;                 // {x,y,sx,sy,sw,sh} while refining a field tag
+let tagDrag = null;
 
 // WPILib 2026 Rebuilt tag centres, in field metres. The browser only needs centres:
 // selecting a tag deliberately records a field-render correspondence, while the home
@@ -375,18 +380,66 @@ function fieldPixel(tag) {
   return { x: r.x1 - tag.x * ppm, y: r.y0 + tag.y * ppm };
 }
 
-function fieldTagAt(x, y) {
+function fieldTagAt(x, y, includeUsed = false) {
   const f = DOC?.fieldRef || FIELD_FALLBACK;
   const r = f.fieldRectPx || FIELD_FALLBACK.fieldRectPx;
   const ppm = Number(f.pxPerMeter || FIELD_FALLBACK.pxPerMeter);
   const maxDist = Math.max(70, Math.min(130, 0.34 * ppm));
   let best = null, bestD = Infinity;
   for (const tag of APRIL_TAGS) {
-    if (APRIL_TAG_IDS.includes(tag.id)) continue;
+    if (!includeUsed && APRIL_TAG_IDS.includes(tag.id)) continue;
     const p = fieldPixel(tag), d = Math.hypot(x - p.x, y - p.y);
     if (d < bestD) { best = tag; bestD = d; }
   }
   return bestD <= maxDist ? best : null;
+}
+
+function closeLoupe() {
+  loupe = null; tagPicker = null; tagDrag = null;
+  $('#tagChoices').hidden = true;
+  $('#tagChoices').innerHTML = '';
+  $('#lOk').hidden = false;
+  $('#loupeWrap').style.display = 'none';
+}
+
+function chooseAprilTag(tag) {
+  if (!tagPicker || !pending) return;
+  if (APRIL_TAG_IDS.includes(tag.id)) {
+    say($('#workMsg'), `AprilTag ${tag.id} is already used. Choose another marker.`, 'err');
+    return;
+  }
+  const fp = fieldPixel(tag);
+  PAIRS.push([pending.vx, pending.vy, Math.round(fp.x * 10) / 10, Math.round(fp.y * 10) / 10]);
+  APRIL_TAG_IDS.push(tag.id);
+  pending = null;
+  closeLoupe();
+  say($('#workMsg'), `AprilTag ${tag.id} paired with the video point.`, 'ok');
+  stage(); render();
+}
+
+function openTagPicker(x, y) {
+  tagPicker = { x, y };
+  loupe = null;
+  $('#loupeStage').innerHTML = 'Refine the choice: drag to pan, then tap the exact <b>numbered marker</b>.';
+  $('#loupeWrap').style.display = 'block';
+  $('#lOk').hidden = true;
+  const choices = APRIL_TAGS
+    .map(tag => ({ tag, d: Math.hypot(x - fieldPixel(tag).x, y - fieldPixel(tag).y) }))
+    .filter(({ d }) => d <= 190)
+    .sort((a, b) => a.d - b.d);
+  $('#tagChoices').innerHTML = choices.length
+    ? '<span style="width:100%;color:var(--dim);font-size:12px">Nearby tags:</span>'
+      + choices.map(({ tag }) => {
+        const used = APRIL_TAG_IDS.includes(tag.id);
+        return `<button type="button" data-tag-id="${tag.id}"${used ? ' disabled' : ''}>`
+          + `AprilTag ${tag.id}${used ? ' (used)' : ''}</button>`;
+      }).join('')
+    : '<span style="color:var(--dim);font-size:12px">No nearby tag markers. Pan the crop or cancel.</span>';
+  $('#tagChoices').hidden = false;
+  $('#tagChoices').querySelectorAll('button[data-tag-id]').forEach(btn => {
+    btn.onclick = () => chooseAprilTag(TAG_BY_ID.get(Number(btn.dataset.tagId)));
+  });
+  drawTagPicker();
 }
 
 function paint(w) {
@@ -443,22 +496,21 @@ for (const w of ['v', 'f']) {
     const { k, h } = sc(w);
     const x = (ev.clientX - r.left) / k, y = (ev.clientY - r.top) / h;
     if (w === 'f') {
-      const tag = fieldTagAt(x, y);
-      if (tag) {
-        const fp = fieldPixel(tag);
-        PAIRS.push([pending.vx, pending.vy, Math.round(fp.x * 10) / 10, Math.round(fp.y * 10) / 10]);
-        APRIL_TAG_IDS.push(tag.id);
-        pending = null;
-        say($('#workMsg'), `AprilTag ${tag.id} paired with the video point.`, 'ok');
-        stage(); render();
-        return;
-      }
+      const tag = fieldTagAt(x, y, true);
+      if (tag) { openTagPicker(x, y); return; }
     }
     openLoupe(w, x, y);
   });
 }
 
 function openLoupe(which, x, y) {
+  // A normal loupe interaction must always start from a clean tag-picker state.
+  // This matters when the user abandons a refinement and immediately chooses a
+  // floor point or video point instead.
+  tagPicker = null; tagDrag = null;
+  $('#tagChoices').hidden = true;
+  $('#tagChoices').innerHTML = '';
+  $('#lOk').hidden = false;
   loupe = { which, x, y };
   drawLoupe();
   // The sheet covers the panes, so it has to say which one this point belongs to --
@@ -473,6 +525,7 @@ function openLoupe(which, x, y) {
 }
 
 function drawLoupe() {
+  if (tagPicker) return drawTagPicker();
   const { which, x, y } = loupe;
   const img = P(which).img, z = $('#loupe');
   const W = Math.min(880, Math.round(window.innerWidth * 2));
@@ -494,10 +547,62 @@ function drawLoupe() {
   $('#stage').querySelector('b')?.classList;
 }
 
-// Drag inside the loupe nudges the point at 1/ZOOM the finger speed.
+function drawTagPicker() {
+  if (!tagPicker) return;
+  const img = P('f').img, z = $('#loupe');
+  const W = Math.min(880, Math.round(window.innerWidth * 2));
+  z.width = W; z.height = Math.round(W * 0.62);
+  const sw = z.width / ZOOM, sh = z.height / ZOOM;
+  const sx = Math.max(0, Math.min(img.naturalWidth - sw, tagPicker.x - sw / 2));
+  const sy = Math.max(0, Math.min(img.naturalHeight - sh, tagPicker.y - sh / 2));
+  tagPicker.sx = sx; tagPicker.sy = sy; tagPicker.sw = sw; tagPicker.sh = sh;
+  const ctx = z.getContext('2d');
+  ctx.imageSmoothingEnabled = false;
+  ctx.clearRect(0, 0, z.width, z.height);
+  ctx.drawImage(img, sx, sy, sw, sh, 0, 0, z.width, z.height);
+  APRIL_TAGS.forEach(tag => {
+    const p = fieldPixel(tag);
+    if (p.x < sx - 30 || p.x > sx + sw + 30 || p.y < sy - 30 || p.y > sy + sh + 30) return;
+    const x = (p.x - sx) * ZOOM, y = (p.y - sy) * ZOOM;
+    const used = APRIL_TAG_IDS.includes(tag.id);
+    ctx.strokeStyle = used ? '#22c55e' : '#facc15';
+    ctx.fillStyle = used ? 'rgba(34,197,94,.24)' : 'rgba(250,204,21,.25)';
+    ctx.lineWidth = 3;
+    ctx.beginPath(); ctx.arc(x, y, 18, 0, Math.PI * 2); ctx.fill(); ctx.stroke();
+    ctx.fillStyle = used ? '#86efac' : '#fef08a';
+    ctx.font = 'bold 24px system-ui';
+    ctx.fillText(String(tag.id), x + 23, y - 16);
+  });
+}
+
+// Drag inside the loupe nudges the point at 1/ZOOM the finger speed. In tag-picker mode
+// the same gesture pans the enlarged field crop; a tap selects the exact marker.
 let lDrag = null;
-$('#loupe').addEventListener('pointerdown', e => { lDrag = { px: e.clientX, py: e.clientY }; $('#loupe').setPointerCapture(e.pointerId); });
+$('#loupe').addEventListener('pointerdown', e => {
+  if (tagPicker) {
+    tagDrag = { px: e.clientX, py: e.clientY, moved: false };
+    $('#loupe').setPointerCapture(e.pointerId);
+    return;
+  }
+  lDrag = { px: e.clientX, py: e.clientY };
+  $('#loupe').setPointerCapture(e.pointerId);
+});
 $('#loupe').addEventListener('pointermove', e => {
+  if (tagPicker) {
+    if (!tagDrag) return;
+    const r = $('#loupe').getBoundingClientRect();
+    const s = $('#loupe').width / r.width;
+    const dx = e.clientX - tagDrag.px, dy = e.clientY - tagDrag.py;
+    if (Math.hypot(dx, dy) > 3) tagDrag.moved = true;
+    tagPicker.x -= dx * s / ZOOM;
+    tagPicker.y -= dy * s / ZOOM;
+    const img = P('f').img;
+    tagPicker.x = Math.max(0, Math.min(img.naturalWidth, tagPicker.x));
+    tagPicker.y = Math.max(0, Math.min(img.naturalHeight, tagPicker.y));
+    tagDrag.px = e.clientX; tagDrag.py = e.clientY;
+    drawTagPicker();
+    return;
+  }
   if (!lDrag || !loupe) return;
   const r = $('#loupe').getBoundingClientRect();
   const s = $('#loupe').width / r.width;        // canvas px per CSS px
@@ -509,9 +614,29 @@ $('#loupe').addEventListener('pointermove', e => {
   lDrag = { px: e.clientX, py: e.clientY };
   drawLoupe();
 });
-$('#loupe').addEventListener('pointerup', () => { lDrag = null; });
+$('#loupe').addEventListener('pointerup', e => {
+  if (tagPicker) {
+    if (tagDrag && !tagDrag.moved) {
+      const r = $('#loupe').getBoundingClientRect();
+      const sx = $('#loupe').width / r.width;
+      const cx = (e.clientX - r.left) * sx, cy = (e.clientY - r.top) * sx;
+      let best = null, bestD = Infinity;
+      APRIL_TAGS.forEach(tag => {
+        const p = fieldPixel(tag);
+        const tx = (p.x - tagPicker.sx) * ZOOM, ty = (p.y - tagPicker.sy) * ZOOM;
+        const d = Math.hypot(cx - tx, cy - ty);
+        if (d < bestD) { best = tag; bestD = d; }
+      });
+      if (best && bestD <= 42) chooseAprilTag(best);
+      else say($('#workMsg'), 'Tap the center of a numbered marker, or use a nearby tag button.', '');
+    }
+    tagDrag = null;
+    return;
+  }
+  lDrag = null;
+});
 
-$('#lCancel').onclick = () => { loupe = null; $('#loupeWrap').style.display = 'none'; };
+$('#lCancel').onclick = closeLoupe;
 $('#lOk').onclick = () => {
   if (!loupe) return;
   const { which, x, y } = loupe;
@@ -521,7 +646,7 @@ $('#lOk').onclick = () => {
     APRIL_TAG_IDS.push(null);
     pending = null;
   }
-  loupe = null; $('#loupeWrap').style.display = 'none';
+  closeLoupe();
   stage(); render();
 };
 

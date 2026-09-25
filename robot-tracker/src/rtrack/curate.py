@@ -99,6 +99,22 @@ CROP_MAX_H = 260        # cap the tall dimension; native crops of near robots ar
 CROP_JPEG_Q = 78        # higher than the frame's: this is the image being judged
 
 
+def _crop_geometry(shape, x1: float, y1: float, x2: float, y2: float) -> dict:
+    """Coordinates for drawing the source detector box on the padded crop."""
+    H, W = shape[:2]
+    bw, bh = x2 - x1, y2 - y1
+    px, py = bw * CROP_PAD, bh * CROP_PAD
+    a, b = max(0, int(x1 - px)), max(0, int(y1 - py))
+    c, d = min(W, int(x2 + px)), min(H, int(y2 + py))
+    scale = CROP_MAX_H / (d - b) if d - b > CROP_MAX_H else 1.0
+    return {
+        "cropSize": [max(1, int((c - a) * scale)),
+                     max(1, CROP_MAX_H if scale != 1.0 else d - b)],
+        "cropBox": [round((x1 - a) * scale, 1), round((y1 - b) * scale, 1),
+                    round((x2 - a) * scale, 1), round((y2 - b) * scale, 1)],
+    }
+
+
 def _crop(img, x1: float, y1: float, x2: float, y2: float) -> str:
     """One robot, cut from the FULL-RESOLUTION frame and encoded as a data URI."""
     H, W = img.shape[:2]
@@ -747,6 +763,7 @@ def build_frames(stem: str, tracks_p: Path, match_key: str | None,
                     continue
                 covered.add(d["tid"])
                 x1, y1, x2, y2 = (float(v) for v in d["xyxy"])
+                crop_geometry = _crop_geometry(img.shape, x1, y1, x2, y2)
                 dets.append({
                     "tid": int(d["tid"]),
                     # Box in SHIPPED-image pixels, so the viewer needs no scale maths.
@@ -771,6 +788,8 @@ def build_frames(stem: str, tracks_p: Path, match_key: str | None,
                     # fraction of what raising the whole frame's resolution costs,
                     # because it is ~1% of the frame's area.
                     "crop": _crop(img, x1, y1, x2, y2),
+                    "cropSize": crop_geometry["cropSize"],
+                    "cropBox": crop_geometry["cropBox"],
                 })
             out_frames.append({
                 "f": idx, "t": round(r["t"], 2),

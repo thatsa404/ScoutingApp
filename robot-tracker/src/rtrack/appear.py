@@ -7,11 +7,10 @@ hue fixed the cross-alliance chimeras -- 13 of 31 tracks were changing alliance
 mid-life, 72% of detections -- but hue is blind to WHICH of the three blue robots it
 is looking at, and the chicklet sheets show that within-alliance switches remain.
 
-The descriptor deliberately excludes the bumper band. Inside one alliance the bumper
-is the same colour on all three robots, so including it would add a large constant
-term to every comparison and bury the differences we need. What actually distinguishes
-FRC robots at this resolution is the superstructure: hopper, intake, elevator, the
-colour and layout of the mechanisms above the bumper.
+The histogram descriptor deliberately excludes the bumper band. The CNN representation
+uses two focused views instead: that same superstructure plus a full detector box whose
+lower bumper band is desaturated. This retains number position/width and lower mechanism
+geometry without learning the red/blue hue that changes between matches.
 
 Written to an .npz because the descriptors cost one full video decode (~90 s) and the
 change-point threshold needs tuning against them. Re-deriving them per experiment
@@ -32,10 +31,39 @@ from .acquire import raw_path, video_id
 
 # Superstructure only: from the top of the box down to just above the bumper.
 BODY_TOP, BODY_BOTTOM = 0.02, 0.58
+BUMPER_GRAY_TOP = 0.55
 GRAY_BINS = 16      # luminance bins per band; coarse on purpose, see descriptor()
 BANDS = 3           # horizontal bands; see descriptor()
 STRIDE = 2          # every Nth detection per track; 15 fps source, so still ~7/s
 MIN_BOX = 28        # px; below this the crop is too small to describe
+
+
+def appearance_crops(img: np.ndarray, box) -> tuple[np.ndarray, np.ndarray]:
+    """Return the two focused crops used by the versioned CNN representation.
+
+    The full-box branch keeps bumper-number luminance and geometry while removing the
+    red/blue hue that changes between matches.  Context padding remains a review-only
+    aid: feeding it to the 112x112 network measured substantially worse.
+    """
+    H, W = img.shape[:2]
+    x1, y1, x2, y2 = (int(round(float(v))) for v in box)
+    x1, x2 = max(0, x1), min(W, x2)
+    y1, y2 = max(0, y1), min(H, y2)
+    bh = y2 - y1
+    if x2 <= x1 or bh <= 0:
+        empty = np.empty((0, 0, 3), np.uint8)
+        return empty, empty
+    cy1 = max(0, y1 + int(bh * BODY_TOP))
+    cy2 = min(H, y1 + int(bh * BODY_BOTTOM))
+    upper = img[cy1:cy2, x1:x2].copy()
+    whole = img[y1:y2, x1:x2].copy()
+    if whole.size:
+        bumper_y = int(BUMPER_GRAY_TOP * whole.shape[0])
+        bumper = whole[bumper_y:]
+        if bumper.size:
+            gray = cv2.cvtColor(bumper, cv2.COLOR_BGR2GRAY)
+            whole[bumper_y:] = cv2.cvtColor(gray, cv2.COLOR_GRAY2BGR)
+    return upper, whole
 
 
 def descriptor(crop: np.ndarray) -> np.ndarray:
@@ -130,7 +158,8 @@ def run(stem: str, tracks_p: Path, out: Path, backend: str = "hist") -> None:
 
     want_hist = backend in ("hist", "both")
     want_cnn = backend in ("cnn", "both")
-    tids, ts, feats, crops = [], [], [], []
+    tids, ts, feats, upper_crops, whole_crops = [], [], [], [], []
+    alliances, alliance_confidence = [], []
     cap = cv2.VideoCapture(str(raw_path(stem)))
     idx, i = 0, 0
     while i < len(wanted):
@@ -138,24 +167,22 @@ def run(stem: str, tracks_p: Path, out: Path, backend: str = "hist") -> None:
         if not ok:
             break
         if idx == wanted[i]:
-            H, W = img.shape[:2]
             for tid, t, d in plan[idx]:
-                x1, y1, x2, y2 = (int(v) for v in d["xyxy"])
-                bh = y2 - y1
-                cy1 = max(0, y1 + int(bh * BODY_TOP))
-                cy2 = min(H, y1 + int(bh * BODY_BOTTOM))
-                cx1, cx2 = max(0, x1), min(W, x2)
-                crop = img[cy1:cy2, cx1:cx2]
-                if crop.size == 0 or crop.shape[0] < 6 or crop.shape[1] < 6:
+                crop, whole = appearance_crops(img, d["xyxy"])
+                if (crop.size == 0 or whole.size == 0 or
+                        crop.shape[0] < 6 or crop.shape[1] < 6):
                     continue
                 tids.append(tid)
                 ts.append(t)
+                alliances.append(str(d.get("alliance") or ""))
+                alliance_confidence.append(float(d.get("aconf") or 0.0))
                 if want_hist:
                     feats.append(descriptor(crop))
                 if want_cnn:
-                    # Kept at source resolution here; embed() does its own resize, and
+                    # Kept at source resolution here; embedding does its own resize, and
                     # downsampling twice would throw away detail for nothing.
-                    crops.append(crop.copy())
+                    upper_crops.append(crop)
+                    whole_crops.append(whole)
             i += 1
             if i % 400 == 0:
                 print(f"    {i}/{len(wanted)} frames", flush=True)
@@ -169,10 +196,13 @@ def run(stem: str, tracks_p: Path, out: Path, backend: str = "hist") -> None:
                             feat=np.array(feats, np.float32))
         print(f"[appear] {len(tids)} histogram descriptors -> {out}")
     if want_cnn:
-        from .embed import EMBEDDING_SPACE, embed
+        from .embed import EMBEDDING_SPACE, embed_appearance
         cp = cnn_path(out)
-        np.savez_compressed(cp, tid=tid_a, t=t_a, feat=embed(crops),
-                            schemaVersion=np.array(2, np.int16),
+        np.savez_compressed(cp, tid=tid_a, t=t_a,
+                            feat=embed_appearance(upper_crops, whole_crops),
+                            alliance=np.array(alliances),
+                            allianceConfidence=np.array(alliance_confidence, np.float32),
+                            schemaVersion=np.array(3, np.int16),
                             embeddingSpace=np.array(EMBEDDING_SPACE))
         print(f"[appear] {len(tids)} cnn embeddings -> {cp}")
 

@@ -4,6 +4,7 @@ from rtrack.gallery_review import (
     _candidate_images,
     _candidate_id,
     _choose_views,
+    _solver_proposals,
     manifest_version,
     _unreviewed_candidates,
     validate_answer,
@@ -11,6 +12,18 @@ from rtrack.gallery_review import (
 
 
 class GalleryReviewTests(unittest.TestCase):
+    def test_solver_proposals_join_exact_frame_and_source_track(self):
+        rows = [
+            {"f": 10, "dets": [{"tid": 101, "source_tid": 7, "team": "190"}]},
+            {"f": 11, "dets": [{"tid": 102, "source_tid": 7, "team": "157"}]},
+            {"f": 12, "dets": [{"tid": 103, "source_tid": 8, "team": "190"},
+                                  {"tid": 104, "source_tid": 8, "team": "157"}]},
+        ]
+        proposals = _solver_proposals(rows)
+        self.assertEqual(proposals[(10, 7)], "190")
+        self.assertEqual(proposals[(11, 7)], "157")
+        self.assertNotIn((12, 8), proposals)
+
     def test_view_selection_is_bounded_and_temporally_spread(self):
         views = [{"f": i, "t": float(i), "xyxy": [0, 0, 40, 60]}
                  for i in range(20)]

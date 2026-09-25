@@ -112,7 +112,9 @@ the metric.
 # this representation, not of an array with 512 columns.  A cache without this marker
 # predates the compatibility contract and is deliberately not eligible for hard
 # rebind/join decisions.
-EMBEDDING_SPACE = "resnet18-imagenet-v1/raw"
+EMBEDDING_SPACE = "resnet18-imagenet-v1/super-fullgray-50-50-v1"
+APPEARANCE_DIM = 1024
+FUSION_WEIGHT = 0.5
 HEAD_SPACE = "pca-wccn-v1"
 
 _MODEL = None
@@ -150,6 +152,31 @@ def embed(crops: list[np.ndarray]) -> np.ndarray:
             b = b.permute(0, 3, 1, 2).float().div_(255).to(dev)
             out.append(model(norm(b)).flatten(1).cpu().numpy())
     return np.concatenate(out).astype(np.float32)
+
+
+def normalize_rows(a: np.ndarray) -> np.ndarray:
+    """L2-normalize a feature matrix without changing its float32 representation."""
+    a = np.asarray(a, np.float32)
+    return a / (np.linalg.norm(a, axis=1, keepdims=True) + 1e-9)
+
+
+def embed_appearance(superstructure: list[np.ndarray],
+                     full_neutral: list[np.ndarray]) -> np.ndarray:
+    """Embed and fuse the two measured robot views into one versioned descriptor.
+
+    Each branch is normalized before concatenation.  The square-root weights make a
+    cosine comparison in the resulting space exactly the 50/50 mean of the branch
+    cosine similarities used by the evaluation.
+    """
+    if len(superstructure) != len(full_neutral):
+        raise ValueError("appearance crop branches must have equal lengths")
+    if not superstructure:
+        return np.zeros((0, APPEARANCE_DIM), np.float32)
+    upper = normalize_rows(embed(superstructure))
+    whole = normalize_rows(embed(full_neutral))
+    a = np.sqrt(1.0 - FUSION_WEIGHT)
+    b = np.sqrt(FUSION_WEIGHT)
+    return np.concatenate([a * upper, b * whole], axis=1).astype(np.float32)
 
 
 # ---------------------------------------------------------------- the head
@@ -216,6 +243,11 @@ def load_head(event: str):
         meta = json.loads(str(z["meta"].item()))
     except (KeyError, ValueError, TypeError):
         meta = {}
+    if meta.get("inputSpace") != EMBEDDING_SPACE or len(mu) != APPEARANCE_DIM:
+        # A head is a property of one exact representation.  Falling back to raw
+        # embeddings is safe; applying a legacy 512-d head to the fused descriptor is
+        # both mathematically invalid and, without this check, a late shape error.
+        return None
     digest = hashlib.sha256(p.read_bytes()).hexdigest()[:16]
 
     def transform(A):

@@ -1216,22 +1216,64 @@ def retally(ident: dict, rows, orig_of: dict[int, int]) -> dict:
                                                      abs(vt - spans[m][1])))
             fresh[hit].append((vt, team))
         for m, vs in fresh.items():
-            tally = Counter(team for _t, team in vs)
+            # A dense source voteList is needed so a two-second fragment is not left
+            # with one opinion merely because 24 samples were spread over a 170-second
+            # stitched track. Cap only AFTER redistribution, giving every final segment
+            # enough local evidence while keeping its maximum solver influence fixed.
+            vs.sort(key=lambda item: item[0])
+            cap = int(ident.get("tallyVoteCap", 24))
+            tally_vs = vs
+            if cap > 0 and len(tally_vs) > cap:
+                picks = np.linspace(0, len(tally_vs) - 1, cap).astype(int)
+                tally_vs = [tally_vs[int(i)] for i in picks]
+            tally = Counter(team for _t, team in tally_vs)
+            if ident.get("normalizeTallies"):
+                tally = normalize_counter(tally, cap)
             wins = defaultdict(Counter)
             for vt, team in vs:
                 wins[int(vt // 6.0)][team] += 1
             timeline = [(int(k * 6.0), c.most_common(1)[0][0], sum(c.values()))
                         for k, c in sorted(wins.items())]
             winner = tally.most_common(1)[0] if tally else (None, 0)
+            tally_total = sum(tally.values())
             tracks[str(m)] = {
                 "detections": sum(1 for r in rows for d in r["dets"]
                                   if d["tid"] == m),
-                "votes": len(vs), "tally": dict(tally), "team": winner[0],
-                "share": round(winner[1] / max(len(vs), 1), 3),
+                "votes": tally_total, "tally": dict(tally), "team": winner[0],
+                "share": round(winner[1] / max(tally_total, 1), 3),
                 "timeline": timeline, "switches": [],
                 "voteList": [[vt, team] for vt, team in vs],
             }
     return {**ident, "tracks": tracks}
+
+
+def normalize_counter(tally: Counter, cap: int) -> Counter:
+    """Scale a non-empty vote distribution to a fixed total with stable rounding."""
+    tally = Counter(tally)
+    total = sum(tally.values())
+    if total <= 0 or cap <= 0:
+        return tally
+    exact = {team: cap * count / total for team, count in tally.items()}
+    out = Counter({team: int(value) for team, value in exact.items()})
+    remainder = cap - sum(out.values())
+    order = sorted(exact, key=lambda key: (exact[key] - out[key], key), reverse=True)
+    for team in order[:remainder]:
+        out[team] += 1
+    return out
+
+
+def normalize_identity_tallies(ident: dict) -> dict:
+    """Experimental: remove fragment duration from the appearance vote budget."""
+    cap = int(ident.get("tallyVoteCap", 24))
+    tracks = {key: dict(value) for key, value in ident["tracks"].items()}
+    for value in tracks.values():
+        tally = normalize_counter(Counter(value.get("tally", {})), cap)
+        value["tally"] = dict(tally)
+        value["votes"] = sum(tally.values())
+        winner = tally.most_common(1)[0] if tally else (None, 0)
+        value["team"] = winner[0]
+        value["share"] = round(winner[1] / max(sum(tally.values()), 1), 3)
+    return {**ident, "normalizeTallies": True, "tracks": tracks}
 
 
 def colour(info, con, ident, n_colours=N_ROBOTS):
@@ -1697,21 +1739,31 @@ def auto_start_px(rows, bin_s: float = 0.5, moving: float = 0.30,
 
 
 def match_window(stem: str, rows=None) -> tuple[float, float] | None:
-    """[auto start, auto start + 150 s], from the motion profile. None if unavailable.
+    """[auto start, auto start + 150 s], from the raw detection motion profile.
+
+    Raw pixel motion is preferred when rows are available. Projected positions can
+    contain short calibration/association bursts while robots are still staged; using
+    those as the start moved qm15's published timebase from the real ~33 s start to
+    7 s. The projected-position detector remains the fallback for callers that do not
+    retain the raw rows.
 
     Custody MUST be measured against this and not against the tracked span. The clip
     runs 3-180 s while the match runs 8.5-158.5 s, so 406 of 2654 frames sit outside
     it -- 15% of the denominator, during which robots are staged, celebrating, or off
     the field entirely. Counting those as "lost custody" understates every robot.
 
-    TWO SOURCES, because the metric one is not always available. The preferred path
-    reads positions.json, which needs a calibration. When there is none this used to
-    return None and custody silently fell back to the whole clip -- which made the
-    number INCOMPARABLE between cameras while still printing as a percentage in the
-    same table. Measured: 2026necmp1_sf11m1 read 61% custody that way and 73% over the
-    same [8,158] window the other matches used, so it looked like the worst camera in
-    the fleet when it was mid-pack. The pixel fallback removes that trap.
+    TWO SOURCES remain because the raw rows are not always available. When there is no
+    raw motion window, the calibrated-position detector is used; when there is no
+    calibration, the pixel fallback removes the old whole-clip custody trap.
     """
+    if rows is not None:
+        try:
+            from .curate import match_window as curate_match_window
+            win = curate_match_window(rows)
+            if win is not None:
+                return win[0], win[0] + MATCH_SECONDS
+        except Exception:
+            pass
     try:
         from .routes import detect_auto_window
         p = C.STAGE2_DIR / f"{stem}_positions.json"
@@ -2037,6 +2089,14 @@ def main(argv=None) -> int:
                          "check that can see a bad detection INSIDE a track.")
     ap.add_argument("--positions", type=Path, default=None)
     ap.add_argument("--match", required=True)
+    ap.add_argument("--red", nargs=3, default=None, metavar=("TEAM1", "TEAM2", "TEAM3"),
+                    help="offline roster override; must be supplied together with --blue")
+    ap.add_argument("--blue", nargs=3, default=None,
+                    metavar=("TEAM1", "TEAM2", "TEAM3"),
+                    help="offline roster override; must be supplied together with --red")
+    ap.add_argument("--output-dir", type=Path, default=None,
+                    help="write labeled/robots/run outputs here instead of out/stage3; "
+                         "useful for side-by-side diagnostic solver runs")
     ap.add_argument("--no-split", action="store_true",
                     help="do not cut tracks whose own votes change identity")
     ap.add_argument("--no-alliance-split", action="store_true",
@@ -2133,10 +2193,21 @@ def main(argv=None) -> int:
                     help="bonus for a compatible, non-destructive occluder continuation "
                          "edge. 0 keeps candidates diagnostic-only (the safe default).")
     ap.add_argument("--continuity-weight", type=int, default=0, metavar="PTS",
-                    help="jointly reward selected local segment continuations. 0 keeps "
-                         "the production assignment-only solver unchanged.")
+                    help="joint path-flow cost for every unmatched route-fragment "
+                         "endpoint; candidate handoffs have a geometry-scaled cost. "
+                         "0 keeps the production assignment-only solver unchanged.")
     ap.add_argument("--continuity-gap", type=float, default=3.0, metavar="S",
                     help="maximum gap for a local continuity-graph candidate.")
+    ap.add_argument("--continuity-max-score", type=float, default=None,
+                    metavar="SCORE",
+                    help="optional upper bound on normalized gap+distance for a "
+                         "continuity edge; diagnostic until held-out validation")
+    ap.add_argument("--continuity-same-appearance", action="store_true",
+                    help="only propose continuity edges whose fragments have the same "
+                         "local appearance winner; diagnostic until validation")
+    ap.add_argument("--normalize-fragment-votes", action="store_true",
+                    help="scale every non-empty fragment tally to the 24-vote budget, "
+                         "removing fragment duration as duplicated evidence; diagnostic")
     ap.add_argument("--hold-weight", type=int, default=600, metavar="PTS",
                     help="penalty for giving a team to a visible track while that team "
                          "is presumed behind a structure it vanished into. 0 = off. "
@@ -2291,8 +2362,13 @@ def main(argv=None) -> int:
             args.occluders = _cam
             print(f"[robots] using drawn occluders for {_cam}")
 
-    m = tba_mod.match_by_key(args.match)
-    red, blue = [str(t) for t in m["red"]], [str(t) for t in m["blue"]]
+    if (args.red is None) != (args.blue is None):
+        raise SystemExit("[robots] --red and --blue must be supplied together")
+    if args.red is not None:
+        red, blue = [str(t) for t in args.red], [str(t) for t in args.blue]
+    else:
+        m = tba_mod.match_by_key(args.match)
+        red, blue = [str(t) for t in m["red"]], [str(t) for t in m["blue"]]
     print(f"[robots] red {red}  blue {blue}")
 
     # BEFORE ANY SPLIT, and that position is the whole point. On the stitched tracks a
@@ -2582,6 +2658,11 @@ def main(argv=None) -> int:
             for _tm, _k, _d, _nk, _nd in _imp:
                 print(f"[corrections]   {_tm}: kept #{_k} ({_nk} dets), demoted "
                       f"#{_d} ({_nd} dets)")
+    if args.normalize_fragment_votes:
+        ident = normalize_identity_tallies(ident)
+        print("[robots] normalized each non-empty fragment appearance tally to "
+              f"{ident.get('tallyVoteCap', 24)} votes")
+
     frag_emb = {}
     if args.app_weight > 0:
         from .embed import load_head as _lh2
@@ -2596,8 +2677,12 @@ def main(argv=None) -> int:
     graph_edges = []
     if args.continuity_weight > 0:
         from .continuity import candidates as _continuity_candidates
+        _team_hints = {int(t): str(v["team"])
+                       for t, v in ident.get("tracks", {}).items() if v.get("team")}
         graph_edges = _continuity_candidates(
-            info, con, max_gap_s=args.continuity_gap, weight=args.continuity_weight)
+            info, con, max_gap_s=args.continuity_gap, weight=args.continuity_weight,
+            max_score=args.continuity_max_score, team_hints=_team_hints,
+            require_same_hint=args.continuity_same_appearance)
         print(f"[robots] continuity graph proposed {len(graph_edges)} local edge(s) "
               f"within {args.continuity_gap:g}s")
     joint_edges = rebind_edges + graph_edges
@@ -2638,7 +2723,7 @@ def main(argv=None) -> int:
         S.KIN_CAP = args.kin_cap
         W = S.Weights(park=args.park, alli=args.alli_weight, vote=args.vote_weight,
                       kin=args.kin_weight, hold=args.hold_weight, app=args.app_weight,
-                      rebind=args.rebind_weight)
+                      rebind=args.rebind_weight, continuity=args.continuity_weight)
 
         def run_solve(limit):
             a, t, m, u = S.solve(info, con, ident, red, blue, pinned or None,
@@ -2680,6 +2765,16 @@ def main(argv=None) -> int:
         # frames -- see plan_deconflict_cuts. Cut those at the boundary of a stretch
         # some group can take, then solve again with the pieces.
         for rnd in range(args.deconflict):
+            if str(meta.get("status", "")).upper() != "OPTIMAL":
+                # A deconfliction cut is irreversible and depends on WHICH tracks the
+                # current solution parked. A merely feasible incumbent can be tens of
+                # thousands of objective points below the bound (path-flow qm25 was
+                # -1,054 vs 103,329); cutting its parked set compounds search failure
+                # into data loss. Keep the incumbent, but never mutate segmentation
+                # from it. The next pipeline pass can retry with a larger budget.
+                print(f"[robots] deconflict stopped before round {rnd + 1}: "
+                      f"solver status is {meta.get('status')}, not OPTIMAL")
+                break
             groups = S.groups_from(assign_k, len(teams_order))
             blocked = [t for t in meta["parked"]
                        if t in info and info[t]["n"] >= args.min_piece
@@ -2704,9 +2799,14 @@ def main(argv=None) -> int:
             con = conflicts(rows)
             rebind_edges = continuation_edges(rows, rebind_candidates)
             if args.continuity_weight > 0:
+                _team_hints = {int(t): str(v["team"])
+                               for t, v in ident.get("tracks", {}).items()
+                               if v.get("team")}
                 graph_edges = _continuity_candidates(
                     info, con, max_gap_s=args.continuity_gap,
-                    weight=args.continuity_weight)
+                    weight=args.continuity_weight,
+                    max_score=args.continuity_max_score, team_hints=_team_hints,
+                    require_same_hint=args.continuity_same_appearance)
             joint_edges = rebind_edges + graph_edges
             for tid in mixed:
                 info.pop(tid, None)
@@ -2824,7 +2924,9 @@ def main(argv=None) -> int:
         except Exception as _e:
             print(f"[robots] curator alignment not computed ({type(_e).__name__})")
 
-    lab = C.STAGE3_DIR / f"{stem}_labeled.jsonl"
+    output_dir = args.output_dir or C.STAGE3_DIR
+    output_dir.mkdir(parents=True, exist_ok=True)
+    lab = output_dir / f"{stem}_labeled.jsonl"
     with lab.open("w", encoding="utf-8") as fh:
         for r in rows:
             for d in r["dets"]:
@@ -2868,10 +2970,10 @@ def main(argv=None) -> int:
     if args.clash_bundle is not None:
         _write_clash_bundle(stem, args, rows, clashes, red, blue, positions)
 
-    out = C.STAGE3_DIR / f"{stem}_robots.json"
+    out = output_dir / f"{stem}_robots.json"
     run_stages.append({"stage": "final-solve", **_row_counts(rows),
                        "parked": len(extra)})
-    manifest_path = C.STAGE3_DIR / f"{stem}_run.json"
+    manifest_path = output_dir / f"{stem}_run.json"
     manifest = {
         "schemaVersion": 1,
         "video": stem,
@@ -2914,8 +3016,9 @@ def main(argv=None) -> int:
                      "flags": {str(k): v for k, v in cflags.items()},
                      "clashes": clashes},
          "custodyWindow": list(win or []),
-         "custodyWindowSource": ("positions" if (C.STAGE2_DIR / f"{stem}_positions.json").exists()
-                                 else ("pixel-motion" if win else "NONE -- tracked span")),
+         "custodyWindowSource": ("raw-motion" if rows is not None and win
+                                 else ("positions" if (C.STAGE2_DIR / f"{stem}_positions.json").exists()
+                                       else ("pixel-motion" if win else "NONE -- tracked span"))),
          "custody": cust,
          "custodyConflicts": custody_conflicts(rows),
          "parked": extra,

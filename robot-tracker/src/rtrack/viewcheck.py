@@ -150,6 +150,13 @@ QUORUM = 0.40
 # A gap from 0.60 to 0.79 with nothing in it. So: global similarity asks "is this the
 # same scene at all", and only if it is do the anchors get asked "has it shifted".
 SIM_MIN = 0.70
+# A thumbnail below SIM_MIN is not automatically another camera. MAWOR's locked field
+# view drifts through 0.686-0.699 as robots and game pieces move, while 10-14 stable
+# field anchors remain at exactly zero displacement. Treating that narrow drift as a
+# cut removed 50/542 human audit anchors (44 in qm25 alone). Actual measured cuts are
+# <=0.593, leaving a useful gap; SIM_CUT is the conservative scene-change threshold,
+# while SIM_MIN remains the threshold used to choose mutually similar references.
+SIM_CUT = 0.65
 SIM_HOLD_S = 4.0            # a cut lasts; a one-frame dissolve does not
 
 # BUT GLOBAL SIMILARITY IS A PROXY, AND ANCHORS OUTRANK IT WHEN THEY AGREE.
@@ -334,7 +341,7 @@ def verdict(row: dict) -> str | None:
     # Otherwise global similarity decides whether this is even the same scene. If it is
     # not, nothing the remaining anchors say means anything -- they are reporting where
     # noise happened to correlate.
-    if row.get("sim") is not None and row["sim"] < SIM_MIN:
+    if row.get("sim") is not None and row["sim"] < SIM_CUT:
         return "cut"
     if not row["n"]:
         return None
@@ -480,9 +487,10 @@ def run(stem: str, calib_stem: str | None = None, sample_s: float = SAMPLE_S) ->
     n_ct = sum(1 for r in rows if r["verdict"] == "cut")
     n_un = len(rows) - n_ok - n_mv - n_bl - n_ct
     doc = {
-        "schemaVersion": 1, "video": stem, "calibFrom": calib_stem or stem,
+        "schemaVersion": 2, "video": stem, "calibFrom": calib_stem or stem,
         "anchors": len(anchors), "sampleS": sample_s,
-        "thresholds": {"simMin": SIM_MIN, "simHoldS": SIM_HOLD_S,
+        "thresholds": {"simMin": SIM_MIN, "simCut": SIM_CUT,
+                       "simHoldS": SIM_HOLD_S,
                        "shiftPx": SHIFT_PX, "spreadPx": SPREAD_PX,
                        "quorum": QUORUM, "hold": HOLD,
                        "blankFrac": BLANK_FRAC, "blankHoldS": BLANK_HOLD_S},
@@ -511,7 +519,18 @@ def load(stem: str) -> dict | None:
     if not p.exists():
         return None
     try:
-        return json.loads(p.read_text(encoding="utf-8"))
+        doc = json.loads(p.read_text(encoding="utf-8"))
+        if int(doc.get("schemaVersion", 0)) < 2 and doc.get("samples"):
+            # The raw per-sample measurements are sufficient to migrate old checks in
+            # memory. This makes the corrected policy effective immediately without a
+            # second video decode or requiring every historical match to be replayed.
+            samples = [{**row, "verdict": verdict(row)}
+                       for row in doc["samples"]]
+            doc = {**doc, "samples": samples,
+                   "validIntervals": [[round(a, 2), round(b, 2)] for a, b in
+                                      valid_intervals(samples,
+                                                      sample_s=float(doc.get("sampleS", SAMPLE_S)))]}
+        return doc
     except Exception:
         return None
 

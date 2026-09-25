@@ -130,6 +130,7 @@ class Weights:
     hold: int = 0      # occlusion hold; see robots.hold_cells
     app: int = 0       # appearance agreement between adjacent tracks; see APP_SAME
     rebind: int = 0    # non-destructive occluder continuation hypotheses
+    continuity: int = 0  # cost of each unmatched route-fragment endpoint
     alli: int = 250
     kin: int = 120
     gap: int = 2
@@ -451,33 +452,60 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
 
     # A continuation candidate is evidence that two immutable source tracks might
     # continue one robot. It is a soft solver edge, never a pre-solver ID rewrite:
-    # geometry, co-detection and curator pins remain free to reject it. A candidate can
-    # provide its own experiment weight; rebind falls back to w.rebind.
+    # geometry, co-detection and curator pins remain free to reject it.
+    #
+    # When continuity is enabled these variables form a path cover jointly with team
+    # assignment. Every assigned fragment has exactly one incoming edge OR a path
+    # start, and exactly one outgoing edge OR a path end. This is deliberately not an
+    # AND of the endpoint assignments: among several plausible handoffs the solver
+    # must select one coherent predecessor/successor, and pays for every route break.
     continuity_vars = []
+    path_endpoint_vars = []
     if continuations:
         n_cont = 0
         incoming, outgoing = defaultdict(list), defaultdict(list)
         for edge in continuations:
             a, b = edge.get("a"), edge.get("b")
             bonus = int(edge.get("weight", w.rebind))
-            if bonus <= 0 or a not in info or b not in info or a == b:
+            cost = int(edge.get("cost", 0))
+            if bonus <= 0 and cost <= 0 and w.continuity <= 0:
+                continue
+            if a not in info or b not in info or a == b:
                 continue
             for k in range(len(teams)):
                 z = m.NewBoolVar(f"r{a}_{b}_{k}")
                 m.Add(z <= x[a, k])
                 m.Add(z <= x[b, k])
-                m.Add(z >= x[a, k] + x[b, k] - 1)
-                terms.append(bonus * z)
+                terms.append((bonus - cost) * z)
                 continuity_vars.append((edge, k, z))
-                outgoing[a].append(z)
-                incoming[b].append(z)
+                outgoing[a, k].append(z)
+                incoming[b, k].append(z)
                 n_cont += 1
-        # A selected segment belongs to one physical history at this boundary: it may
-        # have one predecessor and one successor, not three simultaneous handoffs.
-        for vs in incoming.values():
-            m.AddAtMostOne(vs)
-        for vs in outgoing.values():
-            m.AddAtMostOne(vs)
+        if w.continuity > 0:
+            for t in tids:
+                for k in range(len(teams)):
+                    start = m.NewBoolVar(f"rs{t}_{k}")
+                    end = m.NewBoolVar(f"re{t}_{k}")
+                    m.Add(sum(incoming[t, k]) + start == x[t, k])
+                    m.Add(sum(outgoing[t, k]) + end == x[t, k])
+                    terms.append(-w.continuity * start)
+                    terms.append(-w.continuity * end)
+                    # Coverage-neutral path-cover normalisation. Without this baseline
+                    # an assigned isolated fragment pays two endpoint penalties while
+                    # a parked fragment pays neither, so continuity can improve its
+                    # objective simply by deleting routes. Measured at weight 50 this
+                    # parked 56/147 tracks in qm19 and cut named detections 90% -> 56%.
+                    # Adding back the two-endpoint baseline leaves an isolated assigned
+                    # fragment neutral and rewards a selected handoff by 2*w-cost.
+                    terms.append(2 * w.continuity * x[t, k])
+                    path_endpoint_vars.append((t, k, start, end))
+        else:
+            # Rebind-only mode remains a soft evidence experiment, but each fragment
+            # may still select at most one predecessor and successor.
+            for vs in incoming.values():
+                m.AddAtMostOne(vs)
+            for vs in outgoing.values():
+                m.AddAtMostOne(vs)
         if n_cont:
             print(f"[solve] {n_cont // len(teams)} non-destructive continuation "
                   "edge(s) in the objective")
@@ -512,6 +540,7 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
     # ignores it where it conflicts with a constraint.
     if hint:
         n_hint = 0
+        hinted_team = {}
         for t in tids:
             tally = ident["tracks"].get(str(t), {}).get("tally", {})
             want = (preferred or {}).get(t) or (pinned or {}).get(t)
@@ -519,9 +548,25 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
                 want = max(tally, key=tally.get)
             if want in teams:
                 kk = teams.index(want)
+                hinted_team[t] = kk
                 for k in range(len(teams)):
                     m.add_hint(x[t, k], 1 if k == kk else 0)
                 n_hint += 1
+        if path_endpoint_vars:
+            # x-only hints were enough for the assignment model, but leave hundreds
+            # of new flow variables unspecified. On qm24/qm25 the final deconfliction
+            # solve then stopped FEASIBLE with an 80k-100k objective gap and parked
+            # half the detections—not because that was a good path cover, but because
+            # search had not reconstructed even the obvious isolated-path solution.
+            # Complete that solution explicitly: no edges, and one start/end around
+            # every vote-hinted assignment. CP-SAT remains free to repair conflicting
+            # x hints and replace these endpoints with better handoffs.
+            for _edge, _k, z in continuity_vars:
+                m.add_hint(z, 0)
+            for t, k, start, end in path_endpoint_vars:
+                active = int(hinted_team.get(t, -1) == k)
+                m.add_hint(start, active)
+                m.add_hint(end, active)
         if n_hint:
             print(f"[solve] hinted {n_hint}/{len(tids)} track(s) from vote tallies")
 
@@ -580,7 +625,8 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
     # the objective moved 4.9%). An objective that does not discriminate a correct
     # labelling cannot be optimised into one, so the first question about any solution
     # is where its mass actually sits -- not how close to optimal it is.
-    comp = {"vote": 0, "alliance": 0, "park": 0, "pair": 0, "pin": 0}
+    comp = {"vote": 0, "alliance": 0, "park": 0, "pair": 0, "pin": 0,
+            "continuity": 0}
     for t, team in (preferred or {}).items():
         if t in info and team in teams and assign.get(t) == teams.index(team):
             comp["pin"] += PIN_SOFT
@@ -590,24 +636,38 @@ def build_and_solve(info: dict, con: dict, ident: dict, red: list[str],
             comp["park"] -= int(w.park * np.log1p(info[t]["n"]))
             continue
         team = teams[k]
+        if w.continuity > 0:
+            comp["continuity"] += 2 * w.continuity
         votes = Counter(ident["tracks"].get(str(t), {}).get("tally", {}))
         comp["vote"] += w.vote * int(votes.get(team, 0))
         alli = info[t].get("alliance")
         if alli and team_alli[team] != alli:
             comp["alliance"] -= int(round(w.alli * info[t].get("alliConf", 1.0)))
+    for edge, _k, z in continuity_vars:
+        if solver.Value(z):
+            comp["continuity"] += (int(edge.get("weight", w.rebind))
+                                    - int(edge.get("cost", 0)))
+    comp["continuity"] -= w.continuity * sum(
+        solver.Value(start) + solver.Value(end)
+        for _t, _k, start, end in path_endpoint_vars)
     comp["pair"] = int(round(solver.ObjectiveValue())) - sum(comp.values())
     tot = sum(abs(v) for v in comp.values()) or 1
     print("[solve] objective composition (share of total magnitude):")
-    for kname in ("vote", "alliance", "park", "pair", "pin"):
+    for kname in ("vote", "alliance", "park", "pair", "continuity", "pin"):
         print(f"          {kname:<9}{comp[kname]:>9}  {100*abs(comp[kname])/tot:>5.1f}%")
     selected_continuations = [dict(edge, team=teams[k])
                               for edge, k, z in continuity_vars if solver.Value(z)]
+    path_starts = [{"track": t, "team": teams[k]}
+                   for t, k, start, _end in path_endpoint_vars if solver.Value(start)]
+    path_ends = [{"track": t, "team": teams[k]}
+                 for t, k, _start, end in path_endpoint_vars if solver.Value(end)]
     meta = {"status": solver.StatusName(status),
             "objective": solver.ObjectiveValue(),
             "bound": solver.BestObjectiveBound(),
             "wall": solver.WallTime(), "pairs": npairs,
             "vars": len(x), "parked": [t for t in tids if t not in assign],
-            "selectedContinuations": selected_continuations}
+            "selectedContinuations": selected_continuations,
+            "pathStarts": path_starts, "pathEnds": path_ends}
     return assign, teams, meta
 
 
