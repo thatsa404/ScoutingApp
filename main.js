@@ -9074,6 +9074,284 @@ async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedR
     block.appendChild(table); host.prepend(block);
 }
 
+// ── RELAY CONTROL: arming the home machine from the app ──────────────────────
+//
+// The home machine sits behind residential NAT and the lead scout is on venue wifi, so
+// neither can reach the other; both can reach the Worker. rtrack.agent polls
+// control/<agentId> for DESIRED STATE and reports status/<agentId> back.
+//
+// A SEPARATE TOKEN FROM THE CURATOR ONE, deliberately. `rtrackToken` is typed into
+// curate.html by whoever is labelling boxes and is expected to be widely shared -- it can
+// only post answers, so that is fine. Arming starts real work on a machine somebody owns,
+// so it gets its own secret that curators never see.
+const CONTROL_TOKEN_KEY = 'rtrackControlToken';
+const AGENT_ID_KEY      = 'rtrackAgentId';
+
+// rtrack.agent beats every 10 min idle / 2 min running -- slow on purpose, because each
+// status post costs two of the relay's 1,000/day KV writes. So "stale" has to be generous
+// enough to survive one missed idle beat without crying wolf.
+const AGENT_STALE_MS = 25 * 60 * 1000;
+
+function controlToken() { return (localStorage.getItem(CONTROL_TOKEN_KEY) || '').trim(); }
+
+// Agents that have ever reported, freshest heartbeat first. Built from the /index entries
+// renderTracksTab already fetched, so the common case costs no extra request -- the full
+// status document is only pulled when someone arms or disarms.
+function relayAgents(items) {
+    const byId = new Map();
+    for (const it of items || []) {
+        if (it.kind !== 'status' && it.kind !== 'control') continue;
+        const e = byId.get(it.id) || { id: it.id, status: null, control: null };
+        e[it.kind] = it;
+        byId.set(it.id, e);
+    }
+    return [...byId.values()].sort((a, b) => (b.status?.at || 0) - (a.status?.at || 0));
+}
+
+function agentHealth(agent) {
+    const at = agent?.status?.at || 0;
+    if (!at) return { dot: '\u25cb', colour: '#64748b', text: 'never reported', stale: true };
+    const age = Date.now() - at;
+    const ago = age < 90000 ? `${Math.round(age / 1000)}s ago`
+              : age < 5400000 ? `${Math.round(age / 60000)} min ago`
+              : `${(age / 3600000).toFixed(1)} h ago`;
+    return age > AGENT_STALE_MS
+        ? { dot: '\u25cf', colour: '#f87171', text: `offline \u00b7 last seen ${ago}`, stale: true }
+        : { dot: '\u25cf', colour: '#22c55e', text: `online \u00b7 last seen ${ago}`, stale: false };
+}
+
+// Today's stream for the event, from the webcast data the app already syncs.
+//
+// The home machine could ask TBA itself, but the app's copy is ENRICHED with YouTube
+// actualStartTime (see _fetchAndStoreWebcasts) -- and that timestamp is exactly what
+// rtrack.replay needs to turn a match time into a stream offset. TBA does not carry it.
+// So the better-informed side sends it rather than the other side re-deriving it worse.
+function resolveEventStream(eventKey) {
+    let webcasts = [];
+    try { webcasts = JSON.parse(localStorage.getItem(`webcasts_${eventKey}`) || '[]'); } catch {}
+    const today = new Date().toISOString().slice(0, 10);
+    const pick = webcasts.find(w => w.date === today && w.startTimestamp)
+              || webcasts.find(w => w.date === today)
+              || null;
+    if (!pick?.channel) return null;
+    return { videoId: pick.channel,
+             url: `https://www.youtube.com/watch?v=${pick.channel}`,
+             startTimestamp: pick.startTimestamp ?? null,
+             date: pick.date ?? null };
+}
+
+async function postControl(relay, agentId, body) {
+    const r = await fetch(`${relay}/control/${encodeURIComponent(agentId)}`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Rtrack-Token': controlToken() },
+        body: JSON.stringify(body),
+    });
+    const d = await r.json().catch(() => ({}));
+    if (!r.ok) throw new Error(d.error || `relay returned ${r.status}`);
+    return d;
+}
+
+// THE RECEIPT, and the reason this is not fire-and-forget. Posting a control document
+// proves only that the RELAY has it. The agent echoing the nonce back as
+// status.appliedNonce is what proves the home machine does. Without this wait the UI could
+// only ever claim to have "sent" something -- which is the exact ambiguity that let two
+// dead watchers go unnoticed for hours while curation answers piled up.
+//
+// The agent reads /control every 30 s, so a receipt can legitimately take ~35 s.
+async function waitForAgentReceipt(relay, agentId, nonce, onTick, timeoutMs = 120000) {
+    const t0 = Date.now();
+    while (Date.now() - t0 < timeoutMs) {
+        try {
+            const r = await fetch(`${relay}/status/${encodeURIComponent(agentId)}`,
+                                  { cache: 'no-store' });
+            if (r.ok) {
+                const doc = await r.json();
+                if (doc.appliedNonce === nonce) return doc;
+            }
+        } catch { /* a flaky poll is not a failure; the timeout is the failure */ }
+        onTick?.(Math.round((Date.now() - t0) / 1000));
+        await new Promise(res => setTimeout(res, 3000));
+    }
+    return null;
+}
+
+function newNonce() {
+    return (crypto.randomUUID?.() || String(Math.random())).replace(/-/g, '').slice(0, 12);
+}
+
+async function sendAgentCommand(relay, agentId, desired, extra, statusEl) {
+    const tok = controlToken();
+    if (!tok) {
+        statusEl.innerHTML = `<span style="color:#f87171;">Enter the control token first `
+            + `(RTRACK_CONTROL_TOKEN from the relay).</span>`;
+        return false;
+    }
+    const nonce = newNonce();
+    statusEl.textContent = 'Posting\u2026';
+    try {
+        await postControl(relay, agentId, {
+            schemaVersion: 1, desired, nonce,
+            issuedBy: 'app', issuedAt: new Date().toISOString(), ...extra,
+        });
+    } catch (e) {
+        statusEl.innerHTML = `<span style="color:#f87171;">${galleryEsc(e.message)}</span>`;
+        return false;
+    }
+    statusEl.textContent = 'Waiting for the home machine to confirm\u2026';
+    const doc = await waitForAgentReceipt(relay, agentId, nonce, secs => {
+        statusEl.textContent = `Waiting for the home machine to confirm\u2026 ${secs}s`;
+    });
+    if (!doc) {
+        statusEl.innerHTML = `<span style="color:#fbbf24;">The relay accepted it, but the `
+            + `home machine has not confirmed. It may be offline \u2014 the command stays `
+            + `queued and will apply when the agent next polls.</span>`;
+        return false;
+    }
+    if (doc.error) {
+        statusEl.innerHTML = `<span style="color:#f87171;">Home machine reported: `
+            + `${galleryEsc(doc.error)}</span>`;
+    } else {
+        statusEl.innerHTML = `<span style="color:#22c55e;">Confirmed \u2014 `
+            + `${galleryEsc(doc.state)}${doc.event ? ' ' + galleryEsc(doc.event) : ''}.</span>`;
+    }
+    renderTracksTab();
+    return true;
+}
+
+function renderRelayControl(hostId, relay, items) {
+    const el = document.getElementById(hostId);
+    if (!el) return;
+    if (!relay) { el.innerHTML = ''; return; }
+
+    const agents = relayAgents(items);
+    const savedId = localStorage.getItem(AGENT_ID_KEY) || '';
+    const agent = agents.find(a => a.id === savedId) || agents[0] || null;
+    const eventKey = (document.getElementById('eventKeyInput')?.value || '').trim().toLowerCase();
+
+    if (!agent) {
+        el.innerHTML = `
+          <div style="border:1px solid #334155;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+            <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+              <span style="color:#94a3b8;font-size:0.75em;font-weight:700;letter-spacing:0.06em;
+                           text-transform:uppercase;">Relay Control</span>
+              <span style="color:#64748b;font-size:0.82em;">\u25cb No agent has ever reported.</span>
+            </div>
+            <div style="color:#64748b;font-size:0.78em;margin-top:6px;">
+              Start one on the home machine, once:
+              <code style="color:#94a3b8;">uv run python -m rtrack.agent --install-task</code>
+            </div>
+          </div>`;
+        return;
+    }
+
+    const h = agentHealth(agent);
+    const st = agent.status || {};
+    const want = agent.control?.desired;
+    // DESIRED VS ACTUAL, shown separately on purpose. "You asked for running, the machine
+    // says idle" is the single most useful thing this panel can tell a lead scout, and
+    // collapsing the two into one badge would hide it.
+    const drift = want === 'running' && st.state !== 'running' && !h.stale;
+    const running = st.state === 'running';
+    const queue = (st.pendingAnswers != null || st.pendingGallery != null)
+        ? `${st.pendingAnswers ?? '?'} answer${st.pendingAnswers === 1 ? '' : 's'}, `
+          + `${st.pendingGallery ?? '?'} gallery pending`
+        : '';
+    const stream = eventKey ? resolveEventStream(eventKey) : null;
+
+    el.innerHTML = `
+      <div style="border:1px solid ${h.stale ? '#7f1d1d' : '#334155'};border-radius:8px;
+                  padding:10px 12px;margin-bottom:12px;">
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
+          <span style="color:#94a3b8;font-size:0.75em;font-weight:700;letter-spacing:0.06em;
+                       text-transform:uppercase;">Relay Control</span>
+          <span style="color:${h.colour};font-size:0.82em;font-weight:600;">${h.dot} ${h.text}</span>
+          <span style="color:#64748b;font-size:0.78em;">${galleryEsc(agent.id)}</span>
+          ${agents.length > 1 ? `<select id="rcAgent" style="background:#0f172a;color:#e2e8f0;
+              border:1px solid #334155;border-radius:5px;padding:3px 6px;font-size:0.78em;">
+              ${agents.map(a => `<option value="${galleryEsc(a.id)}"
+                 ${a.id === agent.id ? 'selected' : ''}>${galleryEsc(a.id)}</option>`).join('')}
+            </select>` : ''}
+        </div>
+
+        <div style="color:#94a3b8;font-size:0.8em;margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;">
+          <span>state <strong style="color:${running ? '#22c55e' : '#e2e8f0'};">${galleryEsc(st.state || '?')}</strong></span>
+          ${st.event ? `<span>event <strong style="color:#e2e8f0;">${galleryEsc(st.event)}</strong></span>` : ''}
+          ${st.watcherAlive != null ? `<span>watcher ${st.watcherAlive ? 'alive' : '<span style="color:#f87171;">not running</span>'}</span>` : ''}
+          ${queue ? `<span>${galleryEsc(queue)}</span>` : ''}
+        </div>
+        ${st.error ? `<div style="color:#f87171;font-size:0.78em;margin-top:5px;">${galleryEsc(st.error)}</div>` : ''}
+        ${drift ? `<div style="color:#fbbf24;font-size:0.78em;margin-top:5px;">
+            Asked to run ${galleryEsc(agent.control.event || '')} but the machine reports
+            ${galleryEsc(st.state || 'idle')}.</div>` : ''}
+
+        <div id="rcForm" style="margin-top:9px;padding-top:9px;border-top:1px solid #1e293b;
+                    display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <input id="rcEvent" value="${galleryEsc(eventKey)}" placeholder="event key"
+                 style="width:120px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                        border-radius:5px;padding:6px 8px;font-size:0.8em;">
+          <input id="rcCalib" value="${galleryEsc(eventKey)}" placeholder="calib from"
+                 style="width:120px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                        border-radius:5px;padding:6px 8px;font-size:0.8em;">
+          <input id="rcStream" value="${galleryEsc(stream?.url || '')}"
+                 placeholder="stream URL (none found for today)"
+                 style="flex:1;min-width:200px;background:#0f172a;color:#e2e8f0;
+                        border:1px solid ${stream ? '#334155' : '#78350f'};
+                        border-radius:5px;padding:6px 8px;font-size:0.8em;">
+          <input id="rcToken" type="password" value="${galleryEsc(controlToken())}"
+                 placeholder="control token"
+                 style="width:130px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                        border-radius:5px;padding:6px 8px;font-size:0.8em;">
+          <button id="rcArm" style="padding:6px 12px;border-radius:5px;border:0;
+                  background:#059669;color:#fff;font-weight:600;cursor:pointer;">
+            ${running ? 'Re-arm' : 'Start'}</button>
+          <button id="rcStop" style="padding:6px 12px;border-radius:5px;border:1px solid #334155;
+                  background:transparent;color:#f87171;cursor:pointer;">Stop</button>
+        </div>
+        ${!stream && eventKey ? `<div style="color:#fbbf24;font-size:0.76em;margin-top:5px;">
+            No stream found for today in this event's webcast data \u2014 paste one, or sync
+            the schedule to refresh it.</div>` : ''}
+        <div id="rcStatus" style="color:#94a3b8;font-size:0.78em;margin-top:6px;min-height:1em;"></div>
+      </div>`;
+
+    const sel = document.getElementById('rcAgent');
+    if (sel) sel.onchange = () => {
+        localStorage.setItem(AGENT_ID_KEY, sel.value);
+        renderTracksTab();
+    };
+
+    const statusEl = document.getElementById('rcStatus');
+    const rememberToken = () => {
+        const v = document.getElementById('rcToken').value.trim();
+        if (v) localStorage.setItem(CONTROL_TOKEN_KEY, v);
+        else localStorage.removeItem(CONTROL_TOKEN_KEY);
+    };
+
+    document.getElementById('rcArm').onclick = async () => {
+        rememberToken();
+        const ev = document.getElementById('rcEvent').value.trim().toLowerCase();
+        if (!ev) { statusEl.innerHTML = `<span style="color:#f87171;">An event key is required.</span>`; return; }
+        const urlIn = document.getElementById('rcStream').value.trim();
+        const resolved = resolveEventStream(ev);
+        // Hand over the app's enriched record when the box still holds the value the app
+        // put there; a hand-edited URL loses startTimestamp, which is honest -- the home
+        // machine must not be told a timestamp that belongs to a different video.
+        const streamDoc = urlIn
+            ? (resolved && urlIn === resolved.url ? resolved : { url: urlIn })
+            : null;
+        await sendAgentCommand(relay, agent.id, 'running', {
+            event: ev,
+            calibFrom: document.getElementById('rcCalib').value.trim() || ev,
+            stream: streamDoc,
+        }, statusEl);
+    };
+
+    document.getElementById('rcStop').onclick = async () => {
+        rememberToken();
+        if (!confirm(`Stop the auto-tracker on ${agent.id}?`)) return;
+        await sendAgentCommand(relay, agent.id, 'stopped', {}, statusEl);
+    };
+}
+
 async function renderTracksTab() {
     const host = document.getElementById('tools-tab-tracks');
     if (!host) return;
@@ -9090,6 +9368,7 @@ async function renderTracksTab() {
         <button id="trkRefresh" style="padding:8px 12px;border-radius:6px;border:1px solid #2563eb;
                 background:#2563eb;color:#fff;cursor:pointer;font-weight:600;">Refresh</button>
       </div>
+      <div id="trkControl"></div>
       <div id="trkBody" style="color:#94a3b8;">Loading…</div>`;
 
     document.getElementById('trkSave').onclick = () => {
@@ -9122,6 +9401,10 @@ async function renderTracksTab() {
         (items || []).filter(it => it.kind === 'tracks' && it.id).map(it => [it.id, it]));
     const onRelay = new Map();
     for (const it of items || []) onRelay.set(`${it.kind}:${it.id}`, it);
+    // Before the gallery queue and the match table: whether the home machine is even
+    // alive decides how to read everything below it.
+    renderRelayControl('trkControl', relay, items);
+
     const gal = (man.gallery || {})[eventKey] || {};
     const galleryReviews = relay
         ? await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items || [])) : [];
