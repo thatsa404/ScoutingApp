@@ -8695,7 +8695,19 @@ function legacyRenderGalleryReviewQueue(host, relay, items) {
 // Team-oriented gallery review.  This definition intentionally follows the original
 // first-slice helpers above so old cached bundles can remain readable in source history;
 // the team-oriented schema-2 implementation is the one used by renderTracksTab.
-function galleryReviewItemsV2(items) {
+// SCOPED TO ONE EVENT when an event key is given, because the gallery manifest is
+// SEASON-wide while the person looking at this tab is working one event. Listing every
+// team the season has ever produced a bundle for buries the six teams whose routes are
+// actually in flight, and there is no reading of the queue in which another event's
+// backlog is the next thing to do.
+//
+// Filtering on the BUNDLE's match metadata, not the answer's: the worker derives `match`
+// from the bundle payload's teams[].source.match, and an answer payload carries
+// `selections` instead, so answers have no event of their own. Rows are keyed by reviewId,
+// so the bundle in the same row supplies it. A row whose bundle has expired (7-day bundle
+// TTL against a 30-day answer TTL) therefore has no event and is dropped -- correct, since
+// without the bundle there are no images to review and the row cannot be opened anyway.
+function galleryReviewItemsV2(items, eventKey = null) {
     const out = new Map();
     for (const item of items || []) {
         if (!item?.id || !item.kind?.startsWith('gallery-')) continue;
@@ -8703,7 +8715,14 @@ function galleryReviewItemsV2(items) {
         row[item.kind] = item;
         out.set(item.id, row);
     }
-    return [...out.values()].sort((a, b) => (b['gallery-bundle']?.at || 0)
+    let rows = [...out.values()];
+    if (eventKey) {
+        rows = rows.filter(r => {
+            const m = r['gallery-bundle']?.match;
+            return typeof m === 'string' && m.startsWith(eventKey + '_');
+        });
+    }
+    return rows.sort((a, b) => (b['gallery-bundle']?.at || 0)
         - (a['gallery-bundle']?.at || 0));
 }
 
@@ -8998,9 +9017,10 @@ function galleryAllianceReviewStats(reviews, matches) {
     return byTeam;
 }
 
-async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedReviews = null) {
+async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedReviews = null,
+                                           eventKey = null) {
     const reviews = hydratedReviews
-        || await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items));
+        || await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items, eventKey));
     const allianceStats = galleryAllianceReviewStats(reviews, matches);
     const replayItems = (items || []).filter(item => item?.kind === 'gallery-status');
     const block = document.createElement('details');
@@ -9175,8 +9195,16 @@ async function waitForAgentReceipt(relay, agentId, nonce, onTick, timeoutMs = 12
     return null;
 }
 
+// getRandomValues, not randomUUID, as the fallback: randomUUID needs a SECURE CONTEXT and
+// is undefined over plain http, which is how the app gets opened on the LAN at an event.
+// The first arm from a phone produced the nonce "0.6881832734" -- a Math.random() string
+// that kept its "0." prefix and so carried ~10 digits where 12 were intended. It worked,
+// because a nonce only has to differ from the last one, but it should not depend on luck.
 function newNonce() {
-    return (crypto.randomUUID?.() || String(Math.random())).replace(/-/g, '').slice(0, 12);
+    if (crypto.randomUUID) return crypto.randomUUID().replace(/-/g, '').slice(0, 12);
+    const b = new Uint8Array(6);
+    crypto.getRandomValues(b);
+    return [...b].map(x => x.toString(16).padStart(2, '0')).join('');
 }
 
 async function sendAgentCommand(relay, agentId, desired, extra, statusEl) {
@@ -9216,6 +9244,73 @@ async function sendAgentCommand(relay, agentId, desired, extra, statusEl) {
     }
     renderTracksTab();
     return true;
+}
+
+// Requesting WORK is not the same as setting desired state, so it is not a control
+// document. "Be watching event X" is idempotent and re-postable; "detect qm26 through
+// qm100" must run exactly once, which is why each job is its own document with its own id
+// and the agent keeps a local ledger of what it has finished.
+async function postJob(relay, agentId, body, statusEl) {
+    const tok = controlToken();
+    if (!tok) {
+        statusEl.innerHTML = `<span style="color:#f87171;">Enter the control token first.</span>`;
+        return false;
+    }
+    const jobId = newNonce() + newNonce();
+    statusEl.textContent = 'Queueing\u2026';
+    try {
+        const r = await fetch(`${relay}/job/${jobId}`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok },
+            body: JSON.stringify({ schemaVersion: 1, jobId, agentId,
+                                   requestedBy: 'app',
+                                   requestedAt: new Date().toISOString(), ...body }),
+        });
+        const d = await r.json().catch(() => ({}));
+        if (!r.ok) throw new Error(d.error || `relay returned ${r.status}`);
+    } catch (e) {
+        statusEl.innerHTML = `<span style="color:#f87171;">${galleryEsc(e.message)}</span>`;
+        return false;
+    }
+    // No receipt wait here, unlike arming. A job can sit behind another one for hours, so
+    // "the agent has picked it up" is not a thing to block a button on -- the jobs line in
+    // the panel is where progress belongs.
+    statusEl.innerHTML = `<span style="color:#22c55e;">Queued. Progress appears in the `
+        + `jobs line once the agent picks it up (within ~30s if it is idle).</span>`;
+    return true;
+}
+
+// One line per job the agent is running or recently finished. Rendered from the status
+// document rather than from the job documents: the relay knows what was ASKED FOR, only
+// the agent knows how far it has got.
+function renderJobLines(jobs) {
+    const running = jobs?.running || [];
+    const recent = jobs?.recent || [];
+    if (!running.length && !recent.length) return '';
+    const bar = j => {
+        const total = Number(j.total) || 0, done = Number(j.done) || 0;
+        const pct = total ? Math.round(100 * done / total) : 0;
+        return `<span style="display:inline-block;width:70px;height:6px;background:#1e293b;
+                 border-radius:3px;overflow:hidden;vertical-align:middle;">
+                 <span style="display:block;width:${pct}%;height:100%;background:#2563eb;"></span>
+                </span> ${done}/${total || '?'}`;
+    };
+    const rows = [
+        ...running.map(j => `<div style="color:#93c5fd;">\u25b8 ${galleryEsc(j.type || 'job')}
+            ${galleryEsc(j.event || '')} ${bar(j)}
+            ${j.note ? `<span style="color:#64748b;">${galleryEsc(j.note)}</span>` : ''}</div>`),
+        ...recent.slice(0, 3).map(j => {
+            const bad = j.state === 'failed' || (j.failed || []).length;
+            return `<div style="color:${bad ? '#f87171' : '#64748b'};">
+                ${bad ? '\u2715' : '\u2713'} ${galleryEsc(j.type || 'job')}
+                ${galleryEsc(j.event || '')}
+                ${j.state === 'failed' ? galleryEsc(j.error || 'failed')
+                  : `${j.done ?? 0}/${j.total ?? 0}`
+                    + ((j.failed || []).length ? `, ${j.failed.length} failed` : '')}</div>`;
+        }),
+    ];
+    return `<div style="font-size:0.76em;margin-top:6px;display:flex;flex-direction:column;gap:2px;">
+              ${rows.join('')}</div>`;
 }
 
 function renderRelayControl(hostId, relay, items) {
@@ -9310,6 +9405,26 @@ function renderRelayControl(hostId, relay, items) {
         ${!stream && eventKey ? `<div style="color:#fbbf24;font-size:0.76em;margin-top:5px;">
             No stream found for today in this event's webcast data \u2014 paste one, or sync
             the schedule to refresh it.</div>` : ''}
+
+        <div style="margin-top:9px;padding-top:9px;border-top:1px solid #1e293b;
+                    display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
+          <span style="color:#64748b;font-size:0.76em;font-weight:700;letter-spacing:0.05em;
+                       text-transform:uppercase;">Request work</span>
+          <input id="rcDetectRange" placeholder="qm26-qm100"
+                 style="width:110px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                        border-radius:5px;padding:5px 7px;font-size:0.78em;">
+          <button id="rcDetect" style="padding:5px 10px;border-radius:5px;border:1px solid #334155;
+                  background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
+            Detect</button>
+          <span style="color:#334155;">|</span>
+          <input id="rcBundleN" type="number" min="1" max="8" value="3"
+                 style="width:52px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                        border-radius:5px;padding:5px 7px;font-size:0.78em;">
+          <button id="rcBundle" style="padding:5px 10px;border-radius:5px;border:1px solid #334155;
+                  background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
+            Bundle next</button>
+        </div>
+        ${renderJobLines(st.jobs)}
         <div id="rcStatus" style="color:#94a3b8;font-size:0.78em;margin-top:6px;min-height:1em;"></div>
       </div>`;
 
@@ -9342,6 +9457,33 @@ function renderRelayControl(hostId, relay, items) {
             event: ev,
             calibFrom: document.getElementById('rcCalib').value.trim() || ev,
             stream: streamDoc,
+        }, statusEl);
+    };
+
+    document.getElementById('rcDetect').onclick = async () => {
+        rememberToken();
+        const ev = document.getElementById('rcEvent').value.trim().toLowerCase();
+        const range = document.getElementById('rcDetectRange').value.trim();
+        if (!ev || !range) {
+            statusEl.innerHTML = `<span style="color:#f87171;">An event key and a match `
+                + `range are both required, e.g. qm26-qm100.</span>`;
+            return;
+        }
+        await postJob(relay, agent.id, {
+            type: 'detect', event: ev, matches: range,
+            calibFrom: document.getElementById('rcCalib').value.trim() || ev,
+            options: { perMatch: true },
+        }, statusEl);
+    };
+
+    document.getElementById('rcBundle').onclick = async () => {
+        rememberToken();
+        const ev = document.getElementById('rcEvent').value.trim().toLowerCase();
+        if (!ev) { statusEl.innerHTML = `<span style="color:#f87171;">An event key is required.</span>`; return; }
+        await postJob(relay, agent.id, {
+            type: 'bundle', event: ev,
+            count: Math.max(1, Math.min(8, Number(document.getElementById('rcBundleN').value) || 3)),
+            calibFrom: document.getElementById('rcCalib').value.trim() || ev,
         }, statusEl);
     };
 
@@ -9407,7 +9549,7 @@ async function renderTracksTab() {
 
     const gal = (man.gallery || {})[eventKey] || {};
     const galleryReviews = relay
-        ? await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items || [])) : [];
+        ? await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items || [], eventKey)) : [];
     const allianceReviewStats = galleryAllianceReviewStats(galleryReviews, matches);
 
     // Union of THREE sources, and the third is the one that matters most here:
@@ -9625,7 +9767,7 @@ async function renderTracksTab() {
         section.open = localStorage.getItem(key) !== 'closed';
         section.ontoggle = () => localStorage.setItem(key, section.open ? 'open' : 'closed');
     });
-    await renderGalleryReviewQueueV2(body, relay, items || [], matches, galleryReviews);
+    await renderGalleryReviewQueueV2(body, relay, items || [], matches, galleryReviews, eventKey);
 }
 
 // ── Field Drawing Tab ────────────────────────────────────────────────────────

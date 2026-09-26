@@ -27,6 +27,19 @@ which is the difference between "we posted a command" and "the home machine has 
 one piece of feedback that was missing when both watchers died silently and nothing picked
 up curation answers until a human noticed hours later.
 
+JOBS ARE SEPARATE FROM DESIRED STATE, and deliberately so. "Be watching event X" is a
+state -- idempotent, re-postable, resumable. "Detect qm26 through qm100" is a unit of work
+with a beginning and an end, and re-posting it must NOT re-run it. So jobs are their own
+relay documents and completion is tracked in a local ledger, exactly the way watch.py
+decides an answer is pending by comparing the relay against what is on disk.
+
+JOBS RUN --prep-only, WHICH TAKES NO EVENT LOCK. track/stitch/appear are the expensive
+GPU steps and none of them read the appearance gallery, so a 75-match backfill can grind
+away without blocking a freshly curated match from resolving and publishing. That is the
+whole reason detection stops there rather than carrying through to a bundle: the
+gallery-dependent minute of work belongs immediately before curation, when the gallery is
+as good as it is going to get.
+
 HEARTBEAT COST IS A REAL CONSTRAINT. Free-tier KV allows 1,000 writes a day and each
 status post costs two of them (the value, plus the index manifest). So the interval is slow
 by default -- 10 min idle, 2 min while running -- and responsiveness comes from posting
@@ -40,6 +53,7 @@ import argparse
 import json
 import os
 import platform
+import re
 import socket
 import subprocess
 import sys
@@ -62,6 +76,17 @@ HEARTBEAT_IDLE_S = 600.0
 HEARTBEAT_RUNNING_S = 120.0
 
 STATE_FILE = C.OUT_DIR / "agent_state.json"
+JOBS_FILE = C.OUT_DIR / "agent_jobs.json"
+
+# While a job runs, status is posted at most this often. A 75-match backfill posting after
+# every match would be 150 KV writes against a 1,000/day budget; a job that reports
+# nothing for an hour is indistinguishable from a hung one. This is the compromise.
+JOB_REPORT_S = 60.0
+
+# How many matches one "next N uncurated" bundle request may cover, whatever the app asks
+# for. Each bundle is 2-7 MB in a store that caps values at 25 MiB and expires them in 24
+# hours, so an unbounded request would push bundles nobody can reach before they expire.
+MAX_BUNDLE_BATCH = 8
 TASK_NAME = "RTrackAgent"
 
 
@@ -158,6 +183,209 @@ def queue_depth(event: str | None) -> dict:
     return out
 
 
+def _load_jobs() -> dict:
+    try:
+        return json.loads(JOBS_FILE.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def _save_jobs(jobs: dict) -> None:
+    JOBS_FILE.parent.mkdir(parents=True, exist_ok=True)
+    JOBS_FILE.write_text(json.dumps(jobs, indent=1), encoding="utf-8")
+
+
+def pending_jobs(agent_id: str) -> list[dict]:
+    """Job documents on the relay this agent has not finished.
+
+    Mirrors watch.pending: the relay says what was asked for, local state says what has
+    been done, and the difference is the work. A job with no agentId is addressed to
+    whoever picks it up, which keeps a single-machine setup from having to know its own id.
+    """
+    url, _ = R._env()
+    import requests
+    r = requests.get(f"{url}/index", timeout=60)
+    r.raise_for_status()
+    ledger = _load_jobs()
+    out = []
+    for it in r.json().get("items", []):
+        if it.get("kind") != "job":
+            continue
+        if it.get("agentId") not in (None, "", agent_id):
+            continue
+        if it.get("cancelled"):
+            continue
+        rec = ledger.get(it.get("id") or "")
+        if rec and rec.get("state") in ("done", "failed"):
+            continue
+        out.append(it)
+    return sorted(out, key=lambda it: it.get("at") or 0)
+
+
+def _detected(match_key: str) -> bool:
+    return (C.STAGE1_DIR / f"{match_key}_tracks_stitched.jsonl").exists()
+
+
+def _curated(match_key: str) -> bool:
+    return (C.TRACKER_ROOT / "corrections" / f"{match_key}_corrections.json").exists()
+
+
+def _bundle_path(match_key: str):
+    return C.STAGE3_DIR / f"{match_key}_curate_frames.json"
+
+
+def run_detect(job: dict, report) -> tuple[int, int, list[str]]:
+    """Fetch clips and run track/stitch/appear for each match. Returns (done, total, failed).
+
+    replay runs ONCE for the whole range rather than per match: it makes one TBA call and,
+    with --per-match, resolves each match's own upload. --per-match matters for backfill
+    beyond correctness of convenience -- 2026necmp1's TBA actual_time is attributed to the
+    wrong match from qm5 on, so slicing that event out of the day archive silently clips
+    the neighbouring match. A per-match video cannot be off by one.
+    """
+    from .replay import parse_matches
+    event = job["event"]
+    wants = parse_matches(job.get("matches") or "")
+    keys = [f"{event}_{suf}" for suf in wants]
+    todo = [k for k in keys if not _detected(k)]
+    report(f"detect {event}: {len(todo)} of {len(keys)} match(es) need work", 0, len(todo))
+    if not todo:
+        return 0, 0, []
+
+    missing = [k.split("_", 1)[1] for k in todo
+               if not (C.RAW_DIR / f"{k}.mp4").exists()]
+    if missing:
+        ra = [PY, "-m", "rtrack.replay", event, "--matches", ",".join(missing)]
+        if job.get("options", {}).get("perMatch", True):
+            ra.append("--per-match")
+        report(f"fetching {len(missing)} clip(s)", 0, len(todo))
+        subprocess.run(ra, cwd=C.TRACKER_ROOT)
+
+    done, failed = 0, []
+    for i, key in enumerate(todo):
+        if not (C.RAW_DIR / f"{key}.mp4").exists():
+            failed.append(key)
+            continue
+        a = [PY, "-m", "rtrack.pipeline", key, "--match", key,
+             "--event", event, "--prep-only"]
+        if job.get("calibFrom"):
+            a += ["--calib-from", job["calibFrom"]]
+        report(f"detecting {key}", i, len(todo))
+        if subprocess.run(a, cwd=C.TRACKER_ROOT).returncode == 0:
+            done += 1
+        else:
+            failed.append(key)
+    return done, len(todo), failed
+
+
+def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
+    """Build and push curation bundles for the next N detected-but-uncurated matches.
+
+    Ordered by match number so a curator works forward through the event, which is also
+    the order the appearance gallery improves in -- bundling qm40 before qm30 would ask a
+    human to label a match with a worse gallery than it needed to have.
+    """
+    event = job["event"]
+    want = min(int(job.get("count") or 3), MAX_BUNDLE_BATCH)
+
+    def num(key: str) -> tuple:
+        m = re.search(r"_([a-z]+)(\d+)$", key)
+        return (m.group(1), int(m.group(2))) if m else (key, 0)
+
+    candidates = sorted(
+        {p.name.split("_tracks_stitched.jsonl")[0]
+         for p in C.STAGE1_DIR.glob(f"{event}_*_tracks_stitched.jsonl")},
+        key=num)
+    todo = [k for k in candidates if not _curated(k)][:want]
+    report(f"bundle {event}: {len(todo)} match(es)", 0, len(todo))
+    done, failed = 0, []
+    for i, key in enumerate(todo):
+        report(f"bundling {key}", i, len(todo))
+        a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
+        if job.get("calibFrom"):
+            a += ["--calib-from", job["calibFrom"]]
+        # No --relay: that mode blocks for its whole --wait on ONE curator finishing, which
+        # is the opposite of a batch. Build locally, push, move on.
+        rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+        bundle = _bundle_path(key)
+        if rc != 0 or not bundle.exists():
+            failed.append(key)
+            continue
+        push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
+        if subprocess.run(push, cwd=C.TRACKER_ROOT).returncode == 0:
+            done += 1
+        else:
+            failed.append(key)
+    return done, len(todo), failed
+
+
+JOB_RUNNERS = {"detect": run_detect, "bundle": run_bundle}
+
+
+def run_job(job_item: dict, agent_id: str, on_report) -> None:
+    """Fetch one job document, run it, and record the outcome in the ledger."""
+    job_id = job_item.get("id") or ""
+    doc = R.get("job", job_id)
+    if doc is None:
+        print(f"[agent] job {job_id}: vanished before it could be fetched", flush=True)
+        return
+    runner = JOB_RUNNERS.get(doc.get("type") or "")
+    jobs = _load_jobs()
+    if runner is None:
+        jobs[job_id] = {"state": "failed", "at": _now_iso(),
+                        "error": f"unknown job type {doc.get('type')!r}"}
+        _save_jobs(jobs)
+        return
+
+    jobs[job_id] = {"state": "running", "type": doc.get("type"),
+                    "event": doc.get("event"), "startedAt": _now_iso()}
+    _save_jobs(jobs)
+    last = [0.0]
+
+    def report(note: str, i: int, total: int) -> None:
+        print(f"[agent] job {job_id[:8]}: {note} ({i}/{total})", flush=True)
+        rec = _load_jobs()
+        cur = rec.get(job_id, {})
+        cur.update({"state": "running", "note": note, "done": i, "total": total})
+        rec[job_id] = cur
+        _save_jobs(rec)
+        # Throttled, because a per-match post would spend the day's write budget.
+        if time.time() - last[0] >= JOB_REPORT_S:
+            last[0] = time.time()
+            on_report()
+
+    try:
+        done, total, failed = runner(doc, report)
+        jobs = _load_jobs()
+        jobs[job_id] = {"state": "done", "type": doc.get("type"), "event": doc.get("event"),
+                        "done": done, "total": total, "failed": failed,
+                        "finishedAt": _now_iso()}
+        _save_jobs(jobs)
+        print(f"[agent] job {job_id[:8]}: finished {done}/{total}"
+              + (f", {len(failed)} failed" if failed else ""), flush=True)
+    except Exception as exc:                          # noqa: BLE001
+        # A job that raises must be recorded as failed rather than retried forever: the
+        # usual cause is a missing video or a bad calibration, and neither fixes itself.
+        jobs = _load_jobs()
+        jobs[job_id] = {"state": "failed", "type": doc.get("type"),
+                        "event": doc.get("event"),
+                        "error": f"{type(exc).__name__}: {exc}", "finishedAt": _now_iso()}
+        _save_jobs(jobs)
+        print(f"[agent] job {job_id[:8]}: {type(exc).__name__}: {exc}", flush=True)
+    finally:
+        on_report()
+
+
+def job_summary(agent_id: str) -> dict:
+    """The job ledger, trimmed to what the app needs to render progress."""
+    jobs = _load_jobs()
+    running = [{"id": k, **v} for k, v in jobs.items() if v.get("state") == "running"]
+    recent = sorted(((k, v) for k, v in jobs.items() if v.get("state") != "running"),
+                    key=lambda kv: kv[1].get("finishedAt") or "", reverse=True)[:5]
+    return {"running": running,
+            "recent": [{"id": k, **v} for k, v in recent]}
+
+
 def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
                 applied_nonce: str | None, state: str,
                 error: str | None = None) -> None:
@@ -176,6 +404,7 @@ def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
             "calibFrom": watcher.calib_from,
         },
         "queue": queue_depth(watcher.event) if watcher.alive else {},
+        "jobs": job_summary(agent_id),
         "stream": (desired or {}).get("stream"),
         "error": error,
     }
@@ -308,6 +537,15 @@ def main(argv=None) -> int:
                    help="post desired=stopped")
     g.add_argument("--show", action="store_true",
                    help="print the current control and status documents")
+    g.add_argument("--request", choices=sorted(JOB_RUNNERS), default=None,
+                   metavar="TYPE",
+                   help="post a job document (detect | bundle), as the app will")
+    g.add_argument("--matches", default=None, metavar="SPEC",
+                   help="for --request detect: qm26-qm100 or qm1,qm7")
+    g.add_argument("--count", type=int, default=3,
+                   help="for --request bundle: how many uncurated matches to bundle")
+    g.add_argument("--jobs", action="store_true",
+                   help="list this machine's job ledger")
     g.add_argument("--calib-from", default=None, metavar="VIDEO",
                    help="calibration stem to pass the watcher when arming")
     g.add_argument("--stream-url", default=None,
@@ -321,6 +559,29 @@ def main(argv=None) -> int:
         return install_task(agent_id)
     if args.show:
         return show(agent_id)
+    if args.jobs:
+        print(json.dumps(job_summary(agent_id), indent=2))
+        return 0
+    if args.request:
+        if args.request == "detect" and not args.matches:
+            print("[agent] --request detect needs --matches, e.g. qm26-qm100",
+                  file=sys.stderr)
+            return 2
+        job_id = uuid.uuid4().hex[:16]
+        doc = {"schemaVersion": 1, "jobId": job_id, "agentId": agent_id,
+               "type": args.request,
+               "event": args.arm or (args.calib_from or None),
+               "matches": args.matches, "count": args.count,
+               "calibFrom": args.calib_from,
+               "requestedBy": f"cli:{socket.gethostname()}", "requestedAt": _now_iso()}
+        if not doc["event"]:
+            print("[agent] --request needs an event; pass it with --arm EVENT",
+                  file=sys.stderr)
+            return 2
+        R.put("job", job_id, doc)
+        print(f"[agent] queued {args.request} job {job_id} for {doc['event']}"
+              + (f" {args.matches}" if args.matches else ""))
+        return 0
     if args.arm:
         return post_control(agent_id, "running", args.arm,
                             args.calib_from or args.arm, args.stream_url)
@@ -373,6 +634,21 @@ def main(argv=None) -> int:
                 last_error = f"watcher exited with {rc}"
                 watcher.proc = None
                 watcher.started_at = None
+                changed = True
+
+            # AFTER reconcile, so an arm/disarm is never stuck behind a long backfill,
+            # and one job at a time: they compete for one GPU, and two detections in
+            # flight make both slower rather than finishing either sooner.
+            try:
+                jobs_todo = pending_jobs(agent_id)
+            except Exception as exc:                  # noqa: BLE001
+                print(f"[agent] job check failed ({type(exc).__name__}: {exc})", flush=True)
+                jobs_todo = []
+            if jobs_todo:
+                beat = lambda: post_status(agent_id, watcher, desired, applied_nonce,
+                                           "running" if watcher.alive else "working",
+                                           last_error)
+                run_job(jobs_todo[0], agent_id, beat)
                 changed = True
 
             run_state = "running" if watcher.alive else ("error" if last_error else "idle")

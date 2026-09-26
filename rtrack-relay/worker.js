@@ -25,6 +25,8 @@
 //   GET  /control/<agentId>      relay -> home
 //   POST /status/<agentId>       home  -> relay   heartbeat + what it is doing
 //   GET  /status/<agentId>       relay -> app
+//   POST /job/<jobId>            app   -> relay   a unit of work to run (detect, bundle)
+//   GET  /job/<jobId>            relay -> home
 //
 // `tracks` is the one kind the APP reads rather than a curator. Routes used to reach
 // the app only through git: rtrack.export wrote public/tracks/ on the home machine and
@@ -113,7 +115,7 @@
 
 const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl', 'tracks',
                        'gallery-bundle', 'gallery-answer', 'gallery-status',
-                       'control', 'status']);
+                       'control', 'status', 'job']);
 
 // KV caps values at 25 MiB. Curation bundles are ~1.8-7 MB depending on how many
 // frames and what JPEG quality rtrack.curate was told to use, so this is headroom
@@ -139,6 +141,10 @@ const TTL_BY_KIND = {
   'gallery-status': 30 * 86400,
   control: 7 * 86400,
   status: 7 * 86400,
+  // A backfill can be 75 matches of GPU work across more than a day, and the request must
+  // still be discoverable while it runs -- a job that expired mid-run would look to the
+  // agent like one it had never been asked to do.
+  job: 7 * 86400,
 };
 const ttlFor = kind => TTL_BY_KIND[kind] ?? TTL_S;
 
@@ -280,7 +286,10 @@ export default {
     // `status` appears in no set, so only the home machine can report a heartbeat -- a
     // phone must not be able to forge "the GPU box is alive and idle".
     const WRITABLE_BY_LEVEL = {
-      control: new Set(['control']),
+      // `job` rides with `control` rather than getting a tier of its own: both spend the
+      // home machine's GPU time on request, so there is no version of this where one is
+      // safe to leave open and the other is not.
+      control: new Set(['control', 'job']),
       device: DEVICE_WRITABLE,
     };
 
@@ -302,9 +311,9 @@ export default {
       const lv = level();
       if (!lv) return json({ ok: false, error: 'unauthorized' }, 401);
       if (lv !== 'full' && !(WRITABLE_BY_LEVEL[lv] ?? new Set()).has(kind)) {
-        const err = kind === 'control'
-          ? 'posting to /control needs RTRACK_CONTROL_TOKEN. If the relay has no '
-            + 'RTRACK_CONTROL_TOKEN secret set, arming is closed by design -- set one with '
+        const err = (kind === 'control' || kind === 'job')
+          ? `posting to /${kind} needs RTRACK_CONTROL_TOKEN. If the relay has no `
+            + `RTRACK_CONTROL_TOKEN secret set, arming is closed by design -- set one with `
             + '`npx wrangler secret put RTRACK_CONTROL_TOKEN` and redeploy.'
           : `posting to /${kind} needs the home-machine token; `
             + `this token only accepts ${[...(WRITABLE_BY_LEVEL[lv] ?? [])].join(' and ')}`;
@@ -373,6 +382,15 @@ export default {
         desired: storedPayload.desired ?? null,
         event: storedPayload.event ?? null,
         nonce: storedPayload.nonce ?? null,
+      } : kind === 'job' ? {
+        // Enough for the agent to decide whether a job is ITS job and worth claiming,
+        // without fetching every job document on every poll.
+        agentId: storedPayload.agentId ?? null,
+        jobType: storedPayload.type ?? null,
+        event: storedPayload.event ?? null,
+        matches: storedPayload.matches ?? null,
+        count: storedPayload.count ?? null,
+        cancelled: storedPayload.cancelled === true ? true : null,
       } : {};
       await touchIndex(env, kind, id, { bytes: storedBody.length, at,
                                         ...reviewMeta, ...agentMeta });
