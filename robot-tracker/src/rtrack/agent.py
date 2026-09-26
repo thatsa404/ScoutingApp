@@ -388,6 +388,50 @@ def job_summary(agent_id: str) -> dict:
             "recent": [{"id": k, **v} for k, v in recent]}
 
 
+# Stage1 artifacts older than this are from an event nobody is working on, and listing
+# them would grow the heartbeat for no reader. Two months covers a season's worth of
+# "the event before this one".
+DETECTED_MAX_AGE_S = 60 * 86400
+
+
+def detected_summary() -> dict:
+    """Which matches have been DETECTED, per event, for the app to render.
+
+    Detection is otherwise invisible. rtrack.pipeline --prep-only writes stage1 tracks and
+    nothing else -- no curation bundle, no routes -- so a match that has just been detected
+    looks identical to one that has never been touched from the app's side: it has no
+    relay bundle and no published route, and the Tracks tab falls through to "no tracks".
+    Requesting detection and seeing nothing change is indistinguishable from the request
+    having failed, which is the report this exists to answer.
+
+    Suffixes rather than full keys, because the event is already the dict key and a
+    hundred "2026necmp1_" prefixes is a kilobyte of nothing in a document posted on a
+    timer.
+    """
+    cutoff = time.time() - DETECTED_MAX_AGE_S
+    out: dict[str, list[str]] = {}
+    for path in C.STAGE1_DIR.glob("*_tracks_stitched.jsonl"):
+        try:
+            if path.stat().st_mtime < cutoff:
+                continue
+        except OSError:
+            continue
+        stem = path.name[: -len("_tracks_stitched.jsonl")]
+        event, _, suffix = stem.partition("_")
+        # An event key is a year plus a code. Requiring that skips artifacts still named
+        # after a raw video id -- "WFj_FsFQRkM" otherwise parses as event "WFj", which no
+        # reader will ever ask about and which only makes the heartbeat noisier.
+        if not suffix or not re.fullmatch(r"\d{4}[a-z0-9]+", event):
+            continue
+        out.setdefault(event, []).append(suffix)
+
+    def num(suffix: str) -> tuple:
+        m = re.match(r"([a-z]+)(\d+)", suffix)
+        return (m.group(1), int(m.group(2))) if m else (suffix, 0)
+
+    return {event: sorted(v, key=num) for event, v in sorted(out.items())}
+
+
 def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
                 applied_nonce: str | None, state: str,
                 error: str | None = None) -> None:
@@ -407,6 +451,7 @@ def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
         },
         "queue": queue_depth(watcher.event) if watcher.alive else {},
         "jobs": job_summary(agent_id),
+        "detected": detected_summary(),
         "stream": (desired or {}).get("stream"),
         "error": error,
     }

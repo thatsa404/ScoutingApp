@@ -9313,6 +9313,34 @@ function renderJobLines(jobs) {
               ${rows.join('')}</div>`;
 }
 
+// The detected-match set the agent last reported, as suffixes per event. Cached at module
+// scope because the match table and the control panel are rendered by different functions
+// from the same /index pass, and the table must not re-fetch the status document per row.
+let _agentDetected = {};
+
+// A match that has been DETECTED but has no bundle and no routes is invisible otherwise:
+// rtrack.pipeline --prep-only writes stage1 tracks and nothing the relay or the published
+// manifest knows about, so the Tracks table falls through to "no tracks" -- identical to a
+// match nobody has touched. That made a successful Detect request look like a failed one.
+function agentDetectedSet(eventKey) {
+    const list = _agentDetected?.[eventKey];
+    return new Set(Array.isArray(list) ? list : []);
+}
+
+async function refreshAgentDetected(relay, items) {
+    const agents = relayAgents(items);
+    const savedId = localStorage.getItem(AGENT_ID_KEY) || '';
+    const agent = agents.find(a => a.id === savedId) || agents[0] || null;
+    if (!relay || !agent) { _agentDetected = {}; return; }
+    // One extra GET per Tracks render, not per row: the index metadata deliberately does
+    // not carry the match lists, only the summary fields the heartbeat strip needs.
+    try {
+        const r = await fetch(`${relay}/status/${encodeURIComponent(agent.id)}`,
+                              { cache: 'no-store' });
+        _agentDetected = r.ok ? ((await r.json()).detected || {}) : {};
+    } catch { _agentDetected = {}; }
+}
+
 function renderRelayControl(hostId, relay, items) {
     const el = document.getElementById(hostId);
     if (!el) return;
@@ -9424,6 +9452,16 @@ function renderRelayControl(hostId, relay, items) {
                   background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
             Bundle next</button>
         </div>
+        ${(() => {
+            const det = (_agentDetected || {})[eventKey];
+            if (!eventKey || !Array.isArray(det)) return '';
+            return `<div style="color:#64748b;font-size:0.76em;margin-top:5px;">
+                      ${det.length} match${det.length === 1 ? '' : 'es'} detected for
+                      <strong style="color:#94a3b8;">${galleryEsc(eventKey)}</strong>
+                      \u2014 detection writes no bundle and no routes, so these show as
+                      <em>detected \u00b7 awaiting bundle</em> below until you request one.
+                    </div>`;
+        })()}
         ${renderJobLines(st.jobs)}
         <div id="rcStatus" style="color:#94a3b8;font-size:0.78em;margin-top:6px;min-height:1em;"></div>
       </div>`;
@@ -9545,6 +9583,7 @@ async function renderTracksTab() {
     for (const it of items || []) onRelay.set(`${it.kind}:${it.id}`, it);
     // Before the gallery queue and the match table: whether the home machine is even
     // alive decides how to read everything below it.
+    await refreshAgentDetected(relay, items);
     renderRelayControl('trkControl', relay, items);
 
     const gal = (man.gallery || {})[eventKey] || {};
@@ -9675,7 +9714,7 @@ async function renderTracksTab() {
           <th style="padding:6px 4px;">Custody</th>
           <th style="padding:6px 4px;text-align:right;">Actions</th>
         </tr>
-        ${rows.map(r => {
+        ${(() => { const detectedSet = agentDetectedSet(eventKey); return rows.map(r => {
             // PUBLISHED IS TERMINAL unless an answer arrived after it was built.
             // Answers are not deleted from the relay when consumed, so testing
             // "an answer exists" first left finished matches reading "awaiting rerun"
@@ -9709,6 +9748,10 @@ async function renderTracksTab() {
                         : r.live ? pill('published · live, uncommitted', '#2dd4bf')
                         : r.published ? (r.curated ? pill('published · curated', '#22c55e')
                                                    : pill('published · auto', '#60a5fa'))
+                        // Below published, above nothing: detection is real progress but it
+                        // is not a route, and conflating the two would overstate it.
+                        : detectedSet.has(String(r.key).split('_').slice(1).join('_'))
+                            ? pill('detected · awaiting bundle', '#818cf8')
                         : pill('no tracks', '#475569');
             const models = r.total
                 ? `<span title="Teams with reviewed gallery evidence from this alliance color" style="color:${r.sameAllianceReviewed === r.total ? '#22c55e' : r.sameAllianceReviewed ? '#f59e0b' : '#64748b'};">
@@ -9739,7 +9782,7 @@ async function renderTracksTab() {
               <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
               <td style="padding:7px 4px;text-align:right;white-space:nowrap;">${acts || '<span style="color:#475569;">—</span>'}</td>
             </tr>`;
-        }).join('')}
+        }).join(''); })()}
       </table></details>
       <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
         <b>Cameras</b> lists every camera the relay holds a frame for, pushed with
