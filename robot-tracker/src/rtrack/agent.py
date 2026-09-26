@@ -50,7 +50,9 @@ IMMEDIATELY on every state change instead of from polling fast. Reading /control
 from __future__ import annotations
 
 import argparse
+import io
 import json
+import os
 import os
 import platform
 import re
@@ -445,29 +447,119 @@ def reconcile(desired: dict | None, watcher: Watcher) -> tuple[bool, str | None]
     return False, None
 
 
-def install_task(agent_id: str, extra: list[str] | None = None) -> int:
-    """Register a logon scheduled task, so remote control survives a reboot.
+def startup_cmd_path():
+    import os
+    return Path(os.environ["APPDATA"]) / ("Microsoft/Windows/Start Menu/Programs/Startup"
+                                          "/rtrack-agent.cmd")
 
-    IN THE USER SESSION on purpose. The watcher this supervises runs CUDA work, and a task
-    configured to run whether or not the user is logged on gets session 0, where GPU access
-    is unreliable. 'no physical access to the host machine' is the requirement; surviving
-    a reboot without a login is not.
+
+def install_task(agent_id: str, extra: list[str] | None = None) -> int:
+    """Start the agent at logon, via the Startup folder.
+
+    NOT a scheduled task, and that is a measured decision rather than a preference.
+    `schtasks /Create /SC ONLOGON` fails with "ERROR: Access is denied." for a
+    non-administrator: Windows treats a LOGON TRIGGER as privileged because it can affect
+    other users' sessions. The same command with /SC ONCE succeeds unelevated, which
+    isolates it to the trigger rather than to task creation or to the command being built
+    wrong. Requiring an elevated shell to set this up would undercut the point -- this
+    exists so nobody has to be at the machine.
+
+    The Startup folder needs no elevation, runs in the interactive user session (which the
+    supervised watcher needs, since a session-0 task has unreliable GPU access), and is
+    trivially reversible: it is one file, and deleting it is the uninstall.
     """
     if platform.system() != "Windows":
-        print("[agent] --install-task is Windows-only; on other platforms use systemd "
-              "--user or launchd", file=sys.stderr)
+        print("[agent] --install-task is Windows-only; on other platforms use a systemd "
+              "--user unit or a launchd agent", file=sys.stderr)
         return 2
-    cmd = f'"{PY}" -m rtrack.agent --agent-id {agent_id}'
-    if extra:
-        cmd += " " + " ".join(extra)
-    a = ["schtasks", "/Create", "/TN", TASK_NAME, "/SC", "ONLOGON", "/F",
-         "/TR", f'cmd /c cd /d "{C.TRACKER_ROOT}" && {cmd}']
-    print(f"[agent] {' '.join(a)}")
-    rc = subprocess.run(a).returncode
-    if rc == 0:
-        print(f"[agent] registered '{TASK_NAME}' to start at logon as {agent_id}.\n"
-              f"        Remove it with:  schtasks /Delete /TN {TASK_NAME} /F")
-    return rc
+    target = startup_cmd_path()
+    args = f"--agent-id {agent_id}" + (" " + " ".join(extra) if extra else "")
+    # `start /min` so the console does not take focus at every logon, and a titled window
+    # so it is identifiable in the taskbar rather than being an anonymous python.exe.
+    # Joined, not escaped: a .cmd wants CRLF, and newline="" on the write means these are
+    # the exact bytes that land on disk.
+    # Joined rather than escaped: a .cmd file wants CRLF, and newline="" on the write
+    # below means these are the exact bytes that land on disk.
+    body = "\r\n".join([
+        "@echo off",
+        "rem rtrack agent -- listens for relay control and supervises rtrack.watch.",
+        "rem Installed by: rtrack.agent --install-task",
+        "rem Remove it by deleting THIS FILE, or: rtrack.agent --uninstall-task",
+        f'cd /d "{C.TRACKER_ROOT}"',
+        f'start "rtrack agent" /min "{PY}" -m rtrack.agent {args}',
+        "",
+    ])
+    try:
+        target.parent.mkdir(parents=True, exist_ok=True)
+        with io.open(target, "w", encoding="utf-8", newline="") as fh:
+            fh.write(body)
+    except OSError as exc:
+        print(f"[agent] could not write {target}: {exc}", file=sys.stderr)
+        return 1
+    print(f"[agent] will start at logon as {agent_id}\n"
+          f"        {target}\n"
+          f"        Remove it with:  uv run python -m rtrack.agent --uninstall-task\n"
+          "        This does NOT start it now -- a running agent keeps running, "
+          "and starting a second one is refused (see claim_singleton).")
+    return 0
+
+
+def uninstall_task() -> int:
+    target = startup_cmd_path() if platform.system() == "Windows" else None
+    if target is None:
+        print("[agent] --uninstall-task is Windows-only", file=sys.stderr)
+        return 2
+    if target.exists():
+        target.unlink()
+        print(f"[agent] removed {target}")
+    else:
+        print(f"[agent] nothing installed at {target}")
+    # Tidy up after the scheduled-task version this replaced, so an earlier install that
+    # DID have elevation does not keep launching a second agent.
+    subprocess.run(["schtasks", "/Delete", "/TN", TASK_NAME, "/F"],
+                   capture_output=True)
+    return 0
+
+
+def _pid_alive(pid: int) -> bool:
+    """Whether a pid is running. PermissionError means it exists and is not ours."""
+    import os
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
+
+def claim_singleton(agent_id: str) -> bool:
+    """Refuse to run if another agent for this id already is.
+
+    Two agents sharing an id is not a harmless duplicate: both poll the same control
+    document, both reconcile against their OWN watcher handle, and so both spawn a watcher
+    for the same event. Two watchers then race for the per-event pipeline lock and take
+    turns failing. This became reachable the moment installing at logon was possible while
+    an agent was already running by hand.
+    """
+    lock = C.OUT_DIR / f"agent.{agent_id}.lock"
+    try:
+        prev = json.loads(lock.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        prev = None
+    if prev and _pid_alive(int(prev.get("pid", -1))):
+        print(f"[agent] REFUSING: agent {agent_id} is already running as pid "
+              f"{prev.get('pid')} (since {prev.get('at')}).\n"
+              f"         Stop that one first, or use a different --agent-id.\n"
+              f"         If it is dead, delete {lock}", file=sys.stderr)
+        return False
+    lock.parent.mkdir(parents=True, exist_ok=True)
+    lock.write_text(json.dumps({"pid": os.getpid(), "at": _now_iso()}), encoding="utf-8")
+    return True
 
 
 def post_control(agent_id: str, desired: str, event: str | None,
@@ -528,7 +620,10 @@ def main(argv=None) -> int:
                          "way OUTLIVES the agent and nothing will stop it on disarm, so "
                          "this is a diagnostic rather than a way to run from cron.")
     ap.add_argument("--install-task", action="store_true",
-                    help="register a Windows logon task and exit")
+                    help="start the agent at every logon (Startup folder; no admin "
+                         "rights needed -- see install_task for why not a scheduled task)")
+    ap.add_argument("--uninstall-task", action="store_true",
+                    help="undo --install-task")
 
     g = ap.add_argument_group("operator actions (one-shot, then exit)")
     g.add_argument("--arm", metavar="EVENT", default=None,
@@ -557,6 +652,8 @@ def main(argv=None) -> int:
 
     if args.install_task:
         return install_task(agent_id)
+    if args.uninstall_task:
+        return uninstall_task()
     if args.show:
         return show(agent_id)
     if args.jobs:
@@ -589,6 +686,8 @@ def main(argv=None) -> int:
         return post_control(agent_id, "stopped", None, None, None)
 
     R._env()          # fail now, loudly, if the relay is not configured
+    if not claim_singleton(agent_id):
+        return 4
 
     state = _load_state()
     applied_nonce = state.get("appliedNonce")
