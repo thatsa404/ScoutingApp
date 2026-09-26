@@ -62,7 +62,8 @@ def _env() -> tuple[str, str]:
 # Enumerated here ONCE so a new kind cannot be creatable but not clearable, which is
 # exactly what happened when occl and tracks were added.
 KINDS = ("bundle", "answer", "calib", "points", "occl", "tracks",
-         "gallery-bundle", "gallery-answer", "gallery-status")
+         "gallery-bundle", "gallery-answer", "gallery-status",
+         "control", "status")
 
 
 def put(kind: str, ident: str, doc: dict) -> dict:

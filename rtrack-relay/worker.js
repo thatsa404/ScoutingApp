@@ -21,6 +21,10 @@
 //   GET  /occl/<cameraId>        relay -> home
 //   POST /tracks/<matchKey>      home  -> relay   exported routes (JSON)
 //   GET  /tracks/<matchKey>      relay -> app
+//   POST /control/<agentId>      app   -> relay   desired state for the home machine
+//   GET  /control/<agentId>      relay -> home
+//   POST /status/<agentId>       home  -> relay   heartbeat + what it is doing
+//   GET  /status/<agentId>       relay -> app
 //
 // `tracks` is the one kind the APP reads rather than a curator. Routes used to reach
 // the app only through git: rtrack.export wrote public/tracks/ on the home machine and
@@ -33,6 +37,13 @@
 // posted to /calib, and the drawing comes back up. It was a file DOWNLOAD before, which
 // works on a laptop and not at all on the phone the tool is designed for -- the file
 // lands in Downloads on a device that cannot reach robot-tracker/calib/.
+//
+// `control` and `status` are the remote-control pair, and control is DESIRED STATE rather
+// than a command queue. A queue needs acknowledgement, dedup and ordering; desired state
+// is idempotent, so re-posting it is a no-op and an agent that reboots simply reads what
+// it should be doing and resumes. `status.appliedNonce` echoing `control.nonce` is what
+// turns "the app sent a command" into "the home machine received it" -- without it the UI
+// can only ever claim to have sent something.
 //   GET  /index                  what is available right now
 //   DELETE /<kind>/<id>          clear one entry (token required)
 //
@@ -43,6 +54,15 @@
 //   RTRACK_ANSWER_TOKEN  OPTIONAL. Unset (the default), /answer and /points accept
 //                        unauthenticated POSTs, so a curator opens the page and works
 //                        with nothing to configure. Set it, and they are required.
+//   RTRACK_CONTROL_TOKEN OPTIONAL, and REQUIRED-BY-ABSENCE: unset, /control rejects every
+//                        POST rather than accepting them. This is the exact OPPOSITE of
+//                        the answer default above, deliberately. An unauthenticated answer
+//                        lands in a 24 h entry for one match and a human reviews it before
+//                        it is applied -- bounded. An unauthenticated /control makes a
+//                        machine somebody owns start opening streams and burning GPU time
+//                        on request, which is not bounded and not reviewable after the
+//                        fact. So arming is opt-in via a secret, and a relay that has not
+//                        been given one simply cannot be armed.
 //
 // Answering is open because the alternative is worse, not because nobody thought about
 // it. The curator page is served from a public GitHub Pages site, so any token embedded
@@ -78,12 +98,22 @@
 // RTRACK_TOKEN. Do NOT set RTRACK_ANSWER_TOKEN unless you want curators to have to
 // type a secret — answering is open by default, see the auth note below.
 //
+// To allow the app to arm the home machine remotely, also:
+//
+//   npx wrangler secret put RTRACK_CONTROL_TOKEN   → the lead scout's key
+//   npx wrangler deploy
+//
+// The lead scout types that value into the app once (Tools → Tracks → Relay Control); it
+// lives in their browser's localStorage and never in the repo or the built bundle. Skip
+// this and /control stays closed, which is the safe default — see the auth note.
+//
 // Free-tier KV is 100k reads / 1k writes a day; one match round-trip is a handful of
 // each, so an event day is nowhere near it.
 // ─────────────────────────────────────────────────────────────────────────────
 
 const KINDS = new Set(['bundle', 'answer', 'calib', 'points', 'occl', 'tracks',
-                       'gallery-bundle', 'gallery-answer', 'gallery-status']);
+                       'gallery-bundle', 'gallery-answer', 'gallery-status',
+                       'control', 'status']);
 
 // KV caps values at 25 MiB. Curation bundles are ~1.8-7 MB depending on how many
 // frames and what JPEG quality rtrack.curate was told to use, so this is headroom
@@ -97,11 +127,18 @@ const TTL_S = 86400;   // one event day
 // day one's routes on day three. They are also small (a 5 Hz export is ~170 KB against a
 // bundle's 4 MB), so a longer life costs almost nothing. Anything absent here gets
 // TTL_S.
+// A HEARTBEAT DELIBERATELY OUTLIVES THE MACHINE THAT SENT IT. The obvious design is a
+// short TTL so a dead agent's status vanishes, but then the app can only say "no agent"
+// and cannot say "last seen 22 minutes ago" -- and the second one is the whole point of
+// showing a heartbeat to a lead scout. Staleness is computed from `at` in the app, where
+// it can be rendered, rather than enforced by expiry here.
 const TTL_BY_KIND = {
   tracks: 7 * 86400,
   'gallery-bundle': 7 * 86400,
   'gallery-answer': 30 * 86400,
   'gallery-status': 30 * 86400,
+  control: 7 * 86400,
+  status: 7 * 86400,
 };
 const ttlFor = kind => TTL_BY_KIND[kind] ?? TTL_S;
 
@@ -234,15 +271,29 @@ export default {
     const kvKey = `${kind}:${id}`;
 
     // Paths a curator's device is allowed to write. Everything else is home-machine only.
+    // `control` is deliberately absent: the open answer path must never be able to arm a
+    // machine, so a device-level caller posting to /control falls through to a 403 below
+    // exactly as it would for /bundle.
     const DEVICE_WRITABLE = new Set(['answer', 'points', 'occl', 'gallery-answer']);
 
-    // Returns 'full' | 'device' | null.
+    // What each non-full level may write. 'full' is unrestricted and not listed.
+    // `status` appears in no set, so only the home machine can report a heartbeat -- a
+    // phone must not be able to forge "the GPU box is alive and idle".
+    const WRITABLE_BY_LEVEL = {
+      control: new Set(['control']),
+      device: DEVICE_WRITABLE,
+    };
+
+    // Returns 'full' | 'control' | 'device' | null.
     const level = () => {
       const t = request.headers.get('Rtrack-Token') ?? '';
       if (env.RTRACK_TOKEN && t === env.RTRACK_TOKEN) return 'full';
+      if (env.RTRACK_CONTROL_TOKEN && t === env.RTRACK_CONTROL_TOKEN) return 'control';
       if (env.RTRACK_ANSWER_TOKEN && t === env.RTRACK_ANSWER_TOKEN) return 'device';
       if (!env.RTRACK_TOKEN) return 'full';          // unconfigured: local dev
-      // No answer token configured => answering is open to anyone. See the header.
+      // No answer token configured => answering is open to anyone. See the header. This
+      // grants 'device', which cannot reach /control, so an unconfigured
+      // RTRACK_CONTROL_TOKEN leaves arming closed rather than open.
       if (!env.RTRACK_ANSWER_TOKEN) return 'device';
       return null;
     };
@@ -250,10 +301,14 @@ export default {
     if (request.method === 'POST') {
       const lv = level();
       if (!lv) return json({ ok: false, error: 'unauthorized' }, 401);
-      if (lv === 'device' && !DEVICE_WRITABLE.has(kind)) {
-        return json({ ok: false, needsToken: true,
-                      error: `posting to /${kind} needs the home-machine token; `
-                             + `this endpoint only accepts ${[...DEVICE_WRITABLE].join(' and ')}` }, 403);
+      if (lv !== 'full' && !(WRITABLE_BY_LEVEL[lv] ?? new Set()).has(kind)) {
+        const err = kind === 'control'
+          ? 'posting to /control needs RTRACK_CONTROL_TOKEN. If the relay has no '
+            + 'RTRACK_CONTROL_TOKEN secret set, arming is closed by design -- set one with '
+            + '`npx wrangler secret put RTRACK_CONTROL_TOKEN` and redeploy.'
+          : `posting to /${kind} needs the home-machine token; `
+            + `this token only accepts ${[...(WRITABLE_BY_LEVEL[lv] ?? [])].join(' and ')}`;
+        return json({ ok: false, needsToken: true, error: err }, 403);
       }
       const body = await request.text();
       if (body.length > MAX_BYTES) {
@@ -303,7 +358,24 @@ export default {
         selectionCount: Array.isArray(storedPayload.selections) ? storedPayload.selections.length : null,
         state: kind === 'gallery-answer' ? 'answered' : payload.state ?? 'ready',
       } : {};
-      await touchIndex(env, kind, id, { bytes: storedBody.length, at, ...reviewMeta });
+      // Enough of a status/control doc to render the heartbeat strip from /index alone.
+      // The Tracks tab already polls /index, so the common case costs no extra request --
+      // it only fetches the full doc when someone opens the panel.
+      const agentMeta = kind === 'status' ? {
+        state: storedPayload.state ?? null,
+        event: storedPayload.event ?? null,
+        appliedNonce: storedPayload.appliedNonce ?? null,
+        watcherAlive: storedPayload.watcher?.alive ?? null,
+        pendingAnswers: storedPayload.queue?.pendingAnswers ?? null,
+        pendingGallery: storedPayload.queue?.pendingGallery ?? null,
+        error: storedPayload.error ?? null,
+      } : kind === 'control' ? {
+        desired: storedPayload.desired ?? null,
+        event: storedPayload.event ?? null,
+        nonce: storedPayload.nonce ?? null,
+      } : {};
+      await touchIndex(env, kind, id, { bytes: storedBody.length, at,
+                                        ...reviewMeta, ...agentMeta });
       return json({ ok: true, key: kvKey, bytes: storedBody.length,
                     merged: kind === 'gallery-answer' && payload.schemaVersion === 2 });
     }

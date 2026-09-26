@@ -26,3 +26,10 @@ robot-tracker/weights/
 # CLIP backend writes to weights/clip/ and that is a ~350 MB file.
 robot-tracker/**/*.pt
 robot-tracker/**/*.onnx
+
+# wrangler local secrets for rtrack-relay (never commit real tokens)
+.dev.vars
+**/.dev.vars
+
+# wrangler local dev state (local KV, build cache)
+**/.wrangler/

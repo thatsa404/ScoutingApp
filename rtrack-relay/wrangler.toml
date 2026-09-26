@@ -19,3 +19,10 @@ kv_namespaces = [
 #
 # Generate them with something like:
 #   python -c "import secrets; print(secrets.token_urlsafe(24))"
+
+#   wrangler secret put RTRACK_CONTROL_TOKEN  # lead scout: POST /control only
+#
+# RTRACK_CONTROL_TOKEN is what lets the app arm the home machine remotely (Tools ->
+# Tracks -> Relay Control). It is a THIRD tier on purpose: it can start and stop real
+# work on a machine you own, so it must not be the same value curators type into their
+# phones. Leave it unset and /control rejects every POST, which is the safe default.
