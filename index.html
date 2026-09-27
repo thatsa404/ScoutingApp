@@ -1566,6 +1566,7 @@
         /* Ensure sticky tab bars have opaque background to cover scrolled content */
         .detail-tabs { padding-top: 4px; }
     </style>
+    <link rel="stylesheet" href="mobile-workflow.css">
 </head>
 
 <body>
@@ -1578,7 +1579,7 @@
         })();
     </script>
 
-    <div id="match-countdown-banner" onclick="switchView('scheduleView');highlightTeam('1768');">
+    <div id="match-countdown-banner" onclick="openNextOwnMatchPrep()" role="button" tabindex="0" aria-label="Open the next 1768 match prep">
         <img src="wolfhead_transparent.png" alt="">
         <span id="match-countdown-text"></span>
         <span id="match-countdown-alliance"></span>
@@ -1639,6 +1640,7 @@
     <nav class="top-nav">
         <button class="nav-btn active" data-view="homeView" onclick="switchView('homeView')"><svg viewBox="0 0 20 20" fill="currentColor" style="width:1em;height:1em;vertical-align:-0.15em;margin-right:6px;"><path fill-rule="evenodd" d="M9.293 2.293a1 1 0 0 1 1.414 0l7 7A1 1 0 0 1 17 11h-1v6a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6H3a1 1 0 0 1-.707-1.707l7-7Z" clip-rule="evenodd"/></svg>Home</button>
         <button class="nav-btn" data-view="scheduleView" onclick="switchView('scheduleView')"><svg viewBox="0 0 20 20" fill="currentColor" style="width:1em;height:1em;vertical-align:-0.15em;margin-right:6px;"><path fill-rule="evenodd" d="M5.75 2a.75.75 0 0 1 .75.75V4h7V2.75a.75.75 0 0 1 1.5 0V4h.25A2.75 2.75 0 0 1 18 6.75v8.5A2.75 2.75 0 0 1 15.25 18H4.75A2.75 2.75 0 0 1 2 15.25v-8.5A2.75 2.75 0 0 1 4.75 4H5V2.75A.75.75 0 0 1 5.75 2Zm-1 5.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h10.5c.69 0 1.25-.56 1.25-1.25v-6.5c0-.69-.56-1.25-1.25-1.25H4.75Z" clip-rule="evenodd"/></svg>Schedule</button>
+        <button class="nav-btn" data-view="teamFinderView" onclick="switchView('teamFinderView')">Teams</button>
         <button class="nav-btn" data-view="dataView" onclick="switchView('dataView')"><svg viewBox="0 0 20 20" fill="currentColor" style="width:1em;height:1em;vertical-align:-0.15em;margin-right:6px;"><path d="M15.5 2A1.5 1.5 0 0 0 14 3.5v13a1.5 1.5 0 0 0 3 0v-13A1.5 1.5 0 0 0 15.5 2ZM10.5 6A1.5 1.5 0 0 0 9 7.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 10.5 6ZM5.5 10A1.5 1.5 0 0 0 4 11.5v5a1.5 1.5 0 0 0 3 0v-5A1.5 1.5 0 0 0 5.5 10Z"/></svg>Data</button>
         <button class="nav-btn" data-view="toolsView" onclick="switchView('toolsView')"><svg viewBox="0 0 20 20" fill="currentColor" style="width:1em;height:1em;vertical-align:-0.15em;margin-right:6px;"><path fill-rule="evenodd" d="M19 5.5a4.5 4.5 0 0 1-4.791 4.49c-.873-.055-1.808.128-2.368.8l-6.024 7.23a2.724 2.724 0 1 1-3.837-3.837L9.21 8.16c.672-.56.855-1.495.8-2.368a4.5 4.5 0 0 1 5.873-4.575c.324.105.39.51.15.749L13.34 4.65a.836.836 0 0 0-.063 1.155 5.98 5.98 0 0 0 .897.74c.281.187.611.22.907.104l2.285-.95c.293-.12.63.025.72.324.102.344.154.706.154 1.077ZM3.75 16a.75.75 0 1 1-1.5 0 .75.75 0 0 1 1.5 0Z" clip-rule="evenodd"/></svg>Tools</button>
     </nav>
@@ -1647,16 +1649,6 @@
         <div class="view-header-container">
             <h2 id="prepMatchLabel">Match Prep: QM --</h2>
             <button class="nav-btn" onclick="closePrepView()">Close</button>
-        </div>
-
-        <div class="chart-container-prep">
-            <canvas id="allianceComparisonChart"></canvas>
-        </div>
-        <div style="text-align:center;margin:10px 0 4px;">
-            <button onclick="openScoutingBreakdown()"
-                style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;padding:7px 20px;font-size:0.85em;font-weight:600;cursor:pointer;letter-spacing:0.03em;">
-                Detailed Breakdown
-            </button>
         </div>
 
         <div class="prep-container">
@@ -1669,6 +1661,15 @@
                 <div class="alliance-header-large blue-header">Blue Alliance</div>
                 <div id="bluePrepList" class="prep-team-list"></div>
             </div>
+        </div>
+        <div class="chart-container-prep">
+            <canvas id="allianceComparisonChart"></canvas>
+        </div>
+        <div style="text-align:center;margin:10px 0 4px;">
+            <button onclick="openScoutingBreakdown()"
+                style="background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;padding:7px 20px;font-size:0.85em;font-weight:600;cursor:pointer;letter-spacing:0.03em;">
+                Detailed Breakdown
+            </button>
         </div>
     </div>
 
@@ -1722,6 +1723,7 @@
                 </tbody>
             </table>
             </div>
+            <div id="mobileScheduleCards" class="mobile-schedule-list" aria-label="Match schedule"></div>
         </div>
 
         <div id="schedule-sub-watchlist" style="display:none;">
@@ -1768,12 +1770,35 @@
         </div>
     </div>
 
+    <div id="teamFinderView" class="app-view" style="display:none;">
+        <div class="view-header-container mobile-view-heading">
+            <div><h2>Teams</h2><p class="mobile-view-subtitle">Find partner and opponent robot information.</p></div>
+        </div>
+        <label class="team-search-label" for="teamFinderSearch">Find a team</label>
+        <input id="teamFinderSearch" type="search" inputmode="search" autocomplete="off"
+               placeholder="Team number or name" oninput="renderTeamFinder(this.value)">
+        <div id="teamFinderResults" class="team-finder-results" aria-live="polite"></div>
+    </div>
+
     <div id="homeView" class="app-view" style="display: block;">
 
         <div class="detail-tabs" id="homeTabs" style="margin-top:0; margin-bottom:20px;">
-            <button class="detail-tab-btn active" onclick="switchHomeTab('setup')">Event Setup</button>
+            <button class="detail-tab-btn active" onclick="switchHomeTab('live')">Live</button>
+            <button class="detail-tab-btn" onclick="switchHomeTab('setup')">Event Setup</button>
             <button class="detail-tab-btn" onclick="switchHomeTab('overview')">Dashboard</button>
             <button class="detail-tab-btn" onclick="switchHomeTab('stream')">Stream</button>
+        </div>
+
+        <div id="home-tab-live" class="live-event-home" style="display:none;">
+            <div class="live-event-heading">
+                <div><div class="live-event-eyebrow">EVENT AT A GLANCE</div><h2 id="liveEventTitle">Live event</h2></div>
+                <span id="liveScheduleFreshness" class="sync-freshness">Schedule status unavailable</span>
+            </div>
+            <div id="liveEventContent" aria-live="polite"></div>
+            <div class="live-event-actions">
+                <button onclick="switchView('scheduleView')">Full schedule</button>
+                <button class="secondary-action" onclick="openTeamFinder()">Find a team</button>
+            </div>
         </div>
 
         <div id="home-tab-setup" style="display:grid;">
@@ -2809,6 +2834,13 @@
             style="max-width:90vw; max-height:90vh; object-fit:contain; border-radius:6px; pointer-events:none;">
     </div>
 
+    <div id="mobileTeamQuickView" class="mobile-team-quick-view" style="display:none;" role="dialog" aria-modal="true" aria-labelledby="mobileTeamQuickTitle">
+        <div class="mobile-team-quick-card">
+            <button class="mobile-quick-close" onclick="closeMobileTeamQuickView()" aria-label="Close team details">×</button>
+            <div id="mobileTeamQuickContent"></div>
+        </div>
+    </div>
+
     <nav class="mobile-bottom-nav" id="mobileBottomNav">
         <button class="mobile-nav-item active" data-view="homeView" onclick="switchView('homeView')">
             <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M9.293 2.293a1 1 0 0 1 1.414 0l7 7A1 1 0 0 1 17 11h-1v6a1 1 0 0 1-1 1h-2a1 1 0 0 1-1-1v-3a1 1 0 0 0-1-1H9a1 1 0 0 0-1 1v3a1 1 0 0 1-1 1H5a1 1 0 0 1-1-1v-6H3a1 1 0 0 1-.707-1.707l7-7Z" clip-rule="evenodd"/></svg>
@@ -2817,6 +2849,10 @@
         <button class="mobile-nav-item" data-view="scheduleView" onclick="switchView('scheduleView')">
             <svg viewBox="0 0 20 20" fill="currentColor"><path fill-rule="evenodd" d="M5.75 2a.75.75 0 0 1 .75.75V4h7V2.75a.75.75 0 0 1 1.5 0V4h.25A2.75 2.75 0 0 1 18 6.75v8.5A2.75 2.75 0 0 1 15.25 18H4.75A2.75 2.75 0 0 1 2 15.25v-8.5A2.75 2.75 0 0 1 4.75 4H5V2.75A.75.75 0 0 1 5.75 2Zm-1 5.5c-.69 0-1.25.56-1.25 1.25v6.5c0 .69.56 1.25 1.25 1.25h10.5c.69 0 1.25-.56 1.25-1.25v-6.5c0-.69-.56-1.25-1.25-1.25H4.75Z" clip-rule="evenodd"/></svg>
             Schedule
+        </button>
+        <button class="mobile-nav-item" data-view="teamFinderView" onclick="openTeamFinder()">
+            <svg viewBox="0 0 20 20" fill="currentColor"><path d="M10 10a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7ZM3 17.25A4.25 4.25 0 0 1 7.25 13h5.5A4.25 4.25 0 0 1 17 17.25.75.75 0 0 1 16.25 18H3.75a.75.75 0 0 1-.75-.75ZM2 8a2.5 2.5 0 1 0 4.99-.2A4.7 4.7 0 0 1 6.5 5.5c0-.28.025-.555.072-.822A2.5 2.5 0 0 0 2 8Zm12.93-3.322c.047.267.072.542.072.822 0 .82-.21 1.59-.58 2.26A2.5 2.5 0 1 0 14.93 4.678Z"/></svg>
+            Teams
         </button>
         <button class="mobile-nav-item" data-view="dataView" onclick="switchView('dataView')">
             <svg viewBox="0 0 20 20" fill="currentColor"><path d="M15.5 2A1.5 1.5 0 0 0 14 3.5v13a1.5 1.5 0 0 0 3 0v-13A1.5 1.5 0 0 0 15.5 2ZM10.5 6A1.5 1.5 0 0 0 9 7.5v9a1.5 1.5 0 0 0 3 0v-9A1.5 1.5 0 0 0 10.5 6ZM5.5 10A1.5 1.5 0 0 0 4 11.5v5a1.5 1.5 0 0 0 3 0v-5A1.5 1.5 0 0 0 5.5 10Z"/></svg>

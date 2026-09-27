@@ -140,6 +140,75 @@
   .refRow img{height:190px;width:auto;display:block;border:1px solid var(--line);
               border-radius:8px;background:#0b0d10}
   .refRow figcaption{color:var(--dim);font-size:10px;text-align:center}
+
+  #zoomWrap{display:block!important;height:clamp(200px,30vh,320px);margin:0 0 8px;
+            overflow:hidden}
+  #zoom{width:100%;height:calc(100% - 18px);max-height:none;object-fit:contain}
+  #zoomWrap.empty #zoom,#zoomWrap.loading #zoom,#zoomWrap.unavailable #zoom{
+    visibility:hidden}
+  #zoomWrap.empty::after,#zoomWrap.loading::after,#zoomWrap.unavailable::after{
+    position:absolute;inset:0 0 18px;display:flex;align-items:center;
+    justify-content:center;border:2px solid var(--line);border-radius:10px;
+    background:#0b0d10;color:var(--dim);font-size:13px}
+  #zoomWrap.empty::after{content:'Tap a robot box in the field frame'}
+  #zoomWrap.loading::after{content:'Loading close-up…'}
+  #zoomWrap.unavailable::after{content:'Close-up unavailable for this box'}
+  #zoomWrap.empty #swipeHint{visibility:hidden}
+  #swipeHint{position:absolute;bottom:0;left:0;right:0;height:18px;
+             line-height:18px;margin:0;overflow:hidden;white-space:nowrap}
+
+  @media (min-width:701px) {
+    #work:not([hidden]){display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,430px);
+                         gap:18px;align-items:start;max-width:1440px;margin:0 auto}
+    .curation-evidence{min-width:0}
+    .curation-decision{position:sticky;top:64px;min-width:0}
+    .curation-decision .bar{position:static;margin:12px 0 0;padding:10px 0 0}
+  }
+
+  /* The phone is a fixed work surface: the frame and optional context scroll above,
+     while the crop and answer targets keep their positions between decisions. */
+  @media (max-width:700px) {
+    html,body{height:100%}
+    body{height:100vh;height:100svh;display:flex;flex-direction:column;overflow:hidden}
+    header{flex:none;gap:6px;padding:6px 8px}
+    header h1{font-size:12px}
+    header .sp{display:none}
+    header #hdr{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+                white-space:nowrap}
+    #backBtn,#cfgBtn{flex:none;white-space:nowrap;padding:6px 8px!important}
+    main{display:flex;flex:1;min-height:0;overflow:hidden;padding:0}
+    #setup:not([hidden]){width:100%;min-height:0;overflow-y:auto;padding:12px;margin:0 auto}
+    #work:not([hidden]){display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}
+    .curation-evidence{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
+                       padding:8px 12px 12px}
+    .curation-decision{flex:none;display:flex;flex-direction:column;gap:6px;
+                       padding:8px 12px calc(8px + var(--safe));background:var(--panel);
+                       border-top:1px solid var(--line)}
+    .curation-evidence .meta{margin:0 2px 8px}
+    #zoomWrap{flex:none;height:clamp(112px,24svh,200px);margin:0}
+    .teams{grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:48px;
+           gap:6px;min-height:102px;margin:0}
+    .team{min-width:0;height:48px;padding:0 2px}
+    .flags{gap:6px;margin:0}
+    .flags button{height:40px;padding:3px 2px;font-size:12px;line-height:1.1}
+    .nav{height:40px;flex:none;margin:0}
+    .nav > button{height:40px;width:44px;padding:0;flex:none}
+    .pips{min-width:0;height:40px;flex-wrap:nowrap;align-items:center;
+          overflow-x:auto;overflow-y:hidden;padding:4px 3px}
+    .pip{flex:none}
+    .bar{position:static;min-height:44px;margin:0;padding:0;border:0;
+         background:transparent}
+    .bar .sp{display:none}
+    #count{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;
+           white-space:nowrap;font-size:11px!important}
+    #clock{display:none}
+    #submit{min-width:90px;min-height:44px}
+  }
+  @media (max-width:700px) and (max-height:520px) {
+    #zoomWrap{height:clamp(100px,20svh,120px)}
+    .teams{grid-auto-rows:42px;min-height:90px}
+    .team{height:42px}
+  }
 </style>
 </head>
 <body>
@@ -179,47 +248,47 @@
 
   <!-- ── curation ──────────────────────────────────────────────────────── -->
   <section id="work" hidden>
-    <div class="meta" id="info"></div>
-    <div id="wrap">
-      <img id="frame" alt="match frame">
-      <canvas id="hit"></canvas>
+    <div class="curation-evidence" id="curationEvidence" role="region"
+         aria-label="Field frame and curation context" tabindex="0">
+      <div id="workMsg" class="msg" hidden></div>
+      <div class="meta" id="info"></div>
+      <div id="wrap">
+        <img id="frame" alt="match frame">
+        <canvas id="hit"></canvas>
+      </div>
+      <!-- Context may change per box without shifting the answer controls. -->
+      <div id="note" hidden></div>
+      <div id="ovl" hidden><span id="ovlIcon">⚠</span><span id="ovlText"></span></div>
+      <div id="views" hidden>
+        <div class="vlabel">Clearest views of this robot</div>
+        <div class="vstrip" id="vstrip"></div>
+      </div>
+      <p class="hint" id="hint">Tap a box in the frame, then tap who it is.</p>
+      <div id="doneBar" hidden style="margin-top:10px"></div>
     </div>
-    <div id="zoomWrap">
-      <canvas id="zoom"></canvas>
-      <div id="tick" aria-hidden="true">&#10003;</div>
-      <div id="swipeHint">swipe the image left or right to change box</div>
-    </div>
-  <!-- Why this bundle exists. A clash bundle is not a normal pass and the curator has
-       no way to know that without being told. -->
-  <div id="note" hidden></div>
-    <div id="ovl" hidden><span id="ovlIcon">⚠</span><span id="ovlText"></span></div>
-    <div id="views" hidden>
-      <div class="vlabel">Clearest views of this robot</div>
-      <div class="vstrip" id="vstrip"></div>
-    </div>
-    <div class="teams" id="teams"></div>
-    <div class="flags">
-      <button data-flag="notrobot">not a robot</button>
-      <button data-flag="unknown">can't tell</button>
-      <button data-flag="clear">clear</button>
-    </div>
-    <div class="nav">
-      <button id="prev">‹</button>
-      <div class="pips" id="pips"></div>
-      <button id="next">›</button>
-    </div>
-    <p class="hint" id="hint">Tap a box in the frame, then tap who it is.</p>
-    <div id="doneBar" hidden style="margin-top:10px"></div>
-    <!-- ABOVE the bar. `.bar` is position:sticky;bottom:0, so anything after it renders
-         underneath the pinned bar and is unreachable on a phone. Success was survivable
-         here because the Back button also turns green -- but a FAILED send reported only
-         through this element, where it could not be seen. -->
-    <div id="workMsg" class="msg" hidden></div>
-    <div class="bar">
-      <span id="count" style="color:var(--dim);font-size:13px"></span>
-      <span id="clock" style="color:#64748b;font-size:12px;margin-left:10px"></span>
-      <span class="sp"></span>
-      <button id="submit" class="primary">Submit</button>
+    <div class="curation-decision">
+      <div id="zoomWrap" class="empty">
+        <canvas id="zoom" aria-label="Close-up of selected robot"></canvas>
+        <div id="tick" aria-hidden="true">&#10003;</div>
+        <div id="swipeHint">swipe the image left or right to change box</div>
+      </div>
+      <div class="teams" id="teams"></div>
+      <div class="flags">
+        <button data-flag="notrobot">not a robot</button>
+        <button data-flag="unknown">can't tell</button>
+        <button data-flag="clear">clear</button>
+      </div>
+      <div class="nav">
+        <button id="prev">‹</button>
+        <div class="pips" id="pips"></div>
+        <button id="next">›</button>
+      </div>
+      <div class="bar">
+        <span id="count" style="color:var(--dim);font-size:13px"></span>
+        <span id="clock" style="color:#64748b;font-size:12px;margin-left:10px"></span>
+        <span class="sp"></span>
+        <button id="submit" class="primary">Submit</button>
+      </div>
     </div>
   </section>
 </main>
@@ -263,6 +332,7 @@ const LS = {
 };
 
 let DOC = null, FI = 0, SEL = null, SENT = false;
+let zoomRequestId = 0;
 // answers: "f|x|y" -> { f, xy, team? , notrobot? , unknown? }
 let ANS = new Map();
 
@@ -276,6 +346,7 @@ function needToken(msg) {
 }
 const say = (el, text, cls = '') => {
   el.hidden = false; el.className = 'msg ' + cls; el.textContent = text;
+  if (el.id === 'workMsg') $('#curationEvidence').scrollTop = 0;
 };
 const keyOf = (f, xy) => `${f}|${xy[0]}|${xy[1]}`;
 
@@ -473,6 +544,17 @@ function start(doc) {
 
 function frame() { return DOC.frames[FI]; }
 
+function clearZoom() {
+  // Cancel an image decode from the previous box before clearing its close-up.
+  zoomRequestId++;
+  const wrap = $('#zoomWrap'), z = $('#zoom');
+  z.getContext('2d').clearRect(0, 0, z.width, z.height);
+  wrap.classList.remove('done', 'loading', 'unavailable', 'finished');
+  wrap.classList.add('empty');
+  wrap.style.display = 'none'; // the phone reserves this slot in CSS
+  swipeNote('');
+}
+
 function showFrame(i) {
   FI = Math.max(0, Math.min(DOC.frames.length - 1, i));
   SEL = null;
@@ -482,7 +564,7 @@ function showFrame(i) {
   img.src = f.img;
   $('#info').innerHTML =
     `<b>frame ${f.f}</b> · t=${(f.t ?? 0).toFixed(1)}s · ${f.dets.length} boxes · ${FI + 1}/${DOC.frames.length}`;
-  $('#zoomWrap').style.display = 'none'; $('#views').hidden = true; $('#ovl').hidden = true;
+  clearZoom(); $('#views').hidden = true; $('#ovl').hidden = true;
   $('#doneBar').hidden = true;
   // PRE-FILL from the machine's guess. rtrack.reid labels a match ~84% correctly once
   // the event gallery knows its teams, so most of these are right and the curator's
@@ -628,7 +710,10 @@ $('#hit').addEventListener('click', ev => {
     const dd = Math.hypot(px - cx, py - cy);
     if (dd < bd) { bd = dd; best = i; }
   });
-  if (best === null || bd > Math.max(cv.width, cv.height) * 0.22) { SEL = null; $('#zoomWrap').style.display = 'none'; $('#views').hidden = true; $('#ovl').hidden = true; paint(); return; }
+  if (best === null || bd > Math.max(cv.width, cv.height) * 0.22) {
+    SEL = null; clearZoom(); $('#views').hidden = true; $('#ovl').hidden = true;
+    paint(); markTaken(); return;
+  }
   SEL = best; beginBox(); showZoom(); paint();
 });
 
@@ -760,36 +845,59 @@ function renderViews(d) {
 function showZoom() {
   const d = frame().dets[SEL], z = $('#zoom');
   const a = answerFor(d);
+  const wrap = $('#zoomWrap');
+  const requestId = ++zoomRequestId;
   renderViews(d);
-  if (d.crop) {
-    const im = new Image();
-    im.onload = () => {
-      const W = Math.min(im.naturalWidth * 3, Math.round(window.innerWidth * 2));
-      z.width = W; z.height = Math.round(W * im.naturalHeight / im.naturalWidth);
-      const ctx = z.getContext('2d');
-      ctx.imageSmoothingQuality = 'high';
-      ctx.drawImage(im, 0, 0, z.width, z.height);
-    };
-    im.src = d.crop;
-  } else {
+  z.getContext('2d').clearRect(0, 0, z.width, z.height);
+  wrap.classList.remove('empty', 'unavailable', 'finished');
+  wrap.classList.add('loading');
+  wrap.style.display = 'block';
+
+  const drawFrameCrop = () => {
+    if (requestId !== zoomRequestId) return;
     const img = $('#frame'), f = frame();
+    if (!img.naturalWidth || !img.naturalHeight) {
+      if (!img.complete) img.addEventListener('load', drawFrameCrop, { once: true });
+      else { wrap.classList.remove('loading'); wrap.classList.add('unavailable'); }
+      return;
+    }
     const nx = img.naturalWidth / f.w, ny = img.naturalHeight / f.h;
     const [x1, y1, x2, y2] = d.box;
     const padX = (x2 - x1) * 0.45, padY = (y2 - y1) * 0.45;
     const sx = Math.max(0, (x1 - padX) * nx), sy = Math.max(0, (y1 - padY) * ny);
     const sw = Math.min(img.naturalWidth - sx, (x2 - x1 + 2 * padX) * nx);
     const sh = Math.min(img.naturalHeight - sy, (y2 - y1 + 2 * padY) * ny);
-    const W = Math.min(900, Math.round(window.innerWidth * 2));
-    z.width = W; z.height = Math.round(W * sh / sw);
+    if (sw <= 0 || sh <= 0) {
+      wrap.classList.remove('loading'); wrap.classList.add('unavailable');
+      return;
+    }
+    const W = Math.max(1, Math.min(900, Math.round(window.innerWidth * 2)));
+    z.width = W; z.height = Math.max(1, Math.round(W * sh / sw));
     const ctx = z.getContext('2d');
     ctx.imageSmoothingQuality = 'high';
     ctx.drawImage(img, sx, sy, sw, sh, 0, 0, z.width, z.height);
+    wrap.classList.remove('loading');
+  };
+  if (d.crop) {
+    const im = new Image();
+    im.onload = () => {
+      if (requestId !== zoomRequestId) return;
+      const W = Math.max(1, Math.min(im.naturalWidth * 3, Math.round(window.innerWidth * 2)));
+      z.width = W; z.height = Math.round(W * im.naturalHeight / im.naturalWidth);
+      const ctx = z.getContext('2d');
+      ctx.imageSmoothingQuality = 'high';
+      ctx.drawImage(im, 0, 0, z.width, z.height);
+      wrap.classList.remove('loading');
+    };
+    im.onerror = drawFrameCrop;
+    im.src = d.crop;
+  } else {
+    drawFrameCrop();
   }
-  $('#zoomWrap').style.display = 'block';
   // Green border + tick for a CURATOR answer only. `a.src === 'human'` is the same test
   // unreviewed() and markTaken() use, so the tick, the struck-out team and the done-bar
   // count can never disagree about what has been confirmed.
-  $('#zoomWrap').classList.toggle('done', a?.src === 'human');
+  wrap.classList.toggle('done', a?.src === 'human');
   // Clear any "last box in this frame" note left by a swipe that hit the end, so it
   // cannot outlive the box it was about.
   swipeNote('');
@@ -939,7 +1047,9 @@ function assign(val) {
     // -- otherwise the team just assigned is the one team that never strikes through,
     // which reads as a missing answer rather than a finished frame.
     SEL = null;
-    $('#zoomWrap').style.display = 'none'; $('#views').hidden = true;
+    $('#zoomWrap').classList.add('done', 'finished'); $('#views').hidden = true;
+    swipeNote(FI >= DOC.frames.length - 1
+      ? 'Frame complete — send labels' : 'Frame complete — use Next frame');
     // Keep a banner this assignment just wrote. The frame being finished is not a reason
     // to withdraw the notice that the assignment cleared an earlier flag -- that is the
     // only place the curator is told it happened.
@@ -953,10 +1063,11 @@ function assign(val) {
 function frameDone() {
   const f = frame();
   const guesses = f.dets.filter(d => answerFor(d)?.src === 'machine').length;
-  $('#hint').innerHTML = guesses
+  const left = unreviewed().length;
+  $('#hint').innerHTML = !left ? 'All confirmed by you.' : guesses
     ? `<span style="color:#22d3ee">${guesses} still the machine's guess (dashed)</span>`
       + ` — tap any that are wrong, then continue.`
-    : 'All confirmed by you.';
+    : `${left} box${left === 1 ? '' : 'es'} still need your label.`;
   updateDoneBar();
 }
 

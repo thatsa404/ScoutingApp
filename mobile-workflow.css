@@ -1,0 +1,383 @@
+/* Mobile event workflow. Kept separate so the mobile presentation can be reverted
+   without disturbing the desktop styles embedded in index.html. */
+
+.mobile-schedule-list { display: none; }
+
+#teamFinderView { box-sizing: border-box; padding: 18px; }
+#teamFinderView .view-header-container { margin-bottom: 14px; }
+#teamFinderView .mobile-view-subtitle { color: #94a3b8; margin: 4px 0 0; font-size: 0.9rem; }
+#teamFinderSearch {
+    display: block;
+    width: 100%;
+    max-width: 680px;
+    min-height: 48px;
+    box-sizing: border-box;
+    border: 1px solid #475569;
+    border-radius: 10px;
+    background: #111c30;
+    color: #f8fafc;
+    font-size: 1rem;
+    padding: 10px 12px;
+}
+.team-search-label {
+    display: block;
+    margin: 8px 0 6px;
+    color: #94a3b8;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+.team-finder-results { display: grid; gap: 8px; max-width: 780px; margin-top: 12px; }
+.team-finder-row {
+    display: grid;
+    grid-template-columns: minmax(70px, auto) minmax(0, 1fr) auto;
+    align-items: center;
+    gap: 8px;
+    min-height: 58px;
+    width: 100%;
+    box-sizing: border-box;
+    padding: 8px 10px;
+    border: 1px solid #334155;
+    border-radius: 10px;
+    background: #111c30;
+    color: #f8fafc;
+    text-align: left;
+}
+.team-finder-number { font-size: 1.08rem; font-weight: 800; }
+.team-finder-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; color: #cbd5e1; font-size: 0.86rem; }
+.team-finder-metric { color: #94a3b8; font-size: 0.76rem; white-space: nowrap; }
+
+.mobile-team-quick-view {
+    position: fixed;
+    inset: 0;
+    z-index: 120;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 20px;
+    box-sizing: border-box;
+    background: rgba(2, 6, 23, 0.78);
+}
+.mobile-team-quick-card {
+    position: relative;
+    width: min(100%, 560px);
+    max-height: 85vh;
+    overflow-y: auto;
+    box-sizing: border-box;
+    padding: 24px 18px 18px;
+    border: 1px solid #475569;
+    border-radius: 16px;
+    background: #0f172a;
+}
+.mobile-quick-close {
+    position: absolute;
+    right: 10px;
+    top: 8px;
+    width: 42px;
+    height: 42px;
+    padding: 0;
+    background: transparent;
+    color: #cbd5e1;
+    font-size: 1.7rem;
+}
+.mobile-quick-stats { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+.mobile-quick-stat { display: flex; justify-content: space-between; gap: 8px; padding: 9px 10px; border-radius: 8px; background: #111c30; color: #94a3b8; }
+.mobile-quick-stat strong { color: #f8fafc; }
+.mobile-quick-match { display: block; width: 100%; margin: 6px 0; text-align: left; }
+.prep-missing-team { padding: 4px 0; background: transparent; color: #f8fafc; font-size: 1.12rem; }
+.prep-missing-team + p { margin: 6px 0 0; color: #94a3b8; font-size: 0.86rem; }
+.prep-team-meta { display: flex; flex-direction: column; gap: 3px; min-width: 0; }
+.prep-quick-stats { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; color: #94a3b8; font-size: 0.78rem; }
+.prep-quick-stats span { padding: 7px 4px; border-radius: 6px; background: #0f172a; text-align: center; white-space: nowrap; }
+
+body.mobile-ui .site-header {
+    gap: 8px;
+    padding: 8px 12px 0;
+}
+
+body.mobile-ui .site-header img { height: 38px; }
+body.mobile-ui .site-header h1 { font-size: 1.05rem; }
+
+body.mobile-ui .mobile-bottom-nav {
+    display: grid !important;
+    grid-template-columns: repeat(5, minmax(0, 1fr));
+    height: calc(64px + env(safe-area-inset-bottom, 0px));
+}
+
+body.mobile-ui {
+    --nav-bar-h: calc(64px + env(safe-area-inset-bottom, 0px));
+    --tab-bar-h: 42px;
+}
+
+body.mobile-ui .mobile-nav-item {
+    min-width: 0;
+    min-height: 56px;
+    font-size: 0.65rem;
+    letter-spacing: 0.02em;
+}
+
+body.mobile-ui .mobile-nav-item svg { width: 21px; height: 21px; }
+
+body.mobile-ui .app-view {
+    padding-left: 12px;
+    padding-right: 12px;
+}
+
+body.mobile-ui #tbaTabs,
+body.mobile-ui #scoutingSubTabs {
+    position: sticky !important;
+    top: 0 !important;
+    bottom: auto !important;
+    left: auto !important;
+    right: auto !important;
+    z-index: 2;
+    width: 100%;
+}
+
+body.mobile-ui #dataView {
+    padding-bottom: calc(var(--tab-bar-h) + 10px) !important;
+}
+
+body.mobile-ui .view-header-container {
+    align-items: center;
+    gap: 8px;
+    flex-wrap: wrap;
+    padding-top: 8px;
+}
+
+body.mobile-ui .view-header-container h2,
+body.mobile-ui .mobile-view-heading h2 {
+    font-size: 1.3rem;
+    line-height: 1.2;
+    margin: 0;
+}
+
+body.mobile-ui .shortcut-btn,
+body.mobile-ui .nav-btn,
+body.mobile-ui .detail-tab-btn,
+body.mobile-ui .live-event-actions button,
+body.mobile-ui .prep-action-btns button {
+    min-height: 42px;
+}
+
+body.mobile-ui #scheduleView .schedule-hint-bar { display: none !important; }
+body.mobile-ui #scheduleView .tbl-scroll { display: none !important; }
+body.mobile-ui .mobile-schedule-list { display: grid; gap: 10px; padding-bottom: 8px; }
+
+body.mobile-ui #scheduleView .view-header-container > div {
+    width: 100%;
+}
+
+body.mobile-ui #scheduleView .view-header-container .shortcut-btn {
+    flex: 1 1 0;
+    padding: 8px 10px;
+    font-size: 0.88rem;
+}
+
+body.mobile-ui .mobile-match-card {
+    border: 1px solid #334155;
+    border-radius: 12px;
+    background: #111c30;
+    overflow: hidden;
+}
+
+body.mobile-ui .mobile-match-card.is-focused { border-color: #facc15; }
+
+body.mobile-ui .mobile-match-topline {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    gap: 8px;
+    padding: 10px 12px;
+    background: #0b1425;
+}
+
+body.mobile-ui .mobile-match-open {
+    background: transparent;
+    color: #f8fafc;
+    padding: 0;
+    text-align: left;
+    font-size: 1rem;
+    font-weight: 800;
+}
+
+body.mobile-ui .mobile-match-time,
+body.mobile-ui .mobile-match-state {
+    color: #94a3b8;
+    font-size: 0.8rem;
+    font-weight: 600;
+    text-align: right;
+}
+
+body.mobile-ui .mobile-alliance-row {
+    display: grid;
+    grid-template-columns: 52px minmax(0, 1fr);
+    align-items: center;
+    gap: 8px;
+    padding: 9px 10px;
+    border-top: 1px solid #1e293b;
+}
+
+body.mobile-ui .mobile-alliance-label {
+    font-size: 0.76rem;
+    font-weight: 800;
+    letter-spacing: 0.04em;
+}
+
+body.mobile-ui .mobile-team-chips {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    gap: 6px;
+}
+
+body.mobile-ui .mobile-team-chip {
+    min-width: 0;
+    min-height: 42px;
+    padding: 6px 4px;
+    border: 1px solid currentColor;
+    border-radius: 8px;
+    background: rgba(15, 23, 42, 0.55);
+    font-size: 0.93rem;
+    font-weight: 800;
+    text-align: center;
+}
+
+body.mobile-ui .mobile-team-chip.red { color: #fca5a5; }
+body.mobile-ui .mobile-team-chip.blue { color: #93c5fd; }
+body.mobile-ui .mobile-team-chip.is-own { box-shadow: inset 0 0 0 2px #facc15; }
+
+body.mobile-ui .mobile-match-bottom {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    border-top: 1px solid #1e293b;
+}
+
+body.mobile-ui .mobile-match-bottom button {
+    min-height: 40px;
+    padding: 7px 12px;
+}
+
+body.mobile-ui .mobile-match-score {
+    color: #cbd5e1;
+    font-weight: 800;
+    font-size: 1rem;
+}
+
+body.mobile-ui .mobile-empty-state,
+body.mobile-ui .live-empty-state {
+    padding: 18px 14px;
+    border: 1px dashed #475569;
+    border-radius: 12px;
+    color: #cbd5e1;
+    background: #111c30;
+}
+
+body.mobile-ui .mobile-empty-state button { margin-top: 10px; min-height: 44px; }
+
+body.mobile-ui #matchPrepView .prep-container {
+    display: flex;
+    flex-direction: column;
+    gap: 14px;
+}
+
+body.mobile-ui #matchPrepView .prep-column { width: 100%; }
+body.mobile-ui #matchPrepView .prep-container.own-blue .blue-prep { order: -1; }
+body.mobile-ui #matchPrepView .prep-column .alliance-header-large { border-radius: 9px; }
+body.mobile-ui #matchPrepView .prep-team-card { margin-bottom: 8px; padding: 12px; }
+body.mobile-ui #matchPrepView .prep-team-card .prep-card-header { align-items: center; }
+body.mobile-ui #matchPrepView .prep-team-number { font-size: 1.6rem !important; }
+body.mobile-ui #matchPrepView .prep-action-btns { gap: 8px; }
+body.mobile-ui #matchPrepView .prep-action-btns button { padding: 8px 6px !important; }
+body.mobile-ui #matchPrepView .prep-quick-stats { font-size: 0.7rem; }
+body.mobile-ui #matchPrepView .chart-container-prep { margin-top: 18px; }
+
+body.mobile-ui .live-event-home { padding-bottom: 10px; }
+body.mobile-ui .live-event-heading {
+    display: flex;
+    justify-content: space-between;
+    align-items: flex-start;
+    flex-wrap: wrap;
+    gap: 8px;
+    margin: 10px 0 14px;
+}
+
+body.mobile-ui .live-event-eyebrow,
+body.mobile-ui .team-search-label {
+    color: #94a3b8;
+    font-size: 0.72rem;
+    font-weight: 800;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+}
+
+body.mobile-ui .sync-freshness { color: #94a3b8; font-size: 0.76rem; }
+body.mobile-ui .live-event-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; margin-top: 12px; }
+body.mobile-ui .live-event-actions button { min-height: 44px; }
+body.mobile-ui .live-event-actions .secondary-action { background: #1e293b; border: 1px solid #475569; }
+
+body.mobile-ui .live-match-card {
+    border: 1px solid #334155;
+    border-radius: 12px;
+    background: #111c30;
+    padding: 12px;
+    margin-bottom: 10px;
+}
+
+body.mobile-ui .live-match-card h3 { margin: 0; font-size: 1.08rem; }
+body.mobile-ui .live-match-card .mobile-alliance-row { padding: 8px 0; }
+body.mobile-ui .live-match-card .mobile-match-bottom { padding: 8px 0 0; }
+body.mobile-ui .live-latest-result { color: #cbd5e1; padding: 10px 2px; border-top: 1px solid #334155; }
+
+body.mobile-ui #teamDetailView { padding: 0 12px 84px !important; }
+body.mobile-ui #teamDetailView .view-header-container { gap: 8px; }
+body.mobile-ui #teamDetailTabs { max-width: 100%; }
+body.mobile-ui #teamDetailView .detail-tab-btn { padding: 8px 10px; font-size: 0.82rem; }
+body.mobile-ui #tab-overview > div:first-child { gap: 12px !important; }
+body.mobile-ui #tab-overview img { width: min(42vw, 160px) !important; min-width: 0 !important; max-height: 220px !important; }
+body.mobile-ui #tab-overview table { font-size: 0.82em !important; }
+body.mobile-ui #tab-overview table th,
+body.mobile-ui #tab-overview table td { padding: 7px 6px !important; }
+body.mobile-ui #dataView .tbl-scroll > table { min-width: 600px; }
+body.mobile-ui #atAGlanceTable { min-width: 720px !important; }
+
+body.mobile-ui .mobile-team-quick-view { align-items: flex-end; padding: 12px 10px calc(74px + env(safe-area-inset-bottom, 0px)); }
+body.mobile-ui .mobile-team-quick-card { max-height: 80vh; padding: 20px 16px 16px; }
+
+@media (max-width: 360px) {
+    body.mobile-ui .site-header h1 { font-size: 0.96rem; }
+    body.mobile-ui .mobile-nav-item { font-size: 0.58rem; }
+    body.mobile-ui .mobile-alliance-row { grid-template-columns: 46px minmax(0, 1fr); gap: 6px; padding-inline: 7px; }
+    body.mobile-ui .mobile-team-chips { gap: 4px; }
+    body.mobile-ui .mobile-team-chip { font-size: 0.83rem; }
+}
+
+body.light-mode .mobile-match-card,
+body.light-mode .live-match-card,
+body.light-mode .live-empty-state,
+body.light-mode .mobile-empty-state,
+body.light-mode .team-finder-row,
+body.light-mode #teamFinderSearch {
+    background: #fff;
+    border-color: #cbd5e1;
+    color: #0f172a;
+}
+body.light-mode .mobile-match-topline { background: #f1f5f9 !important; }
+body.light-mode .mobile-match-open,
+body.light-mode .team-finder-number,
+body.light-mode .mobile-team-quick-card h2,
+body.light-mode .mobile-team-quick-stat strong { color: #0f172a; }
+body.light-mode .mobile-match-time,
+body.light-mode .mobile-match-state,
+body.light-mode .team-finder-name,
+body.light-mode .team-finder-metric,
+body.light-mode .sync-freshness,
+body.light-mode .mobile-live-state { color: #475569; }
+body.light-mode .mobile-team-chip { background: #fff; }
+body.light-mode .mobile-team-quick-card { background: #fff; border-color: #cbd5e1; }
+body.light-mode .mobile-quick-stat { background: #f1f5f9; color: #475569; }
+body.light-mode .mobile-quick-match { background: #e2e8f0; color: #0f172a; }
+body.light-mode #matchPrepView .prep-quick-stats span { background: #f1f5f9; color: #475569; }

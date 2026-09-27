@@ -189,6 +189,7 @@ async function applyNexusEventData(data) {
     updateNexusScheduleStatus();
     updateScheduleCountdowns();
     updateHomeBanner();
+    if (document.getElementById('home-tab-live')?.style.display !== 'none') renderLiveEventHome();
     check1768QueueNotifications();
     await _clearScoredNexusStatusBar();
 }
@@ -218,6 +219,12 @@ function updateNexusScheduleStatus() {
             td.appendChild(span);
         }
         span.innerHTML = badge;
+    });
+    document.querySelectorAll('.mobile-match-card[data-match-key]').forEach(card => {
+        const cached = nexusMatchCache[card.dataset.matchKey];
+        if (!cached?.status) return;
+        const status = card.querySelector('.mobile-match-bottom .mobile-match-state');
+        if (status) status.textContent = cached.status;
     });
 }
 
@@ -466,6 +473,8 @@ function updateAppEventKey(eventKey) {
         document.title = 'Nashoba Robotics — Event Hub';
         if (selectBtn) selectBtn.textContent = 'Select Event';
     }
+    if (document.getElementById('home-tab-live')?.style.display !== 'none') renderLiveEventHome();
+    if (document.getElementById('teamFinderView')?.style.display !== 'none') renderTeamFinder(document.getElementById('teamFinderSearch')?.value || '');
 }
 
 // ── EVENT SELECTOR ─────────────────────────────────────────────────────────────
@@ -792,19 +801,74 @@ window.fetchSchedule = async function (eventKey) {
     }
 };
 
+function escapeMobileText(value) {
+    return String(value ?? '').replace(/[&<>"']/g, ch => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' })[ch]);
+}
+
+function mobileTeamChip(teamNumber, alliance) {
+    const team = String(teamNumber);
+    const own = team === OWN_TEAM ? ' is-own' : '';
+    return `<button class="mobile-team-chip ${alliance}${own}" data-team="${escapeMobileText(team)}"
+        aria-label="Open team ${escapeMobileText(team)} details"
+        onclick="openMobileTeamProfile('${encodeURIComponent(team)}')">${escapeMobileText(team)}${team === OWN_TEAM ? ' ★' : ''}</button>`;
+}
+
+function renderMobileScheduleCards(matches) {
+    const host = document.getElementById('mobileScheduleCards');
+    if (!host) return;
+    if (!matches.length) {
+        const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
+        host.innerHTML = `<div class="mobile-empty-state"><strong>No schedule cached${eventKey ? ` for ${escapeMobileText(eventKey)}` : ''}.</strong>
+            <div>Sync the event schedule to see matches and open team details.</div>
+            <button onclick="syncSchedule()">Sync schedule</button></div>`;
+        return;
+    }
+
+    const now = Math.floor(Date.now() / 1000);
+    host.innerHTML = matches.map(match => {
+        const key = encodeURIComponent(String(match.key));
+        const teams = [...(match.red || []), ...(match.blue || [])].map(String);
+        const played = Number(match.redScore) >= 0 && Number(match.blueScore) >= 0;
+        const status = played
+            ? 'Final'
+            : (nexusMatchCache[match.key]?.status || (match.predictedTime && match.predictedTime < now ? 'Awaiting result' : 'Upcoming'));
+        const time = !played && match.predictedTime
+            ? `<span class="mobile-match-time" data-predicted-time="${Number(match.predictedTime)}"></span>`
+            : `<span class="mobile-match-state">${escapeMobileText(status)}</span>`;
+        const result = played
+            ? `<span class="mobile-match-score">${Number(match.redScore)} – ${Number(match.blueScore)}</span>`
+            : `<span class="mobile-match-state">${escapeMobileText(status)}</span>`;
+        return `<article class="mobile-match-card${window.currentFocusedTeam && teams.includes(String(window.currentFocusedTeam)) ? ' is-focused' : ''}"
+                    data-match-key="${escapeMobileText(String(match.key))}" data-teams="${teams.map(escapeMobileText).join(',')}">
+            <div class="mobile-match-topline">
+                <button class="mobile-match-open" onclick="viewMatchPrep(decodeURIComponent('${key}'))">QM ${Number(match.matchNumber)} · Match prep</button>
+                ${time}
+            </div>
+            <div class="mobile-alliance-row">
+                <span class="mobile-alliance-label" style="color:#fca5a5;">RED</span>
+                <div class="mobile-team-chips">${(match.red || []).map(team => mobileTeamChip(team, 'red')).join('')}</div>
+            </div>
+            <div class="mobile-alliance-row">
+                <span class="mobile-alliance-label" style="color:#93c5fd;">BLUE</span>
+                <div class="mobile-team-chips">${(match.blue || []).map(team => mobileTeamChip(team, 'blue')).join('')}</div>
+            </div>
+            <div class="mobile-match-bottom">
+                ${result}
+                ${played ? `<button class="secondary-action" onclick="viewMatchDetail(decodeURIComponent('${key}'))">Score & video</button>` : `<button class="secondary-action" onclick="viewMatchPrep(decodeURIComponent('${key}'))">Prep</button>`}
+            </div>
+        </article>`;
+    }).join('');
+}
+
 window.displaySchedule = async function () {
     const body = document.getElementById('scheduleBody');
     if (!body) return;
 
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
     const matches = (await db.matches.orderBy('matchNumber').toArray())
-        .filter(m => !m.compLevel || m.compLevel === 'qm');
+        .filter(m => (!eventKey || m.eventKey === eventKey) && (!m.compLevel || m.compLevel === 'qm'));
     const isMobile = document.body.classList.contains('mobile-ui');
     const thead = document.querySelector('#scheduleTable thead');
-
-    if (matches.length === 0) {
-        body.innerHTML = `<tr><td colspan="${isMobile ? 5 : 8}" style="text-align:center; padding:20px;">No matches cached. Hit "Sync Schedule" on the Home tab.</td></tr>`;
-        return;
-    }
 
     // Rebuild thead to match layout
     if (isMobile) {
@@ -825,6 +889,12 @@ window.displaySchedule = async function () {
                 <th class="red-header">1</th><th class="red-header">2</th><th class="red-header">3</th>
                 <th class="blue-header">1</th><th class="blue-header">2</th><th class="blue-header">3</th>
             </tr>`;
+    }
+
+    if (matches.length === 0) {
+        body.innerHTML = `<tr><td colspan="${isMobile ? 5 : 8}" style="text-align:center; padding:20px;">No matches cached. Sync the schedule from Event Setup.</td></tr>`;
+        renderMobileScheduleCards([]);
+        return;
     }
 
     body.innerHTML = '';
@@ -911,11 +981,13 @@ window.displaySchedule = async function () {
             body.appendChild(row);
         }
     });
+    renderMobileScheduleCards(matches);
     applyScheduleFilter();
     clearInterval(_scheduleCountdownInterval);
     updateScheduleCountdowns();
     _scheduleCountdownInterval = setInterval(updateScheduleCountdowns, 1_000);
     updateHomeBanner();
+    if (document.getElementById('home-tab-live')?.style.display !== 'none') renderLiveEventHome();
 };
 
 let prepChartInstance = null; // Global variable to handle chart destruction
@@ -967,7 +1039,13 @@ async function updateHomeBanner() {
     if (!banner) return;
 
     const now = Math.floor(Date.now() / 1000);
-    const matches = await db.matches.orderBy('matchNumber').toArray();
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
+    const matches = (await db.matches.orderBy('matchNumber').toArray())
+        .filter(m => !eventKey || m.eventKey === eventKey);
+    const active = matches.find(m =>
+        (m.redScore ?? -1) < 0 && (m.red?.includes(OWN_TEAM) || m.blue?.includes(OWN_TEAM)) &&
+        ['on field', 'on deck', 'now queuing'].includes(String(nexusMatchCache[m.key]?.status || '').toLowerCase())
+    );
     const next = matches.find(m =>
         m.redScore <= -1 &&
         m.predictedTime &&
@@ -975,15 +1053,16 @@ async function updateHomeBanner() {
         (m.red?.includes('1768') || m.blue?.includes('1768'))
     );
 
-    if (!next) {
+    const selected = active || next;
+    if (!selected) {
         banner.style.display = 'none';
         _bannerMatchTime = null;
         return;
     }
 
-    _bannerMatchNum  = next.matchNumber;
-    _bannerMatchTime = next.predictedTime;
-    _bannerAlliance  = next.red?.includes('1768') ? 'red' : 'blue';
+    _bannerMatchNum  = selected.matchNumber;
+    _bannerMatchTime = active ? null : selected.predictedTime;
+    _bannerAlliance  = selected.red?.includes(OWN_TEAM) ? 'red' : 'blue';
 
     if (allianceEl) {
         allianceEl.textContent = _bannerAlliance === 'red' ? 'Red' : 'Blue';
@@ -991,8 +1070,189 @@ async function updateHomeBanner() {
         allianceEl.style.background = _bannerAlliance === 'red' ? '#7f1d1d55' : '#1e3a5f55';
     }
 
-    updateBannerTick();
+    if (active) {
+        document.getElementById('match-countdown-text').textContent = `QM ${_bannerMatchNum} · ${nexusMatchCache[selected.key]?.status}`;
+        banner.style.display = 'flex';
+    } else {
+        updateBannerTick();
+    }
 }
+
+window.openNextOwnMatchPrep = async function () {
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
+    const now = Math.floor(Date.now() / 1000);
+    const matches = (await db.matches.orderBy('matchNumber').toArray())
+        .filter(m => (!eventKey || m.eventKey === eventKey) && (m.red?.includes(OWN_TEAM) || m.blue?.includes(OWN_TEAM)))
+        .sort((a, b) => a.matchNumber - b.matchNumber);
+    const active = matches.find(m => (m.redScore ?? -1) < 0 && ['on field', 'on deck', 'now queuing'].includes(String(nexusMatchCache[m.key]?.status || '').toLowerCase()));
+    const next = active || matches.find(m => (m.redScore ?? -1) < 0 && m.predictedTime && m.predictedTime > now)
+        || matches.find(m => (m.redScore ?? -1) < 0);
+    if (next) await window.viewMatchPrep(next.key);
+    else window.switchView('scheduleView');
+};
+
+function mobileAllianceMarkup(teams, alliance) {
+    const label = alliance === 'red' ? 'RED' : 'BLUE';
+    const color = alliance === 'red' ? '#fca5a5' : '#93c5fd';
+    return `<div class="mobile-alliance-row"><span class="mobile-alliance-label" style="color:${color};">${label}</span>
+        <div class="mobile-team-chips">${(teams || []).map(team => mobileTeamChip(team, alliance)).join('')}</div></div>`;
+}
+
+function mobileLiveMatchCard(match, label, highlightOwn = false) {
+    if (!match) return '';
+    const key = encodeURIComponent(String(match.key));
+    const hasScore = Number(match.redScore) >= 0 && Number(match.blueScore) >= 0;
+    const status = nexusMatchCache[match.key]?.status || 'Upcoming';
+    const summary = hasScore
+        ? `<span class="mobile-match-score">${Number(match.redScore)} – ${Number(match.blueScore)}</span>`
+        : `<span class="mobile-match-state">${escapeMobileText(status)}</span>`;
+    return `<section class="live-match-card">
+        <div class="mobile-match-topline" style="padding:0 0 8px;background:transparent;">
+            <div><div class="live-event-eyebrow">${escapeMobileText(label)}</div><h3>QM ${Number(match.matchNumber)}</h3></div>
+            ${match.predictedTime && !hasScore ? `<span class="mobile-match-time" data-predicted-time="${Number(match.predictedTime)}"></span>` : summary}
+        </div>
+        ${mobileAllianceMarkup(match.red, 'red')}
+        ${mobileAllianceMarkup(match.blue, 'blue')}
+        <div class="mobile-match-bottom">
+            ${hasScore ? summary : `<span class="mobile-match-state">${highlightOwn ? 'Next match for 1768' : escapeMobileText(status)}</span>`}
+            <button onclick="viewMatchPrep(decodeURIComponent('${key}'))">Match prep</button>
+        </div>
+    </section>`;
+}
+
+window.renderLiveEventHome = async function () {
+    const content = document.getElementById('liveEventContent');
+    if (!content) return;
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase() || '';
+    const title = document.getElementById('liveEventTitle');
+    const freshness = document.getElementById('liveScheduleFreshness');
+    if (title) title.textContent = eventKey ? eventKey.toUpperCase() : 'No event selected';
+    const eventSync = eventKey ? (localStorage.getItem(`lastSync_schedule_${eventKey}`) || localStorage.getItem(`lastSync_tbaMatches_${eventKey}`)) : null;
+    if (freshness) freshness.textContent = eventSync ? `Schedule synced ${eventSync}` : 'Schedule sync time unavailable';
+
+    if (!eventKey) {
+        content.innerHTML = `<div class="live-empty-state">Select an event to see its schedule, the next 1768 match, and team details.</div>`;
+        return;
+    }
+
+    const matches = (await db.matches.where('eventKey').equals(eventKey).toArray())
+        .filter(match => !match.compLevel || match.compLevel === 'qm')
+        .sort((a, b) => a.matchNumber - b.matchNumber);
+    const now = Math.floor(Date.now() / 1000);
+    const unplayed = match => Number(match.redScore ?? -1) < 0 || Number(match.blueScore ?? -1) < 0;
+    const onField = matches.find(match =>
+        unplayed(match) && String(nexusMatchCache[match.key]?.status || '').toLowerCase() === 'on field'
+    );
+    const ownMatches = matches.filter(match =>
+        (match.red || []).map(String).includes(OWN_TEAM) || (match.blue || []).map(String).includes(OWN_TEAM)
+    );
+    const ownUnplayed = ownMatches.filter(unplayed);
+    const nextOwn = ownUnplayed.find(match => Number(match.predictedTime) > now) || ownUnplayed[0] || null;
+    const latestOwnResult = [...ownMatches].reverse().find(match => !unplayed(match)) || null;
+    const totalPlayed = matches.filter(match => !unplayed(match)).length;
+
+    if (!matches.length) {
+        content.innerHTML = `<div class="live-empty-state">No matches are cached for ${escapeMobileText(eventKey)} yet. Open Event Setup and sync the schedule.</div>`;
+        return;
+    }
+
+    const currentBlock = onField && onField.key !== nextOwn?.key
+        ? mobileLiveMatchCard(onField, 'On field now') : '';
+    const nextBlock = nextOwn
+        ? mobileLiveMatchCard(nextOwn, 'Next for 1768', true)
+        : `<div class="live-empty-state">1768 has no unplayed qualification matches in the cached schedule.</div>`;
+    const latestBlock = latestOwnResult
+        ? `<div class="live-latest-result"><strong>Latest 1768 result:</strong> QM ${Number(latestOwnResult.matchNumber)} · ${Number(latestOwnResult.redScore)}–${Number(latestOwnResult.blueScore)}
+            <button class="secondary-action" style="margin-left:8px;min-height:38px;" onclick="viewMatchDetail('${encodeURIComponent(String(latestOwnResult.key))}')">Details</button></div>`
+        : '';
+    content.innerHTML = `${currentBlock}${nextBlock}<div class="live-latest-result">${totalPlayed} of ${matches.length} qualification matches have results.</div>${latestBlock}`;
+};
+
+window.openTeamFinder = function () {
+    window.switchView('teamFinderView');
+};
+
+window.renderTeamFinder = async function (query = '') {
+    const host = document.getElementById('teamFinderResults');
+    if (!host) return;
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase() || '';
+    const needle = String(query).trim().toLowerCase();
+    const [eventTeams, tbaTeams, matches] = await Promise.all([
+        eventKey ? db.teams.where('eventKey').equals(eventKey).toArray() : db.teams.toArray(),
+        eventKey ? db.tbaTeams.where('eventKey').equals(eventKey).toArray() : db.tbaTeams.toArray(),
+        eventKey ? db.matches.where('eventKey').equals(eventKey).toArray() : db.matches.toArray(),
+    ]);
+    const teamMap = new Map(eventTeams.map(team => [String(team.teamNumber), { ...team }]));
+    const tbaMap = new Map(tbaTeams.map(team => [String(team.teamNumber), team]));
+    for (const match of matches) {
+        for (const number of [...(match.red || []), ...(match.blue || [])].map(String)) {
+            if (!teamMap.has(number)) teamMap.set(number, { teamNumber: Number(number), eventKey });
+        }
+    }
+    const rows = [...teamMap.values()].map(team => {
+        const number = String(team.teamNumber);
+        const tba = tbaMap.get(number);
+        const name = team.teamName || tba?.teamName || '';
+        const appearances = matches.reduce((count, match) => count + ((match.red || []).map(String).includes(number) || (match.blue || []).map(String).includes(number) ? 1 : 0), 0);
+        return { number, name, epa: team.currentEPA, opr: tba?.opr, appearances };
+    }).filter(team => !needle || team.number.includes(needle) || team.name.toLowerCase().includes(needle))
+      .sort((a, b) => Number(b.appearances > 0) - Number(a.appearances > 0) || Number(b.epa ?? b.opr ?? -1) - Number(a.epa ?? a.opr ?? -1) || Number(a.number) - Number(b.number))
+      .slice(0, 50);
+
+    if (!rows.length) {
+        host.innerHTML = needle
+            ? `<div class="mobile-empty-state">No teams match “${escapeMobileText(query)}”. Try the team number.</div>`
+            : `<div class="mobile-empty-state">No event teams are available yet. Sync the schedule or team data first.</div>`;
+        return;
+    }
+    host.innerHTML = rows.map(team => {
+        const metric = team.epa != null ? `EPA ${Number(team.epa).toFixed(1)}` : team.opr != null ? `OPR ${Number(team.opr).toFixed(1)}` : `${team.appearances} matches`;
+        return `<button class="team-finder-row" onclick="openMobileTeamProfile('${encodeURIComponent(team.number)}')">
+            <span class="team-finder-number">${escapeMobileText(team.number)}${team.number === OWN_TEAM ? ' ★' : ''}</span>
+            <span class="team-finder-name">${escapeMobileText(team.name || 'Team profile')}</span>
+            <span class="team-finder-metric">${escapeMobileText(metric)}</span>
+        </button>`;
+    }).join('');
+};
+
+window.openMobileTeamProfile = async function (encodedTeamNumber) {
+    const teamNumber = decodeURIComponent(String(encodedTeamNumber));
+    const team = await db.teams.get(parseInt(teamNumber, 10));
+    if (team) {
+        await window.viewTeamDetail(parseInt(teamNumber, 10), 'overview');
+        return;
+    }
+    const [tba, matches] = await Promise.all([
+        db.tbaTeams.get(parseInt(teamNumber, 10)),
+        (document.getElementById('eventKeyInput')?.value.trim().toLowerCase()
+            ? db.matches.where('eventKey').equals(document.getElementById('eventKeyInput').value.trim().toLowerCase()).toArray()
+            : db.matches.toArray()),
+    ]);
+    const relevant = matches.filter(match => [...(match.red || []), ...(match.blue || [])].map(String).includes(teamNumber))
+        .sort((a, b) => b.matchNumber - a.matchNumber).slice(0, 5);
+    const host = document.getElementById('mobileTeamQuickContent');
+    const overlay = document.getElementById('mobileTeamQuickView');
+    if (!host || !overlay) return;
+    const stats = [
+        ['Event OPR', tba?.opr], ['Auto', tba?.autoOPR], ['Teleop', tba?.teleopOPR], ['Endgame', tba?.endgameOPR],
+    ].filter(([, value]) => value != null).map(([label, value]) => `<div class="mobile-quick-stat"><span>${label}</span><strong>${Number(value).toFixed(1)}</strong></div>`).join('');
+    const history = relevant.map(match => {
+        const alliance = (match.red || []).map(String).includes(teamNumber) ? 'Red' : 'Blue';
+        const score = Number(match.redScore) >= 0 && Number(match.blueScore) >= 0 ? `${Number(match.redScore)}–${Number(match.blueScore)}` : 'Not played';
+        return `<button class="mobile-quick-match" onclick="closeMobileTeamQuickView();viewMatchPrep('${encodeURIComponent(String(match.key))}')">QM ${Number(match.matchNumber)} · ${alliance} · ${score}</button>`;
+    }).join('');
+    host.innerHTML = `<h2 id="mobileTeamQuickTitle">Team ${escapeMobileText(teamNumber)}</h2>
+        <p style="color:#94a3b8;margin:4px 0 14px;">${escapeMobileText(tba?.teamName || 'No synced team profile yet')}</p>
+        ${stats ? `<div class="mobile-quick-stats">${stats}</div>` : '<p style="color:#94a3b8;">No performance data is cached for this team yet.</p>'}
+        <h3 style="margin:18px 0 8px;">Recent matches</h3>${history || '<p style="color:#94a3b8;">No matches for this team are cached.</p>'}
+        <a href="https://www.thebluealliance.com/team/${encodeURIComponent(teamNumber)}" target="_blank" rel="noopener" style="display:inline-flex;margin-top:14px;color:#93c5fd;">Team details on TBA ↗</a>`;
+    overlay.style.display = 'flex';
+};
+
+window.closeMobileTeamQuickView = function () {
+    const overlay = document.getElementById('mobileTeamQuickView');
+    if (overlay) overlay.style.display = 'none';
+};
 
 function updateScheduleCountdowns() {
     const now = Math.floor(Date.now() / 1000);
@@ -1034,6 +1294,14 @@ window.viewMatchPrep = async function (matchKey) {
     currentPrepMatch = match;
 
     document.getElementById('prepMatchLabel').innerText = `Match Prep: Qual ${match.matchNumber}`;
+    const ownAlliance = (match.red || []).map(String).includes(OWN_TEAM) ? 'red' : (match.blue || []).map(String).includes(OWN_TEAM) ? 'blue' : null;
+    const prepContainer = document.querySelector('#matchPrepView .prep-container');
+    prepContainer?.classList.toggle('own-blue', ownAlliance === 'blue');
+    prepContainer?.classList.toggle('own-red', ownAlliance === 'red');
+    const redHeader = document.querySelector('#matchPrepView .red-prep .alliance-header-large');
+    const blueHeader = document.querySelector('#matchPrepView .blue-prep .alliance-header-large');
+    if (redHeader) redHeader.textContent = ownAlliance === 'red' ? 'Red Alliance · You' : 'Red Alliance';
+    if (blueHeader) blueHeader.textContent = ownAlliance === 'blue' ? 'Blue Alliance · You' : 'Blue Alliance';
     const isSplit = document.body.classList.contains('split-ui');
     if (isSplit) {
         pushCurrentRightPanel();
@@ -1089,22 +1357,35 @@ window.viewMatchPrep = async function (matchKey) {
 
         // Fallback if team data hasn't been synced yet
         if (!team) {
-            return `<div class="prep-team-card"><h3>Team ${teamNum}</h3><p>No data. Sync Statbotics.</p></div>`;
+            const encoded = encodeURIComponent(String(teamNum));
+            const tba = await db.tbaTeams.get(parseInt(teamNum, 10));
+            const fallbackStat = tba?.opr != null ? ` · OPR ${Number(tba.opr).toFixed(1)}` : '';
+            return `<div class="prep-team-card">
+                <button class="prep-missing-team" onclick="openMobileTeamProfile('${encoded}')">Team ${escapeMobileText(teamNum)}${fallbackStat}</button>
+                <p>No Statbotics profile is cached. Open available match and TBA information.</p>
+            </div>`;
         }
 
         const tier = overallTierOf(team);
         const hasNote = !!getTeamNote(teamNum, matchNumber)?.text;
         const qmArg = matchNumber != null ? matchNumber : 'null';
 
+        const autoEPA = Number(team.autoEPA || 0).toFixed(1);
+        const teleopEPA = Number(team.teleopEPA || 0).toFixed(1);
+        const endgameEPA = Number(team.endgameEPA || 0).toFixed(1);
         return `
         <div class="prep-team-card ${focusClass}" id="prep-card-${teamNum}">
-            <div class="prep-card-header" onclick="highlightTeam('${teamNum}')" style="cursor:pointer;">
+            <div class="prep-card-header" onclick="openMobileTeamProfile('${encodeURIComponent(String(teamNum))}')" style="cursor:pointer;">
                 <div class="header-left">
                     <span class="prep-team-number">${teamNum}</span>
-                    <div style="color:#94a3b8;font-size:0.78em;font-weight:600;">EPA ${team.currentEPA.toFixed(1)}${localEpaBadge(team)}</div>
+                    <div class="prep-team-meta">
+                        <span style="color:#cbd5e1;font-size:0.82em;font-weight:600;">${escapeMobileText(team.teamName || `Team ${teamNum}`)}</span>
+                        <span style="color:#94a3b8;font-size:0.78em;font-weight:600;">EPA ${Number(team.currentEPA || 0).toFixed(1)}${localEpaBadge(team)}</span>
+                    </div>
                 </div>
                 ${tierBadge(tier, 'prep-tier-badge', 'Tier')}
             </div>
+            <div class="prep-quick-stats"><span>Auto ${autoEPA}</span><span>Teleop ${teleopEPA}</span><span>Endgame ${endgameEPA}</span></div>
 
             <div class="prep-action-btns" style="display:flex;gap:8px;margin-top:10px;">
                 <button onclick="viewTeamDetail(${teamNum})" style="flex:1;background:#1e293b;color:#94a3b8;border:1px solid #334155;border-radius:6px;padding:7px;font-size:0.82em;font-weight:600;cursor:pointer;">View Profile</button>
@@ -2025,7 +2306,9 @@ window.highlightTeam = function (teamNumber) {
 
     // 1. Clear previous
     allCells.forEach(cell => cell.classList.remove('highlight-active'));
+    document.querySelectorAll('.mobile-team-chip').forEach(cell => cell.classList.remove('highlight-active'));
     allRows.forEach(row => row.classList.remove('row-highlight'));
+    document.querySelectorAll('.mobile-match-card').forEach(card => card.classList.remove('is-focused'));
 
     // 2. Toggle check (using window.currentFocusedTeam)
     if (window.currentFocusedTeam === teamNumber.toString()) {
@@ -2042,6 +2325,8 @@ window.highlightTeam = function (teamNumber) {
             cell.classList.add('highlight-active');
             const parentRow = cell.closest('tr');
             if (parentRow) parentRow.classList.add('row-highlight');
+            const card = cell.closest('.mobile-match-card');
+            if (card) card.classList.add('is-focused');
         });
 
         window.currentFocusedTeam = teamNumber.toString();
@@ -2058,7 +2343,9 @@ window.refreshPrepHighlight = function () {
 
     // 1. Update the Team Cards
     allCards.forEach(card => {
-        const teamNum = card.querySelector('.prep-card-header span').innerText;
+        const teamNumEl = card.querySelector('.prep-card-header .prep-team-number');
+        if (!teamNumEl) return;
+        const teamNum = teamNumEl.innerText;
         if (window.currentFocusedTeam === teamNum) {
             card.classList.add('highlight-active');
         } else {
@@ -2202,6 +2489,8 @@ async function processTeamPerformance(teamNumber, eventKey, force = false, teamE
 function setSyncTimestamp(key) {
     const str = new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
     localStorage.setItem(`lastSync_${key}`, str);
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
+    if (eventKey && key === 'tbaMatches') localStorage.setItem(`lastSync_tbaMatches_${eventKey}`, str);
     const el = document.getElementById(`ts-${key}`);
     if (el) el.textContent = `Last sync: ${str}`;
 }
@@ -2472,8 +2761,11 @@ window.syncSchedule = async function () {
         // Fetch webcasts from event metadata, then enrich with YouTube stream start times
         try { await _fetchAndStoreWebcasts(eventKey); } catch (e) { console.warn('Could not fetch webcasts:', e); }
 
+        localStorage.setItem(`lastSync_schedule_${eventKey}`, new Date().toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }));
+
         statusDiv.innerText = "✅ Schedule Sync Complete!";
         displaySchedule();
+        if (document.getElementById('home-tab-live')?.style.display !== 'none') renderLiveEventHome();
         maybeAutoActivateNexus();
         startNexusDirectPolling();
     } catch (err) {
@@ -4690,13 +4982,14 @@ let glanceSortColumn = 'rp';
 let glanceSortOrder = 1; // 1 = descending
 
 window.switchHomeTab = function (tab) {
-    ['setup', 'overview', 'stream'].forEach(t => {
-        const display = t === tab ? (t === 'setup' ? 'grid' : 'block') : 'none';
+    ['live', 'setup', 'overview', 'stream'].forEach(t => {
+        const display = t === tab ? (t === 'setup' || t === 'live' ? 'grid' : 'block') : 'none';
         document.getElementById(`home-tab-${t}`).style.display = display;
     });
     document.querySelectorAll('#homeTabs .detail-tab-btn').forEach((btn, i) => {
-        btn.classList.toggle('active', ['setup', 'overview', 'stream'][i] === tab);
+        btn.classList.toggle('active', ['live', 'setup', 'overview', 'stream'][i] === tab);
     });
+    if (tab === 'live') renderLiveEventHome();
     if (tab === 'overview') renderAtAGlance();
     if (tab === 'stream')   renderStreamsTab();
 };
@@ -5257,10 +5550,13 @@ window.setGloballyIgnored = async function (matchKey, ignored) {
     }
 };
 
-window.viewTeamDetail = async function (teamNumber, tab = lastDetailTab) {
+window.viewTeamDetail = async function (teamNumber, tab = 'overview') {
     activeTeamNumber = teamNumber; // <--- ADD THIS LINE
     const team = await db.teams.get(teamNumber);
-    if (!team) return;
+    if (!team) {
+        if (window.openMobileTeamProfile) await window.openMobileTeamProfile(encodeURIComponent(String(teamNumber)));
+        return;
+    }
 
     const view = document.getElementById('teamDetailView');
     const label = document.getElementById('detailTeamLabel');
@@ -5342,7 +5638,13 @@ window.viewTeamDetail = async function (teamNumber, tab = lastDetailTab) {
 
     activeTeamData = team;
     activeTBAData = await db.tbaTeams.get(teamNumber) || await db.tbaTeams.get(parseInt(teamNumber));
-    if (tab === 'epa-opr') { lastDetailDataSubTab = 'epa'; tab = 'data'; }
+    const profileAliases = { 'epa-opr': 'epa', scouting: 'scouting', 'pit-data': 'pit' };
+    if (profileAliases[tab]) {
+        lastDetailDataSubTab = profileAliases[tab];
+        tab = 'data';
+    } else if (!['overview', 'matches', 'data', 'routes'].includes(tab)) {
+        tab = 'overview';
+    }
     switchDetailTab(tab);
 
     window.switchView('teamDetailView');
@@ -5391,6 +5693,11 @@ function applyScheduleFilter() {
             const next = row.nextElementSibling;
             if (next && !next.dataset.teams) next.style.display = show ? '' : 'none';
         }
+    });
+
+    document.querySelectorAll('.mobile-match-card[data-teams]').forEach(card => {
+        const teams = (card.dataset.teams || '').split(',');
+        card.style.display = !active || teams.includes(team) ? '' : 'none';
     });
 
     if (!active) return;
@@ -7214,8 +7521,11 @@ window.addEventListener('popstate', () => {
     }
 });
 
-window.setUIMode = function (mode) {
-    localStorage.setItem('uiMode', mode);
+window.setUIMode = function (mode, persist = true) {
+    if (persist) {
+        localStorage.setItem('uiMode', mode);
+        localStorage.setItem('uiModeManual', 'true');
+    }
     document.body.classList.toggle('mobile-ui', mode === 'mobile');
     document.body.classList.toggle('split-ui', mode === 'split');
     document.getElementById('desktopModeBtn')?.classList.toggle('active', mode === 'desktop');
@@ -7226,9 +7536,20 @@ window.setUIMode = function (mode) {
 
 function initUIMode() {
     const saved = localStorage.getItem('uiMode');
-    const isMobile = /Mobi|Android|iPhone/i.test(navigator.userAgent);
-    const mode = saved || (isMobile ? 'mobile' : 'desktop');
-    window.setUIMode(mode);
+    const hasManualPreference = localStorage.getItem('uiModeManual') === 'true' || saved === 'mobile' || saved === 'split';
+    const mobileWidth = window.matchMedia('(max-width: 768px)');
+    const autoMode = () => (mobileWidth.matches || /Mobi|Android|iPhone/i.test(navigator.userAgent)) ? 'mobile' : 'desktop';
+    const apply = (mode, persist = false) => {
+        window.setUIMode(mode, persist);
+        window.switchHomeTab(mode === 'mobile' ? 'live' : 'setup');
+    };
+    if (saved && hasManualPreference) apply(saved, true);
+    else {
+        apply(autoMode());
+        mobileWidth.addEventListener('change', event => {
+            if (localStorage.getItem('uiModeManual') !== 'true') apply(event.matches ? 'mobile' : 'desktop');
+        });
+    }
 }
 
 window.setColorMode = function (mode) {
@@ -7321,7 +7642,7 @@ window.switchView = function (viewId, btn) {
     }
 
     // 4. Sync all nav items (top-nav and mobile bottom nav) by data-view attribute
-    const MAIN_VIEWS = new Set(['homeView', 'scheduleView', 'dataView', 'toolsView']);
+    const MAIN_VIEWS = new Set(['homeView', 'scheduleView', 'teamFinderView', 'dataView', 'toolsView']);
     if (MAIN_VIEWS.has(viewId)) {
         document.querySelectorAll('[data-view]').forEach(b => {
             b.classList.toggle('active', b.dataset.view === viewId);
@@ -7331,6 +7652,7 @@ window.switchView = function (viewId, btn) {
     // 5. Lazy-render tools tab when first opened
     if (viewId === 'toolsView' && currentToolsTab === 'picklist') renderPickList();
     if (viewId === 'toolsView' && currentToolsTab === 'draft') renderDraft();
+    if (viewId === 'teamFinderView') renderTeamFinder(document.getElementById('teamFinderSearch')?.value || '');
 
     // 6. Update the Back button label on the Team Detail page
     updateDetailBackButton();
