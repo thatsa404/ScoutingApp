@@ -9034,6 +9034,15 @@ function legacyRenderGalleryReviewQueue(host, relay, items) {
         block.innerHTML += `<p style="margin:5px 0 8px;color:#94a3b8;font-size:.78em;">Replay: ${Object.entries(counts).map(([state, count]) => `${galleryEsc(state)} ${count}`).join(' · ')}</p>`;
     }
     if (!relay) { block.innerHTML += '<p style="margin:0;color:#f59e0b;font-size:.82em;">Configure the relay above to review gallery candidates.</p>'; host.prepend(block); return; }
+    // An unresolvable scope shows nothing and SAYS SO. Silently empty would read as "no
+    // work waiting" when the truth is "we do not know which event you mean" -- and the
+    // previous behaviour, listing every event at once, was worse than either.
+    if (!eventKey) {
+        block.innerHTML += '<p style="margin:0;color:#f59e0b;font-size:.82em;">'
+            + 'Enter an event key above, or arm the auto-tracker, to review galleries. '
+            + 'Gallery candidates are scoped to one event.</p>';
+        host.prepend(block); return;
+    }
     if (!reviews.length) { block.innerHTML += '<p style="margin:0;color:#64748b;font-size:.82em;">No gallery review bundles waiting.</p>'; host.prepend(block); return; }
     const table = document.createElement('table');
     table.style.cssText = 'width:100%;border-collapse:collapse;font-size:.84em;';
@@ -9080,8 +9089,16 @@ function galleryReviewItemsV2(items, eventKey = null) {
         row[item.kind] = item;
         out.set(item.id, row);
     }
+    // TRUTHINESS WAS THE BUG. This used to be `if (eventKey)`, so an EMPTY event key
+    // skipped the filter and listed every event the relay held -- which is precisely the
+    // state a freshly opened device is in, since the event key lives in localStorage and a
+    // new browser has none. The report was "teams from multiple events are listed", and it
+    // came from the one case the guard let through.
+    //
+    // Now a string always filters, so '' matches nothing (no match key starts with '_')
+    // and the queue is empty rather than cross-event. null is the explicit opt-out.
     let rows = [...out.values()];
-    if (eventKey) {
+    if (typeof eventKey === 'string') {
         rows = rows.filter(r => {
             const m = r['gallery-bundle']?.match;
             return typeof m === 'string' && m.startsWith(eventKey + '_');
@@ -9682,11 +9699,24 @@ function renderJobLines(jobs) {
 // scope because the match table and the control panel are rendered by different functions
 // from the same /index pass, and the table must not re-fetch the status document per row.
 let _agentDetected = {};
+// The event the auto-tracker is actually processing, from the agent's heartbeat. Used to
+// scope the gallery queue when nobody has typed an event key -- which is the normal state
+// of a phone picked up at an event, and the state in which listing every event the season
+// ever produced a bundle for is least useful.
+let _agentEvent = null;
 
 // A match that has been DETECTED but has no bundle and no routes is invisible otherwise:
 // rtrack.pipeline --prep-only writes stage1 tracks and nothing the relay or the published
 // manifest knows about, so the Tracks table falls through to "no tracks" -- identical to a
 // match nobody has touched. That made a successful Detect request look like a failed one.
+// Which event the gallery queue is for. An explicitly typed event key wins, because a
+// person who typed one means it; otherwise the event the tracker is processing, because
+// that is where the bundles are coming from. Never "all events" -- returning '' filters the
+// queue empty, which is the honest answer to "which event is this?" being unanswerable.
+function galleryScopeEvent(eventKey) {
+    return (eventKey || _agentEvent || '');
+}
+
 function agentDetectedSet(eventKey) {
     const list = _agentDetected?.[eventKey];
     return new Set(Array.isArray(list) ? list : []);
@@ -9696,14 +9726,16 @@ async function refreshAgentDetected(relay, items) {
     const agents = relayAgents(items);
     const savedId = localStorage.getItem(AGENT_ID_KEY) || '';
     const agent = agents.find(a => a.id === savedId) || agents[0] || null;
-    if (!relay || !agent) { _agentDetected = {}; return; }
+    if (!relay || !agent) { _agentDetected = {}; _agentEvent = null; return; }
     // One extra GET per Tracks render, not per row: the index metadata deliberately does
     // not carry the match lists, only the summary fields the heartbeat strip needs.
     try {
         const r = await fetch(`${relay}/status/${encodeURIComponent(agent.id)}`,
                               { cache: 'no-store' });
-        _agentDetected = r.ok ? ((await r.json()).detected || {}) : {};
-    } catch { _agentDetected = {}; }
+        const doc = r.ok ? await r.json() : null;
+        _agentDetected = doc?.detected || {};
+        _agentEvent = doc?.event || null;
+    } catch { _agentDetected = {}; _agentEvent = null; }
 }
 
 function renderRelayControl(hostId, relay, items) {
@@ -9953,7 +9985,8 @@ async function renderTracksTab() {
 
     const gal = (man.gallery || {})[eventKey] || {};
     const galleryReviews = relay
-        ? await hydrateGalleryAnswersV2(relay, galleryReviewItemsV2(items || [], eventKey)) : [];
+        ? await hydrateGalleryAnswersV2(relay,
+            galleryReviewItemsV2(items || [], galleryScopeEvent(eventKey))) : [];
     const allianceReviewStats = galleryAllianceReviewStats(galleryReviews, matches);
 
     // Union of THREE sources, and the third is the one that matters most here:
@@ -10175,7 +10208,8 @@ async function renderTracksTab() {
         section.open = localStorage.getItem(key) !== 'closed';
         section.ontoggle = () => localStorage.setItem(key, section.open ? 'open' : 'closed');
     });
-    await renderGalleryReviewQueueV2(body, relay, items || [], matches, galleryReviews, eventKey);
+    await renderGalleryReviewQueueV2(body, relay, items || [], matches, galleryReviews,
+                                     galleryScopeEvent(eventKey));
 }
 
 // ── Field Drawing Tab ────────────────────────────────────────────────────────
