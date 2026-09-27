@@ -2384,9 +2384,119 @@ window.refreshPrepHighlight = function () {
 
 
 
+// ── STATBOTICS WITH MIRRORS ──────────────────────────────────────────────────
+//
+// api.statbotics.io went down in a summer rebuild -- every v3 data route returned 500
+// while the service root still answered -- and the Chief Delphi thread "Statbotics API"
+// (chiefdelphi.com/t/statbotics-api/523282) lists community mirrors of the same codebase.
+// Each was probed against the exact routes this file calls before being trusted:
+//
+//     route                      official   railway   iterativerefinement
+//     /v3/team/X                  500        200       200
+//     /v3/team_year/X/Y           500        200       200
+//     /v3/team_events?event=      500        200       200
+//     /v3/team_matches?...        404        200       404
+//
+// team_matches is the one that matters most and the one only railway still serves -- it
+// feeds getMatchHistory, so without it there is no EPA timeline and no ceiling analysis.
+// Both mirrors send Access-Control-Allow-Origin: *, and these are simple GETs, so no
+// preflight is involved. Both carry full 2026 coverage (necmp1 and mawor rosters match TBA).
+//
+// Order is official first, because it is the source of truth when it is up. Mirrors are
+// forks and can legitimately DIFFER -- iterativerefinement restored offseason events that
+// upstream removed -- so the source that served a sync is reported rather than hidden.
+// Override the list without a rebuild via localStorage 'statboticsBases' (a JSON array),
+// which is the escape hatch for the day a mirror disappears.
+const STATBOTICS_DEFAULT_BASES = [
+    'https://api.statbotics.io',
+    'https://statbotics-production.up.railway.app',
+    'https://api-statbotics.iterativerefinement.com',
+];
+
+function statboticsBases() {
+    try {
+        const v = JSON.parse(localStorage.getItem('statboticsBases') || 'null');
+        if (Array.isArray(v) && v.length && v.every(x => typeof x === 'string')) {
+            return v.map(x => x.trim().replace(/\/+$/, '')).filter(Boolean);
+        }
+    } catch { /* malformed override: fall back to the defaults */ }
+    return STATBOTICS_DEFAULT_BASES;
+}
+
+// PER-ATTEMPT TIMEOUT. The official API did not fail fast while broken: it took 3-8 s to
+// return each 500. A sync makes ~150 calls, so letting a sick primary set the pace would
+// turn a one-minute sync into a twenty-minute one.
+const STATBOTICS_TIMEOUT_MS = 6000;
+
+// CIRCUIT BREAKER. A base that errors or times out is skipped for this long, so a dead
+// primary costs one slow attempt per window instead of one per call. 404 never trips it:
+// a 404 is an answer about a resource or a route, not a sign the server is unwell.
+const STATBOTICS_COOLDOWN_MS = 10 * 60 * 1000;
+const _sbDownUntil = new Map();
+
+// Which base served the most recent successful request, for the sync status line.
+let lastStatboticsSource = null;
+
+function statboticsSourceLabel(base) {
+    if (!base) return null;
+    try { return new URL(base).hostname; } catch { return base; }
+}
+
+// Drop-in for fetch(`https://api.statbotics.io${path}`): returns a Response, so every
+// caller's existing .ok / .status / .json() handling works unchanged.
+//
+//   2xx      -> return it immediately.
+//   404      -> try the next base. A route one mirror lacks (team_matches on
+//               iterativerefinement) is rescued by one that has it. If EVERY base says 404,
+//               that is returned -- which is also the right answer for a team that did not
+//               exist that season, the case getMatchHistory already handles as "no data".
+//   5xx      -> trip the breaker for that base, try the next.
+//   network  -> same as 5xx. Throws only if no base produced an HTTP response at all,
+//               matching fetch's own contract so callers' try/catch still means "offline".
+async function fetchStatbotics(path) {
+    const bases = statboticsBases();
+    const now = Date.now();
+    let live = bases.filter(b => (_sbDownUntil.get(b) || 0) <= now);
+    // Every base is cooling down: try them all anyway rather than fail without asking.
+    // A breaker exists to save time, never to make a reachable server unreachable.
+    if (!live.length) live = bases;
+
+    let notFound = null, lastBad = null, lastErr = null;
+    for (const base of live) {
+        const ctl = new AbortController();
+        const timer = setTimeout(() => ctl.abort(), STATBOTICS_TIMEOUT_MS);
+        try {
+            const r = await fetch(base + path, { signal: ctl.signal });
+            clearTimeout(timer);
+            if (r.ok) {
+                _sbDownUntil.delete(base);
+                lastStatboticsSource = base;
+                return r;
+            }
+            if (r.status === 404) { notFound = r; continue; }
+            if (r.status >= 500) _sbDownUntil.set(base, Date.now() + STATBOTICS_COOLDOWN_MS);
+            lastBad = r;
+        } catch (e) {
+            clearTimeout(timer);
+            _sbDownUntil.set(base, Date.now() + STATBOTICS_COOLDOWN_MS);
+            lastErr = e;
+        }
+    }
+    // A 404 is a meaningful answer; a 500 is not. Prefer the one a caller can act on.
+    if (notFound) return notFound;
+    if (lastBad) return lastBad;
+    throw lastErr || new Error('Statbotics unreachable on every configured base');
+}
+
+// For the status line: nothing when the official API served, the mirror host when one did.
+function statboticsSourceNote() {
+    const src = lastStatboticsSource;
+    if (!src || src === STATBOTICS_DEFAULT_BASES[0]) return '';
+    return ` · Statbotics via mirror ${statboticsSourceLabel(src)}`;
+}
+
 async function getMatchHistory(teamNumber, year) {
-    const url = `https://api.statbotics.io/v3/team_matches?team=${teamNumber}&year=${year}`;
-    const response = await fetch(url);
+    const response = await fetchStatbotics(`/v3/team_matches?team=${teamNumber}&year=${year}`);
     // A team that did not exist in `year` is a 404 with a JSON error body, which is the
     // normal case when loading an old event: the roster comes from TBA (present-day) and
     // is queried against a past season. Not an error worth propagating -- no matches is
@@ -2413,14 +2523,18 @@ async function processTeamPerformance(teamNumber, eventKey, force = false, teamE
     // 1. Check local DB
     const cachedTeam = await db.teams.get(teamNumber);
 
-    const nameResp = await fetch(`https://api.statbotics.io/v3/team/${teamNumber}`);
+    const nameResp = await fetchStatbotics(`/v3/team/${teamNumber}`);
     const nameData = await nameResp.json();
     const teamName = nameData.name || "Unknown Team";
 
     // 2. Handshake (team_year) — used for match count and as fallback for EPA values
-    const summaryResp = await fetch(`https://api.statbotics.io/v3/team_year/${teamNumber}/${year}`);
+    const summaryResp = await fetchStatbotics(`/v3/team_year/${teamNumber}/${year}`);
     const summary = await summaryResp.json();
-    const apiMatchCount = summary.count || summary.data?.count || 0;
+    // v3 reports the match count at record.count; top-level `count` is a v2 leftover that
+    // v3 does not return, so this read 0 for every team. That silently broke the freshness
+    // test below (`cachedTeam.matchCount !== apiMatchCount` compared against 0), and only
+    // surfaced once working mirrors made the response readable again.
+    const apiMatchCount = summary.record?.count ?? summary.count ?? summary.data?.count ?? 0;
 
     console.log(`Team ${teamNumber}: Local Count ${cachedTeam?.matchCount || 0}, API Count ${apiMatchCount}`);
 
@@ -2430,7 +2544,9 @@ async function processTeamPerformance(teamNumber, eventKey, force = false, teamE
     const autoEPA     = bd?.auto_points    ?? summary.epa?.breakdown?.auto_points    ?? 0;
     const teleopEPA   = bd?.teleop_points  ?? summary.epa?.breakdown?.teleop_points  ?? 0;
     const endgameEPA  = bd?.endgame_points ?? summary.epa?.breakdown?.endgame_points ?? 0;
-    const eventEpaEnd = evEPA?.end ?? null;
+    // v3's current EPA is epa.total_points.mean; `end` is a v2 field and was always
+    // undefined here, so this fell back to the last match's post-EPA every time.
+    const eventEpaEnd = evEPA?.total_points?.mean ?? evEPA?.end ?? null;
 
     // 3. Only skip deep dive if cache is fresh
     const needsUpdate = force || !cachedTeam || cachedTeam.matchCount !== apiMatchCount;
@@ -2531,7 +2647,7 @@ window.syncProjections = async function () {
     statusDiv.innerText = `Fetching Statbotics event data for ${eventKey}…`;
     const sbMap = {};
     try {
-        const sbResp = await fetch(`https://api.statbotics.io/v3/team_events?event=${eventKey}&limit=100`);
+        const sbResp = await fetchStatbotics(`/v3/team_events?event=${eventKey}&limit=100`);
         if (sbResp.ok) {
             const sbJson = await sbResp.json();
             const sbList = sbJson.data || sbJson.results || sbJson;
@@ -2587,7 +2703,7 @@ window.syncProjections = async function () {
 
     // 5. Wrap up
     const sbNote = sbFailed > 0 ? ` (${sbFailed} team${sbFailed > 1 ? 's' : ''} missing Statbotics data)` : '';
-    statusDiv.innerText = `✅ Sync complete! Loaded ${totalTeams} teams${sbNote}.`;
+    statusDiv.innerText = `✅ Sync complete! Loaded ${totalTeams} teams${sbNote}${statboticsSourceNote()}.`;
     setSyncTimestamp('statboticsProjections');
     progressBar.style.background = '#10b981';
     setTimeout(() => {
@@ -2607,8 +2723,8 @@ window.syncStatboticsLive = async function () {
 
     // Two parallel calls: match-by-match EPA for timeline, and event-level for component EPAs
     const [matchResp, teamEvResp] = await Promise.all([
-        fetch(`https://api.statbotics.io/v3/team_matches?event=${eventKey}&limit=1000`),
-        fetch(`https://api.statbotics.io/v3/team_events?event=${eventKey}&limit=100`),
+        fetchStatbotics(`/v3/team_matches?event=${eventKey}&limit=1000`),
+        fetchStatbotics(`/v3/team_events?event=${eventKey}&limit=100`),
     ]);
     const json = await matchResp.json();
     const eventMatches = json.data || json.results || json;
@@ -2705,7 +2821,7 @@ window.syncStatboticsLive = async function () {
     displayTeams();
     await renderAtAGlance();
     setSyncTimestamp('statboticsLive');
-    statusDiv.textContent = `✅ Live Statbotics sync complete — ${updated} team${updated !== 1 ? 's' : ''} updated.`;
+    statusDiv.textContent = `✅ Live Statbotics sync complete — ${updated} team${updated !== 1 ? 's' : ''} updated${statboticsSourceNote()}.`;
 };
 
 async function _fetchAndStoreWebcasts(eventKey) {
@@ -7117,7 +7233,7 @@ async function btFetchEventData(eventKey) {
     const [matchResp, oprResp, sbResp] = await Promise.all([
         fetchTBA(`/event/${eventKey}/matches`),
         fetchTBA(`/event/${eventKey}/oprs`),
-        fetch(`https://api.statbotics.io/v3/team_events?event=${eventKey}`).then(r => r.json()),
+        fetchStatbotics(`/v3/team_events?event=${eventKey}`).then(r => r.json()),
     ]);
 
     const matches = (Array.isArray(matchResp) ? matchResp : [])
@@ -13640,7 +13756,8 @@ async function renderMatchesTab(teamNumber, containerId = 'matches-tab-perf-char
     const teamOPR    = oprMap[teamStr] ?? 0;
     const evEPAMap   = Object.fromEntries(allStatTeams.map(t => [
         String(t.teamNumber),
-        t.epa?.end ?? t.epa?.mean ?? (typeof t.currentEPA === 'number' ? t.currentEPA : null),
+        t.epa?.total_points?.mean ?? t.epa?.end ?? t.epa?.mean
+            ?? (typeof t.currentEPA === 'number' ? t.currentEPA : null),
     ]));
     const teamEvEPA  = evEPAMap[teamStr] ?? null;
 
