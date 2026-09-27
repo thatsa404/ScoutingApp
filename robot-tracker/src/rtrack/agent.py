@@ -379,6 +379,9 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
         # No --relay: that mode blocks for its whole --wait on ONE curator finishing, which
         # is the opposite of a batch. Build locally, push, move on.
         rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+        if rc == 3:
+            report("event busy (lock held); will retry", len(curated), len(keys))
+            break
         bundle = _bundle_path(key)
         if rc != 0 or not bundle.exists():
             failed.append(key)
@@ -389,6 +392,40 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
         else:
             failed.append(key)
     return done, len(todo), failed
+
+
+def process_plan(keys: list[str], event: str, bundles: dict, answers: dict,
+                 cap: int, out: int, failed: list[str] | None = None) -> dict:
+    """Per-match categories for one process job. Mutually exclusive, suffixes only.
+
+    Built BEFORE the pass as well as after it. Attaching the breakdown only to a pass's
+    final report meant the app had nothing to show for the whole pass -- and a pass that
+    publishes a backlog runs for many minutes, so `plan: ABSENT` was the normal state
+    rather than a rare one.
+    """
+    failed = failed or []
+    strikes = _load_jobs().get("_strikes", {})
+    plan = {"cap": cap, "outstanding": out,
+            "failed": [k.split("_", 1)[1] for k in failed],
+            "setAside": sorted(k.split("_", 1)[1] for k, n in strikes.items()
+                               if n >= MAX_MATCH_STRIKES and k.startswith(event + "_")),
+            "curated": [], "awaitingCuration": [], "awaitingPublish": [],
+            "readyBlocked": [], "queued": []}
+    for key in keys:
+        suf = key.split("_", 1)[1]
+        if suf in plan["failed"] or suf in plan["setAside"]:
+            continue
+        if _curated(key):
+            plan["curated"].append(suf)
+        elif _corrections_exist(key):
+            plan["awaitingPublish"].append(suf)
+        elif bundles.get(key, 0.0) > answers.get(key, 0.0):
+            plan["awaitingCuration"].append(suf)
+        elif _detected(key):
+            plan["readyBlocked"].append(suf)
+        else:
+            plan["queued"].append(suf)
+    return plan
 
 
 def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
@@ -435,6 +472,8 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         return len(curated), len(keys), [], False
 
     out = outstanding_count(bundles, answers)
+    report(f"{len(curated)}/{len(keys)} curated", len(curated), len(keys),
+           process_plan(keys, event, bundles, answers, cap, out))
     failed, detected_now, pushed, attempts = [], 0, 0, 0
     # ATTEMPTS, not successes. A failed push does not consume the cap, so bounding
     # only successes let one systematically broken match carry the pass through every
@@ -477,12 +516,29 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         # publishes instead of building a bundle, which is exactly what is wanted -- and it
         # consumes no bundle slot, because it produces no bundle.
         if _corrections_exist(key):
+            # WHOSE JOB IS THIS? If the answer is still on the relay, the watcher already
+            # owns this match and will publish it -- both of us running rtrack.pipeline on
+            # the same event just fights over the per-event lock, and the loser's run is
+            # wasted. Every publish in the first pass after this path was added failed
+            # exactly that way: "REFUSING: 2026necmp1_qm32 has been running on this event".
+            #
+            # So this path handles only what the watcher CANNOT see: a match whose answer
+            # has expired off the relay, which is precisely the stranded case it exists for.
+            if answers.get(key, 0.0) > 0.0:
+                continue
             report(f"publishing {key.split('_', 1)[1]} from existing corrections",
                    len(curated), len(keys))
             a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
             if job.get("calibFrom"):
                 a += ["--calib-from", job["calibFrom"]]
-            if subprocess.run(a, cwd=C.TRACKER_ROOT).returncode != 0 or not _curated(key):
+            rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+            if rc == 3:
+                # The event lock is held. Transient by definition, so NOT a failure and
+                # NOT a strike -- benching a match for losing a race would eventually set
+                # aside the whole event. Stop taking the lock this pass and try next time.
+                report("event busy (lock held); will retry", len(curated), len(keys))
+                break
+            if rc != 0 or not _curated(key):
                 failed.append(key)
             continue
 
@@ -518,8 +574,6 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     except Exception:                             # noqa: BLE001
         pass
 
-    # PER-MATCH CATEGORIES, mutually exclusive, so the app can say which matches are
-    # where instead of only how many. Suffixes, since the event is already known.
     if failed:
         rec = _load_jobs()
         st = dict(rec.get("_strikes", {}))
@@ -532,26 +586,7 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             print(f"[agent] set aside after {MAX_MATCH_STRIKES} failures: "
                   f"{', '.join(sorted(benched))}", flush=True)
 
-    plan = {"cap": cap, "outstanding": out, "failed": [k.split("_", 1)[1] for k in failed],
-            "setAside": sorted(k.split("_", 1)[1] for k, n in
-                               _load_jobs().get("_strikes", {}).items()
-                               if n >= MAX_MATCH_STRIKES and k.startswith(event + "_")),
-            "curated": [], "awaitingCuration": [], "awaitingPublish": [],
-            "readyBlocked": [], "queued": []}
-    for key in keys:
-        suf = key.split("_", 1)[1]
-        if suf in plan["failed"]:
-            continue
-        if _curated(key):
-            plan["curated"].append(suf)
-        elif _corrections_exist(key):
-            plan["awaitingPublish"].append(suf)   # answered already; only the route is missing
-        elif bundles.get(key, 0.0) > answers.get(key, 0.0):
-            plan["awaitingCuration"].append(suf)
-        elif _detected(key):
-            plan["readyBlocked"].append(suf)      # detected, waiting for a free cap slot
-        else:
-            plan["queued"].append(suf)            # not detected yet
+    plan = process_plan(keys, event, bundles, answers, cap, out, failed)
 
     report(f"{len(curated)}/{len(keys)} curated \u00b7 {out} bundle(s) awaiting curation"
            + (f" \u00b7 pushed {pushed}" if pushed else "")
@@ -578,8 +613,13 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
         _save_jobs(jobs)
         return
 
+    prev_entry = jobs.get(job_id) or {}
     jobs[job_id] = {"state": "running", "type": doc.get("type"),
-                    "event": doc.get("event"), "startedAt": _now_iso()}
+                    "event": doc.get("event"), "startedAt": _now_iso(),
+                    # Carried across the pass boundary so the app keeps a breakdown to
+                    # show while the next pass is still working.
+                    "plan": prev_entry.get("plan"), "note": prev_entry.get("note"),
+                    "done": prev_entry.get("done"), "total": prev_entry.get("total")}
     _save_jobs(jobs)
     last = [0.0]
 
