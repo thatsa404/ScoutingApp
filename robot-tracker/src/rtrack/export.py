@@ -89,7 +89,8 @@ def _route_jump_gaps(samples: list[dict]) -> list[dict]:
 
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
           calib_stem: str | None = None, allow_stale: bool = False,
-          allow_unsafe_calibration: bool = False) -> dict:
+          allow_unsafe_calibration: bool = False,
+          route_correction: bool = True) -> dict:
     # IDENTITY PROVENANCE. Appearance is an enhancement, not a gate, so a route can be
     # produced with a full gallery behind it or with nothing but the curator's anchors --
     # and those two are not the same claim about the route's reliability. Reading the votes
@@ -226,6 +227,22 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         print(f"[export] clipped {n_clipped} sample(s) outside the match "
               f"(t {lo:.0f}..{hi:.0f} s relative to auto start)")
 
+    # ROUTE CORRECTION, keyed by the same camera stem as the calibration and occluders.
+    # Applied here and nowhere upstream: see rtrack.route_correction for why the solver
+    # must keep seeing uncorrected projections. A camera without its own file publishes
+    # uncorrected -- a correction fitted at one venue says nothing about another.
+    from . import route_correction as _rc
+    corr = _rc.load(calib_stem or stem) if route_correction else None
+    if corr:
+        _sim = next((st for st in corr["steps"] if st["op"] == "similarity"), {})
+        _sh = next((st for st in corr["steps"] if st["op"] == "radialShift"), {})
+        print(f"[export] route correction for {corr.get('camera')}: radial "
+              f"{_sh.get('meters', 0):.2f} m, then scale {_sim.get('scale', 1):.6f} + "
+              f"translation {_sim.get('translationM')}")
+    elif route_correction:
+        print(f"[export] no route correction for {calib_stem or stem}; publishing "
+              f"uncorrected samples")
+
     custody = robots_doc.get("custody") or {}
     continuity_doc = robots_doc.get("continuity") or {}
     continuity_enabled = bool(continuity_doc.get("enabled"))
@@ -242,7 +259,9 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             if last_t is not None and t - last_t < step:
                 continue
             last_t = t
-            picked.append({"t": t, "x": round(s["x"], 3), "y": round(s["y"], 3),
+            px, py = (_rc.apply_xy(float(s["x"]), float(s["y"]), corr) if corr
+                      else (float(s["x"]), float(s["y"])))
+            picked.append({"t": t, "x": round(px, 3), "y": round(py, 3),
                            "conf": round(float(s.get("conf") or 0.0), 3),
                            "_tid": int(s["tid"])})
         gaps = [{"tStart": a["t"], "tEnd": b["t"], "reason": "unobserved"}
@@ -348,7 +367,13 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         "calibration": {"mode": calib.get("mode", "static-homography"),
                         "pointCount": calib.get("pointCount"),
                         "reprojErrorM": calib.get("reprojErrorM"),
-                        "status": cal_status},
+                        "status": cal_status,
+                        # Whether these samples were corrected, and exactly how. A corrected
+                        # and an uncorrected route of the same match differ by ~0.5 m, so a
+                        # consumer must be able to tell which one it holds -- and after a
+                        # rollout, old uncorrected routes coexist with new corrected ones.
+                        "routeCorrection": (_rc.summary(corr) if corr
+                                            else {"applied": False})},
         "sampling": {"trackHz": TRACK_HZ, "outputHz": hz},
         # Sample times are relative to auto start, so auto is t in [0, autoEndT].
         # null when motion detection could not find the window -- consumers should then
@@ -422,6 +447,9 @@ def main(argv=None) -> int:
     ap.add_argument("--allow-unsafe-calibration", action="store_true",
                     help="write a route despite failed calibration admission checks. "
                          "Diagnostic use only; publishing still requires --publish.")
+    ap.add_argument("--no-route-correction", action="store_true",
+                    help="publish uncorrected samples even if calib/<camera>_route_"
+                         "correction.json exists. For A/B checks; see rtrack.route_correction.")
     ap.add_argument("--calib-from", default=None, metavar="VIDEO",
                     help="reuse another video's calibration (same camera)")
     ap.add_argument("--no-relay", action="store_true",
@@ -444,7 +472,8 @@ def main(argv=None) -> int:
                 # never buying anything.
                 calib_stem=args.calib_from or None,
                 allow_stale=args.allow_stale,
-                allow_unsafe_calibration=args.allow_unsafe_calibration)
+                allow_unsafe_calibration=args.allow_unsafe_calibration,
+                route_correction=not args.no_route_correction)
 
     problems = validate(doc)
     for p in problems:
