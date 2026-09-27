@@ -9820,6 +9820,19 @@ function renderJobLines(jobs) {
             ${seg('not detected yet', p.queued, '#64748b', 'Still queued for detection')}
             ${seg('curated', p.curated, '#22c55e', 'Answered; the route has been published')}
             ${seg('failed', p.failed, '#f87171', 'Detection or bundling failed for these')}
+            ${seg('set aside after repeated failures', p.setAside, '#f87171',
+                  'Skipped until the cause is fixed; each is listed below with the reason')}
+            ${(() => {
+                // WHY, not just which. A bare "qm39 failed" sent the next question to a log
+                // search; the agent now records the stage and the cause for each one.
+                const r = p.reasons || {};
+                const ks = [...new Set([...(p.failed || []), ...(p.setAside || [])])]
+                    .filter(k => r[k]);
+                if (!ks.length) return '';
+                return ks.slice(0, 8).map(k => `<div style="color:#fca5a5;margin-left:10px;"
+                    title="${galleryEsc(r[k])}">\u21b3 ${galleryEsc(k)}: ${galleryEsc(
+                        r[k].length > 110 ? r[k].slice(0, 110) + '\u2026' : r[k])}</div>`).join('');
+            })()}
             <div style="color:${full ? '#fbbf24' : '#64748b'};">
               ${Number(p.outstanding)}/${Number(p.cap)} bundle slots used relay-wide${
                 full ? ' \u2014 nothing new posts until one is curated' : ''}</div>

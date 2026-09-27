@@ -56,6 +56,7 @@ import os
 import os
 import platform
 import re
+from collections import deque
 import socket
 import subprocess
 import sys
@@ -408,13 +409,14 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
             a += ["--calib-from", job["calibFrom"]]
         # No --relay: that mode blocks for its whole --wait on ONE curator finishing, which
         # is the opposite of a batch. Build locally, push, move on.
-        rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+        rc, btail = _run_logged(a, cwd=C.TRACKER_ROOT)
         if rc == 3:
             report("event busy (lock held); will retry", len(curated), len(keys))
             break
         bundle = _bundle_path(key)
         if rc != 0 or not bundle.exists():
-            failed.append(key)
+            fail(key, "bundle", failure_reason(btail, rc) if rc != 0
+                 else "pipeline succeeded but produced no curation bundle")
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
         if subprocess.run(push, cwd=C.TRACKER_ROOT).returncode == 0:
@@ -441,6 +443,10 @@ def process_plan(keys: list[str], event: str, bundles: dict, answers: dict,
                                if n >= MAX_MATCH_STRIKES and k.startswith(event + "_")),
             "curated": [], "awaitingCuration": [], "awaitingPublish": [],
             "readyBlocked": [], "queued": []}
+    stored = _load_jobs().get("_reasons", {})
+    plan["reasons"] = {k.split("_", 1)[1]: (v.get("stage", "") + ": " + v.get("reason", ""))
+                       for k, v in stored.items() if k.startswith(event + "_")
+                       and k.split("_", 1)[1] in set(plan["failed"]) | set(plan["setAside"])}
     for key in keys:
         suf = key.split("_", 1)[1]
         if suf in plan["failed"] or suf in plan["setAside"]:
@@ -456,6 +462,47 @@ def process_plan(keys: list[str], event: str, bundles: dict, answers: dict,
         else:
             plan["queued"].append(suf)
     return plan
+
+
+def _run_logged(args: list, **kw) -> tuple[int, list[str]]:
+    """Run a step, streaming its output to the agent log and keeping the last lines.
+
+    Steps used to run with inherited output, so the agent saw only an exit code: a match
+    failed and the ledger said so with nothing about WHY. The cause was in the log, often
+    far from the failure and never attached to the match. Keeping the tail lets
+    failure_reason() pull the cause out and store it against the match.
+    """
+    proc = subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace", bufsize=1, **kw)
+    tail: deque[str] = deque(maxlen=60)
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        if re.match(r"\s*\[download\]\s+[\d.]+%", line) and "ERROR:" not in line:
+            continue
+        print(line, flush=True)
+        tail.append(line)
+    return proc.wait(), list(tail)
+
+
+# Most specific first. The pipeline's own verdicts beat a generic last line, and a refusal
+# names the actual problem ("title says 40, 0/6 teams agree") where an exit code cannot.
+_REASON_PATTERNS = (
+    r"REFUSING[^:]*:\s*(.+)",
+    r"!!\s*(.+)",
+    r"per-match download failed:\s*(.+)",
+    r"(ERROR:.+)",
+    r"(HOLDING THE WRONG MATCH.*)",
+)
+
+
+def failure_reason(tail: list[str], rc: int | None = None) -> str:
+    for pat in _REASON_PATTERNS:
+        for line in reversed(tail):
+            m = re.search(pat, line)
+            if m:
+                return m.group(1).strip()[:200]
+    last = next((l.strip() for l in reversed(tail) if l.strip()), "")
+    return (last or f"exited {rc}")[:200]
 
 
 def control_pending(agent_id: str | None) -> bool:
@@ -527,6 +574,16 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     report(f"{len(curated)}/{len(keys)} curated", len(curated), len(keys),
            process_plan(keys, event, bundles, answers, cap, out))
     failed, detected_now, pushed, attempts = [], 0, 0, 0
+    why: dict[str, dict] = {}         # key -> {stage, reason}, persisted to the ledger below
+    fetch_note: dict[str, str] = {}   # key -> why the per-match download failed, if it did
+
+    def fail(key: str, stage: str, reason: str) -> None:
+        # If the right video could not be fetched and a fallback was used, that is part of
+        # the story of any later failure -- it is how qm39 came to hold qm40's footage.
+        if key in fetch_note and stage != "fetch":
+            reason = f"{reason} [per-match download had failed: {fetch_note[key]}]"
+        failed.append(key)
+        why[key] = {"stage": stage, "reason": reason[:300], "at": _now_iso()}
     # ATTEMPTS, not successes. A failed push does not consume the cap, so bounding
     # only successes let one systematically broken match carry the pass through every
     # remaining bundle in the range -- a full pipeline run each, for nothing. A dry
@@ -551,9 +608,13 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
                 ra = [PY, "-m", "rtrack.replay", event, "--matches", suffix]
                 if job.get("options", {}).get("perMatch", True):
                     ra.append("--per-match")
-                subprocess.run(ra, cwd=C.TRACKER_ROOT)
+                rrc, rtail = _run_logged(ra, cwd=C.TRACKER_ROOT)
+                note = next((re.search(r"per-match download failed:\s*(.+)", l).group(1)
+                             for l in rtail if "per-match download failed:" in l), None)
+                if note:
+                    fetch_note[key] = note.strip()[:200]
             if not (C.RAW_DIR / f"{key}.mp4").exists():
-                failed.append(key)
+                fail(key, "fetch", fetch_note.get(key) or "no clip could be fetched")
                 continue
             report(f"detecting {suffix}", len(curated), len(keys))
             a = [PY, "-m", "rtrack.pipeline", key, "--match", key,
@@ -561,8 +622,23 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             if job.get("calibFrom"):
                 a += ["--calib-from", job["calibFrom"]]
             detected_now += 1
-            if subprocess.run(a, cwd=C.TRACKER_ROOT).returncode != 0:
-                failed.append(key)
+            drc, dtail = _run_logged(a, cwd=C.TRACKER_ROOT)
+            if drc != 0:
+                reason = failure_reason(dtail, drc)
+                # A clip the identity check REJECTS is moved aside, so the next pass
+                # downloads afresh instead of re-failing on the same bytes forever. That is
+                # how 2026necmp1_qm39 got stuck: the fetch step saw a file already present
+                # and never retried, so qm40's footage was re-checked and re-rejected every
+                # pass until the match was set aside. Renamed, never deleted.
+                if "teams agree" in reason:
+                    bad = C.RAW_DIR / f"{key}.mp4"
+                    aside = bad.with_name(f"{bad.name}.rejected-{int(time.time())}")
+                    try:
+                        bad.rename(aside)
+                        reason += f" [clip moved aside to {aside.name} for a fresh download]"
+                    except OSError:
+                        pass
+                fail(key, "detect", reason)
                 continue
 
         # ALREADY CURATED BUT NOT PUBLISHED: solve and publish, never re-bundle.
@@ -589,7 +665,7 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
             if job.get("calibFrom"):
                 a += ["--calib-from", job["calibFrom"]]
-            rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+            rc, ptail = _run_logged(a, cwd=C.TRACKER_ROOT)
             if rc == 3:
                 # The event lock is held. Transient by definition, so NOT a failure and
                 # NOT a strike -- benching a match for losing a race would eventually set
@@ -597,7 +673,8 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
                 report("event busy (lock held); will retry", len(curated), len(keys))
                 break
             if rc != 0 or not _curated(key):
-                failed.append(key)
+                fail(key, "publish", failure_reason(ptail, rc) if rc != 0
+                     else "pipeline succeeded but no current route was published")
             continue
 
         # A bundle already waiting for this match is not re-pushed: that would reset a
@@ -618,7 +695,7 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             failed.append(key)
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
-        prc = subprocess.run(push, cwd=C.TRACKER_ROOT).returncode
+        prc, ptail = _run_logged(push, cwd=C.TRACKER_ROOT)
         if prc == 4:
             # The relay's daily write quota is spent. The bundle is built and on disk, so
             # nothing is lost -- stop pushing until the quota resets rather than burning
@@ -627,7 +704,7 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
                    len(curated), len(keys))
             break
         if prc != 0:
-            failed.append(key)
+            fail(key, "push", failure_reason(ptail, prc))
             continue
         out += 1
         pushed += 1
@@ -640,6 +717,18 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     except Exception:                             # noqa: BLE001
         pass
 
+    # REASONS ARE KEPT WITH THE STRIKES. A match set aside after three failures used to be
+    # named with no explanation, which left the next step -- "why?" -- to a log search.
+    rec = _load_jobs()
+    reasons = dict(rec.get("_reasons", {}))
+    for k in keys:
+        if k not in why and (_curated(k) or (_detected(k) and k not in failed)):
+            reasons.pop(k, None)          # it has since got further: the old reason is stale
+    reasons.update(why)
+    rec["_reasons"] = reasons
+    _save_jobs(rec)
+    for k, w in why.items():
+        print(f"[agent] {k} failed at {w['stage']}: {w['reason']}", flush=True)
     if failed:
         rec = _load_jobs()
         st = dict(rec.get("_strikes", {}))

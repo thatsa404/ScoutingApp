@@ -164,7 +164,10 @@ def fetch_match_video(yt: str, dest: Path) -> bool:
     try:
         got = download(yt, max_height=None, force=False)
     except Exception as e:
-        print(f"      per-match download failed: {str(e)[:140]}")
+        # str(e) is now yt-dlp's own reason (see acquire.DownloadError), not the command
+        # line it used to be, so it is worth printing whole. rtrack.agent reads this exact
+        # line back to explain a failed match.
+        print(f"      per-match download failed: {str(e)[:300]}", flush=True)
         return False
     got = Path(got)
     if got.resolve() != dest.resolve():

@@ -11,6 +11,8 @@ import json
 import re
 import subprocess
 import sys
+import time
+from collections import deque
 from pathlib import Path
 
 from . import config as C
@@ -58,6 +60,51 @@ def list_formats(vid: str) -> None:
     subprocess.run([sys.executable, "-m", "yt_dlp", "-F", watch_url(vid)], check=True)
 
 
+# WHOLE-COMMAND RETRIES. 2026necmp1_qm39 failed with "HTTP Error 403: Forbidden" 27.7% of
+# the way through the video stream -- YouTube refusing the signed media URL mid-download,
+# which is transient: the same command succeeded later. yt-dlp's own --retries does not help
+# here, because it re-requests the SAME signed URL; only a fresh run re-extracts a new one.
+#
+# Retrying matters beyond this one clip. When the per-match download gave up, replay fell
+# back to slicing the day archive, and for 2026necmp1 that archive is timed one match off
+# from qm5 on -- so the fallback delivered qm40's footage under qm39's name. The identity
+# check caught it, but three attempts at the right source beat one attempt and a wrong one.
+DOWNLOAD_ATTEMPTS = 3
+
+
+class DownloadError(RuntimeError):
+    """A download that failed on every attempt. str() is yt-dlp's own reason."""
+
+
+def _run_ytdlp(cmd: list[str]) -> tuple[int, str | None, list[str]]:
+    """Run yt-dlp, streaming its output to our log AND keeping the error.
+
+    It used to run with check=True and inherited output, so a failure surfaced as
+    "Command [...] returned non-zero exit status 1" -- the command, not the cause. The
+    cause was in the log, but ~180 lines away: yt-dlp writes straight to stderr while the
+    caller's own prints are buffered, so the two landed far apart and nothing tied them
+    together. Capturing here puts the reason in the exception, where callers report it.
+
+    The error arrives GLUED to a progress line -- "[download] 27.7% ... ETA 00:06ERROR:
+    unable to download..." -- because progress ends in a carriage return, not a newline.
+    So ERROR is searched for anywhere in a line, BEFORE progress lines are dropped as noise.
+    """
+    proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
+                            text=True, encoding="utf-8", errors="replace", bufsize=1)
+    tail: deque[str] = deque(maxlen=40)
+    err = None
+    for line in proc.stdout:
+        line = line.rstrip("\n")
+        m = re.search(r"ERROR:.*", line)
+        if m:
+            err = m.group(0).strip()
+        elif re.match(r"\[download\]\s+[\d.]+%", line):
+            continue                      # per-percent progress: noise in a log
+        print(line, flush=True)
+        tail.append(line)
+    return proc.wait(), err, list(tail)
+
+
 def download(vid: str, max_height: int | None = None, force: bool = False) -> Path:
     """Fetch at the best available quality.
 
@@ -84,11 +131,24 @@ def download(vid: str, max_height: int | None = None, force: bool = False) -> Pa
         "-o", str(C.RAW_DIR / "%(id)s.%(ext)s"),
         watch_url(vid),
     ]
-    print("[acquire]", " ".join(cmd))
-    subprocess.run(cmd, check=True)
-    if not out.exists():
-        raise RuntimeError(f"yt-dlp finished but {out} is missing")
-    return out
+    print("[acquire]", " ".join(cmd), flush=True)
+    reason = None
+    for attempt in range(1, DOWNLOAD_ATTEMPTS + 1):
+        rc, err, tail = _run_ytdlp(cmd)
+        if rc == 0 and out.exists():
+            if attempt > 1:
+                print(f"[acquire] {vid}: succeeded on attempt {attempt} after: {reason}",
+                      flush=True)
+            return out
+        reason = (err or (tail[-1] if tail else "")
+                  or f"yt-dlp exited {rc}").strip()
+        if rc == 0:
+            reason = f"yt-dlp finished but {out.name} is missing"
+        if attempt < DOWNLOAD_ATTEMPTS:
+            print(f"[acquire] {vid}: attempt {attempt} failed ({reason}); retrying",
+                  flush=True)
+            time.sleep(5 * attempt)
+    raise DownloadError(f"{reason} (after {DOWNLOAD_ATTEMPTS} attempts)")
 
 
 def describe(path: Path) -> dict:
