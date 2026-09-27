@@ -218,7 +218,15 @@ async function touchIndex(env, kind, id, meta) {
   try { m = (await env.RTRACK_KV.get(INDEX_KEY, 'json')) || {}; } catch { m = {}; }
   m[`${kind}:${id}`] = { kind, id, ...meta,
                          expires: Math.floor(Date.now() / 1000) + ttlFor(kind) };
-  await env.RTRACK_KV.put(INDEX_KEY, JSON.stringify(m));
+  // Best effort, and deliberately AFTER the value is stored. If the manifest write is the
+  // one that trips the daily limit, the value is already safe and the caller must not be
+  // told the whole request failed -- a missing listing entry is restored by the next write
+  // to that key, whereas a false failure makes a client resend a payload that landed.
+  try {
+    await env.RTRACK_KV.put(INDEX_KEY, JSON.stringify(m));
+  } catch (e) {
+    console.log(`[index] not updated for ${kind}:${id}: ${e && e.message || e}`);
+  }
 }
 
 export default {
@@ -340,10 +348,27 @@ export default {
       }
       const storedBody = JSON.stringify(storedPayload);
       const at = Date.now();
-      await env.RTRACK_KV.put(kvKey, storedBody, {
-        expirationTtl: ttlFor(kind),
-        metadata: { bytes: storedBody.length, at },
-      });
+      // QUOTA EXHAUSTION MUST NOT LOOK LIKE A CRASH. KV.put() throws once the plan's
+      // daily write limit is reached, and an uncaught throw here is a Cloudflare 1101 --
+      // an opaque 500 with no body a client can read. A curator saw "HTTP 500" and had no
+      // way to know their work was safe, when to retry, or that anything was rationed.
+      // Their draft survives (curate.html clears it only after a 2xx), but they had to be
+      // told that, so this says it.
+      try {
+        await env.RTRACK_KV.put(kvKey, storedBody, {
+          expirationTtl: ttlFor(kind),
+          metadata: { bytes: storedBody.length, at },
+        });
+      } catch (e) {
+        const msg = String(e && e.message || e);
+        if (/limit exceeded/i.test(msg)) {
+          return json({ ok: false, quotaExhausted: true, retryAfter: 'next 00:00 UTC',
+                        error: "the relay's daily write quota is used up, so this was NOT "
+                             + 'saved. It resets at 00:00 UTC. Your work is kept locally '
+                             + '-- send it again after the reset and nothing is lost.' }, 429);
+        }
+        return json({ ok: false, error: `relay could not store this: ${msg}` }, 503);
+      }
       // After the value is stored, never before: a manifest entry for a value that failed
       // to write would advertise a bundle that 404s.
       const reviewMeta = kind.startsWith('gallery-') ? {

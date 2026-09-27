@@ -74,6 +74,17 @@ def put(kind: str, ident: str, doc: dict) -> dict:
                       timeout=120)
     if r.status_code == 413:
         raise SystemExit(f"[relay] bundle too large for KV: {r.text[:200]}")
+    if r.status_code == 429:
+        # QUOTA, NOT A FAULT. Exit code 4 so a caller can tell "the relay is rationed
+        # today" from "this payload is broken" -- rtrack.agent must not count this as a
+        # match failure, because three of them would set aside a perfectly good match for
+        # something that fixes itself at 00:00 UTC.
+        try:
+            msg = r.json().get("error") or r.text[:200]
+        except ValueError:
+            msg = r.text[:200]
+        print(f"[relay] {msg}")
+        raise SystemExit(4)
     r.raise_for_status()
     return r.json()
 

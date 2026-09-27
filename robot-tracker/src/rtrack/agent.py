@@ -73,9 +73,26 @@ PY = sys.executable
 # write cap. This is what makes arming feel immediate.
 CONTROL_POLL_S = 30.0
 
-# Writes, so slow on purpose. See the note in the module docstring.
-HEARTBEAT_IDLE_S = 600.0
-HEARTBEAT_RUNNING_S = 120.0
+# STATUS POST BUDGET, and the arithmetic that was got wrong once.
+#
+# Free-tier KV allows 1,000 WRITES A DAY, and every put here costs TWO of them -- the value
+# plus the index manifest that touchIndex maintains. So the real budget is ~500 puts/day
+# across everything: curation bundles, answers, exported routes, gallery bundles AND status.
+#
+# The first cut of this set a 2-minute heartbeat while running, reasoning that ~300-400
+# writes a day was comfortable. It counted one channel and forgot the doubling: 2 minutes is
+# 720 posts = 1,440 writes from the heartbeat alone, over the cap before any real work. The
+# quota duly ran out mid-event, the worker threw 1101 on every write, and a curator could
+# not send answers back -- status chatter had crowded out the actual deliverable.
+#
+# So status is now RATIONED against an explicit daily budget, with real work given priority
+# by simply leaving it out of the accounting: bundles, answers and routes are never
+# throttled, they just spend from the same pool. The budget is deliberately well under
+# 500 puts to leave that room.
+STATUS_POSTS_PER_DAY = 160          # ~320 writes; leaves ~180 puts/day for real work
+HEARTBEAT_IDLE_S = 1800.0           # 30 min
+HEARTBEAT_RUNNING_S = 420.0         # 7 min, which is 160 posts over a 19-hour day
+HEARTBEAT_FLOOR_S = 90.0            # even a state change will not post faster than this
 
 STATE_FILE = C.OUT_DIR / "agent_state.json"
 JOBS_FILE = C.OUT_DIR / "agent_jobs.json"
@@ -83,7 +100,10 @@ JOBS_FILE = C.OUT_DIR / "agent_jobs.json"
 # While a job runs, status is posted at most this often. A 75-match backfill posting after
 # every match would be 150 KV writes against a 1,000/day budget; a job that reports
 # nothing for an hour is indistinguishable from a hung one. This is the compromise.
-JOB_REPORT_S = 60.0
+# Job progress shares the heartbeat's ration rather than having a cadence of its own.
+# Two independent timers on one quota is how the budget was overrun: each looked modest
+# alone and together they were double.
+JOB_REPORT_S = HEARTBEAT_RUNNING_S
 
 # How many matches one "next N uncurated" bundle request may cover, whatever the app asks
 # for. Each bundle is 2-7 MB in a store that caps values at 25 MiB and expires them in 24
@@ -560,7 +580,15 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             failed.append(key)
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
-        if subprocess.run(push, cwd=C.TRACKER_ROOT).returncode != 0:
+        prc = subprocess.run(push, cwd=C.TRACKER_ROOT).returncode
+        if prc == 4:
+            # The relay's daily write quota is spent. The bundle is built and on disk, so
+            # nothing is lost -- stop pushing until the quota resets rather than burning
+            # strikes on matches that are fine.
+            report("relay write quota spent; pausing pushes until 00:00 UTC",
+                   len(curated), len(keys))
+            break
+        if prc != 0:
             failed.append(key)
             continue
         out += 1
@@ -731,6 +759,33 @@ def detected_summary() -> dict:
     return {event: sorted(v, key=num) for event, v in sorted(out.items())}
 
 
+def _budget_take(kind: str = "status") -> bool:
+    """Spend one status post from today's ration. False means skip this post.
+
+    Rationed rather than merely slowed, because an interval alone does not bound a day:
+    every state change posts immediately too, and a busy hour of them is what actually
+    overran the quota. The counter resets on the UTC day, matching when KV's limit resets.
+    """
+    state = _load_state()
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    if state.get("budgetDay") != today:
+        state["budgetDay"] = today
+        state["statusPosts"] = 0
+        state.pop("budgetWarned", None)
+    used = int(state.get("statusPosts", 0))
+    if used >= STATUS_POSTS_PER_DAY:
+        if not state.get("budgetWarned"):
+            state["budgetWarned"] = True
+            _save_state(state)
+            print(f"[agent] status budget for {today} spent ({used} posts). Heartbeats "
+                  f"pause until 00:00 UTC so curation answers and route uploads keep "
+                  f"their share of the daily KV writes.", flush=True)
+        return False
+    state["statusPosts"] = used + 1
+    _save_state(state)
+    return True
+
+
 def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
                 applied_nonce: str | None, state: str,
                 error: str | None = None) -> None:
@@ -754,6 +809,8 @@ def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
         "stream": (desired or {}).get("stream"),
         "error": error,
     }
+    if not _budget_take():
+        return
     try:
         R.put("status", agent_id, doc)
     except Exception as exc:                      # noqa: BLE001
@@ -1104,7 +1161,8 @@ def main(argv=None) -> int:
             run_state = "running" if watcher.alive else ("error" if last_error else "idle")
             beat_every = args.heartbeat_s or (
                 HEARTBEAT_RUNNING_S if watcher.alive else HEARTBEAT_IDLE_S)
-            if changed or time.time() - last_beat >= beat_every:
+            due = time.time() - last_beat
+            if (changed and due >= HEARTBEAT_FLOOR_S) or due >= beat_every:
                 post_status(agent_id, watcher, desired, applied_nonce,
                             run_state, last_error)
                 last_beat = time.time()
