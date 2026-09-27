@@ -90,6 +90,33 @@ def _route_jump_gaps(samples: list[dict]) -> list[dict]:
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
           calib_stem: str | None = None, allow_stale: bool = False,
           allow_unsafe_calibration: bool = False) -> dict:
+    # IDENTITY PROVENANCE. Appearance is an enhancement, not a gate, so a route can be
+    # produced with a full gallery behind it or with nothing but the curator's anchors --
+    # and those two are not the same claim about the route's reliability. Reading the votes
+    # document is the only way to tell after the fact, so the answer ships with the route.
+    identity = {"evidence": "anchors-only", "galleryVersion": None,
+                "teamsVoted": None, "embeddingSpace": None, "backend": None}
+    for _sfx in ("_cnn", ""):
+        _vp = C.STAGE3_DIR / f"{stem}_reid{_sfx}.json"
+        if not _vp.exists():
+            continue
+        try:
+            _vd = json.loads(_vp.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        _teams = _vd.get("teams") or []
+        if not _teams:
+            continue          # the file exists but carried no votes: anchors only
+        identity = {
+            "evidence": "reviewed-gallery" if _vd.get("reviewedGallery")
+                        else "legacy-gallery",
+            "galleryVersion": _vd.get("galleryVersion"),
+            "teamsVoted": len(_teams),
+            "embeddingSpace": _vd.get("embeddingSpace"),
+            "backend": _vd.get("backend"),
+        }
+        break
+
     positions = _load(C.STAGE2_DIR / f"{stem}_positions.json",
                       "run rtrack.project against the LABELLED track file first")
     robots_doc = _load(C.STAGE3_DIR / f"{stem}_robots.json",
@@ -349,6 +376,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "custodyConflicts": len(robots_doc.get("custodyConflicts") or []),
             "curated": bool(n_labels),
             "curatorLabels": n_labels,
+            # "reviewed-gallery" | "legacy-gallery" | "anchors-only". See the note where
+            # this is built: a route solved without appearance is a weaker claim than one
+            # solved with it, and the app says which.
+            "identity": identity,
         },
     }
     return doc
@@ -491,6 +522,10 @@ def write_manifest(tracks_dir: Path) -> int:
                 "videoId": (d.get("source") or {}).get("videoId"),
                 "teams": [str(r.get("team")) for r in d.get("robots") or []],
                 "curated": bool(q.get("curated")),
+                # So the Tracks tab can tell a gallery-backed route from an
+                # anchors-only one without downloading every route document.
+                "identityEvidence": ((q.get("identity") or {}).get("evidence")
+                                     or "anchors-only"),
                 "meanCustody": q.get("meanCustody"),
                 "bytes": p.stat().st_size,
                 # When this export was produced, so a consumer can tell a FINISHED

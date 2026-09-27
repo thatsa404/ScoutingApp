@@ -101,6 +101,10 @@ MAX_OUTSTANDING_BUNDLES = 4
 # returns. That keeps arm/disarm responsive -- a 72-match request must not make the control
 # poll wait hours.
 DETECT_PER_PASS = 3
+
+# Strikes before a match is set aside. Three passes is enough to ride out a transient
+# (a flaky download, a momentarily locked event) without grinding on a real fault.
+MAX_MATCH_STRIKES = 3
 TASK_NAME = "RTrackAgent"
 
 
@@ -232,7 +236,7 @@ def pending_jobs(agent_id: str) -> list[dict]:
             continue
         if it.get("cancelled"):
             continue
-        rec = ledger.get(it.get("id") or "")
+        rec = ledger.get(it.get("id") or "") or None
         if rec and rec.get("state") in ("done", "failed"):
             continue
         out.append(it)
@@ -270,7 +274,27 @@ def _detected(match_key: str) -> bool:
 
 
 def _curated(match_key: str) -> bool:
-    return (C.TRACKER_ROOT / "corrections" / f"{match_key}_corrections.json").exists()
+    """Has this match reached a PUBLISHED ROUTE at least as new as its corrections?
+
+    NOT "does a corrections file exist", which is what this used to ask and which
+    stranded matches. 2026necmp1_qm24 had corrections from Sep 20 and no route: the
+    process job read the file, called the match done and skipped it on every pass, while
+    its relay answer had long since expired so the watcher could not see it either. Both
+    halves believed the other owned it and nothing ever published it.
+
+    Same test rtrack.watch.pending uses, for the same reason: the deliverable is the
+    route, so only the route finishing counts as finished.
+    """
+    corr = C.TRACKER_ROOT / "corrections" / f"{match_key}_corrections.json"
+    if not corr.exists():
+        return False
+    published = C.REPO_ROOT / "public" / "tracks" / f"{match_key}.json"
+    if not published.exists():
+        return False
+    try:
+        return published.stat().st_mtime + 1 >= corr.stat().st_mtime
+    except OSError:
+        return False
 
 
 def _bundle_path(match_key: str):
@@ -386,6 +410,14 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         return 0, 0, [], True
     cap = max(1, min(int(job.get("maxOutstanding") or MAX_OUTSTANDING_BUNDLES), 12))
 
+    # A match that fails repeatedly is skipped rather than retried forever. Every
+    # 2026necmp1 bundle failed at the votes step for days, and each pass spent a full
+    # pipeline run per match re-discovering that -- hours of GPU producing nothing, with
+    # only a bare "4 failed" to show for it. After this many strikes the match is set
+    # aside and NAMED, so the cause gets looked at instead of ground against.
+    strikes = _load_jobs().get("_strikes", {})
+    keys = [k for k in keys if strikes.get(k, 0) < MAX_MATCH_STRIKES]
+
     curated = [k for k in keys if _curated(k)]
     if len(curated) == len(keys):
         report(f"all {len(keys)} match(es) curated", len(keys), len(keys))
@@ -465,7 +497,22 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
 
     # PER-MATCH CATEGORIES, mutually exclusive, so the app can say which matches are
     # where instead of only how many. Suffixes, since the event is already known.
+    if failed:
+        rec = _load_jobs()
+        st = dict(rec.get("_strikes", {}))
+        for k in failed:
+            st[k] = int(st.get(k, 0)) + 1
+        rec["_strikes"] = st
+        _save_jobs(rec)
+        benched = [k for k, n in st.items() if n >= MAX_MATCH_STRIKES]
+        if benched:
+            print(f"[agent] set aside after {MAX_MATCH_STRIKES} failures: "
+                  f"{', '.join(sorted(benched))}", flush=True)
+
     plan = {"cap": cap, "outstanding": out, "failed": [k.split("_", 1)[1] for k in failed],
+            "setAside": sorted(k.split("_", 1)[1] for k, n in
+                               _load_jobs().get("_strikes", {}).items()
+                               if n >= MAX_MATCH_STRIKES and k.startswith(event + "_")),
             "curated": [], "awaitingCuration": [], "readyBlocked": [], "queued": []}
     for key in keys:
         suf = key.split("_", 1)[1]
@@ -566,7 +613,7 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
 
 def job_summary(agent_id: str) -> dict:
     """The job ledger, trimmed to what the app needs to render progress."""
-    jobs = _load_jobs()
+    jobs = {k: v for k, v in _load_jobs().items() if not k.startswith("_")}
     running = [{"id": k, **v} for k, v in jobs.items() if v.get("state") == "running"]
     recent = sorted(((k, v) for k, v in jobs.items() if v.get("state") != "running"),
                     key=lambda kv: kv[1].get("finishedAt") or "", reverse=True)[:5]

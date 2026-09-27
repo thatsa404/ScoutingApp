@@ -557,9 +557,28 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
             C_mat, feat = head(C_mat), head(feat)
 
     if C_mat.shape[1] != feat.shape[1]:
-        raise SystemExit(f"[reid] gallery/cache dimensions differ "
-                         f"({C_mat.shape[1]} vs {feat.shape[1]}); rebuild the reviewed "
-                         "gallery and rerun appearance")
+        # NOT fatal. APPEARANCE IMPROVES A ROUTE; IT DOES NOT AUTHORISE ONE. A gallery
+        # built in a superseded embedding space is simply nothing usable to vote with --
+        # the same state as an event's first match, which the `if not known` branch above
+        # already documents as expected and returns None for.
+        #
+        # This used to raise, and the cost was concrete: the fused two-crop embedding took
+        # CNN features from 512 to 1024 dims, every 2026necmp1 legacy gallery stayed 512,
+        # and so every bundle attempt for that event failed at this line and was retried
+        # forever -- a full pipeline run per match per pass, producing nothing.
+        #
+        # The protection the old raise was reaching for is still needed, but it belongs on
+        # UNEXPECTED failures rather than on a known-incompatible input: a silent drop of
+        # available evidence once made 20 matches solve on geometry and hue while looking
+        # successful. That is handled by recording which evidence a route actually used --
+        # see identity provenance in rtrack.export -- so a degraded run is legible instead
+        # of being blocked.
+        print(f"[reid] gallery is {C_mat.shape[1]}-d but this match's cache is "
+              f"{feat.shape[1]}-d, so the gallery predates the current embedding space "
+              f"({EMBEDDING_SPACE}) -- NO VOTES for this match. Identity will come from "
+              f"curation anchors alone. Rebuild the gallery for this event to restore "
+              f"appearance help.")
+        return None
     C_mat = C_mat / (np.linalg.norm(C_mat, axis=1, keepdims=True) + 1e-9)
     if backend != "cnn":
         feat = feat / (np.linalg.norm(feat, axis=1, keepdims=True) + 1e-9)

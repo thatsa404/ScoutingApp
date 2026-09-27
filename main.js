@@ -10180,6 +10180,18 @@ async function renderTracksTab() {
                         : detectedSet.has(String(r.key).split('_').slice(1).join('_'))
                             ? pill('detected · awaiting bundle', '#818cf8')
                         : pill('no tracks', '#475569');
+            // WHAT THE ROUTE'S IDENTITY RESTS ON. A published route solved against a
+            // full gallery and one solved from the curator's anchors alone are different
+            // claims, and until now they rendered identically. Appearance is an
+            // enhancement rather than a gate, so anchors-only is a normal state -- it just
+            // must not be mistaken for the stronger one.
+            const ev = r.identityEvidence;
+            const evidence = !r.published || !ev ? ''
+                : ev === 'reviewed-gallery'
+                    ? `<span title="Solved with reviewed gallery prototypes" style="color:#22c55e;font-size:0.82em;">gallery</span>`
+                : ev === 'legacy-gallery'
+                    ? `<span title="Solved with the per-event centroid gallery" style="color:#60a5fa;font-size:0.82em;">event gallery</span>`
+                    : `<span title="No appearance evidence was available; identity came from curator anchors only. The route is usable but weaker than a gallery-backed solve." style="color:#fbbf24;font-size:0.82em;">anchors only</span>`;
             const models = r.total
                 ? `<span title="Teams with reviewed gallery evidence from this alliance color" style="color:${r.sameAllianceReviewed === r.total ? '#22c55e' : r.sameAllianceReviewed ? '#f59e0b' : '#64748b'};">
                      ${r.sameAllianceReviewed}/${r.total}</span>`
@@ -10204,7 +10216,7 @@ async function renderTracksTab() {
             const label = multiEvent ? r.key : r.key.replace(/^[^_]+_/, '');
             return `<tr style="border-top:1px solid #1e293b;">
               <td style="padding:7px 4px;font-weight:600;">${label}</td>
-              <td style="padding:7px 4px;">${state}</td>
+              <td style="padding:7px 4px;">${state}${evidence ? ' ' + evidence : ''}</td>
               <td style="padding:7px 4px;">${models}</td>
               <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
               <td style="padding:7px 4px;text-align:right;white-space:nowrap;">${acts || '<span style="color:#475569;">—</span>'}</td>

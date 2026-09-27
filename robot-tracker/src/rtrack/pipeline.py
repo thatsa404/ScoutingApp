@@ -323,20 +323,35 @@ def _main(argv=None) -> int:
                              "--match", args.match, "--tracks", st,
                              "--backend", args.appearance)
             if not have_votes:
-                # FATAL, deliberately. A gallery exists, so appearance evidence was
-                # available and something broke -- that is not the same state as an
-                # event's first match having nothing to vote with, and it must not be
-                # allowed to look like it. reid.vote_tracks raised NameError on every
-                # call for the whole 2026necmp1 event; the pipeline carried on to the
-                # 'identity will come from the curator' path and reported success, so
-                # 20 matches were solved on geometry and bumper hue alone and the
-                # resulting 23-39% auto-ID was read as the descriptor's performance.
-                # A wrong number that looks like a right one costs more than a stop.
-                print(f"    !! votes FAILED but appearance evidence exists -- "
-                      f"evidence is available and was not used. Refusing to solve "
-                      f"identity without it; fix the error above and re-run. "
-                      f"(--no-votes to proceed deliberately without appearance.)")
-                return 6
+                # NO LONGER FATAL, and the reason this changed is worth keeping.
+                #
+                # It used to return 6. The hazard it guarded was real: reid.vote_tracks
+                # raised NameError on every call for the whole 2026necmp1 event, the
+                # pipeline carried on to the 'identity will come from the curator' path
+                # and reported SUCCESS, and 20 matches solved on geometry and bumper hue
+                # alone -- whose 23-39% auto-ID was then read as the descriptor's
+                # performance. A wrong number that looks like a right one costs more than
+                # a stop.
+                #
+                # But stopping is the wrong remedy, because appearance IMPROVES a route
+                # rather than authorising one: a curated match with anchors and no gallery
+                # still yields a usable route, and refusing to publish it loses real work
+                # over a missing enhancement. What actually made the old failure expensive
+                # was that the degradation was INVISIBLE, not that it happened.
+                #
+                # So the run continues and the degradation is recorded instead. The stale
+                # votes file is removed first -- leaving it would let rtrack.export read a
+                # previous run's votes and report gallery evidence for a route that was
+                # solved without it, which is the same lie in a new place.
+                try:
+                    votes.unlink(missing_ok=True)
+                except OSError:
+                    pass
+                print(f"    !! votes FAILED though a gallery exists -- continuing on "
+                      f"CURATION ANCHORS ONLY. The route will be published and marked "
+                      f"identity.evidence=anchors-only, so it is not mistaken for a "
+                      f"gallery-backed solve. Fix the error above and re-run to get the "
+                      f"appearance help back.")
         else:
             have_votes = True
             print("    votes: up to date")
