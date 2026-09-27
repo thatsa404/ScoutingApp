@@ -9677,10 +9677,43 @@ function renderJobLines(jobs) {
                  <span style="display:block;width:${pct}%;height:100%;background:#2563eb;"></span>
                 </span> ${done}/${total || '?'}`;
     };
+    // WHICH matches, not just how many. A count cannot answer "what is it working on and
+    // what is it waiting for", and the cap makes that the first question: a job can sit
+    // apparently idle simply because every bundle slot is occupied by uncurated work.
+    const names = (list, limit = 10) => {
+        const a = Array.isArray(list) ? list : [];
+        if (!a.length) return '';
+        const shown = a.slice(0, limit).map(galleryEsc).join(', ');
+        return shown + (a.length > limit ? `, +${a.length - limit}` : '');
+    };
+    const planLines = j => {
+        const p = j.plan;
+        if (!p) return '';
+        const seg = (label, list, colour, title) => {
+            const a = Array.isArray(list) ? list : [];
+            if (!a.length) return '';
+            return `<div style="color:${colour};" title="${title}">
+                      ${a.length} ${label}: <span style="color:#94a3b8;">${names(a)}</span></div>`;
+        };
+        const full = Number(p.outstanding) >= Number(p.cap);
+        return `<div style="margin:2px 0 0 14px;display:flex;flex-direction:column;gap:1px;">
+            ${seg('awaiting curation', p.awaitingCuration, '#f59e0b',
+                  'A bundle is on the relay for these; curate one and its route publishes itself')}
+            ${seg('detected, waiting for a slot', p.readyBlocked, full ? '#fbbf24' : '#64748b',
+                  'Detected and ready to bundle, held back by the outstanding-bundle cap')}
+            ${seg('not detected yet', p.queued, '#64748b', 'Still queued for detection')}
+            ${seg('curated', p.curated, '#22c55e', 'Answered; the route has been published')}
+            ${seg('failed', p.failed, '#f87171', 'Detection or bundling failed for these')}
+            <div style="color:${full ? '#fbbf24' : '#64748b'};">
+              ${Number(p.outstanding)}/${Number(p.cap)} bundle slots used relay-wide${
+                full ? ' \u2014 nothing new posts until one is curated' : ''}</div>
+          </div>`;
+    };
     const rows = [
         ...running.map(j => `<div style="color:#93c5fd;">\u25b8 ${galleryEsc(j.type || 'job')}
             ${galleryEsc(j.event || '')} ${bar(j)}
-            ${j.note ? `<span style="color:#64748b;">${galleryEsc(j.note)}</span>` : ''}</div>`),
+            ${j.note ? `<span style="color:#64748b;">${galleryEsc(j.note)}</span>` : ''}</div>
+            ${planLines(j)}`),
         ...recent.slice(0, 3).map(j => {
             const bad = j.state === 'failed' || (j.failed || []).length;
             return `<div style="color:${bad ? '#f87171' : '#64748b'};">

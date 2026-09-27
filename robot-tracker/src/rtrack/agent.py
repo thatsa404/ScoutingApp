@@ -455,11 +455,35 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         out += 1
         pushed += 1
 
-    waiting = len(keys) - len(curated)
+    # Re-read the relay after the pass: bundles pushed a moment ago are part of the
+    # picture, and reusing the pre-pass snapshot would report them as still queued.
+    try:
+        bundles, answers = relay_bundle_state()
+        out = outstanding_count(bundles, answers)
+    except Exception:                             # noqa: BLE001
+        pass
+
+    # PER-MATCH CATEGORIES, mutually exclusive, so the app can say which matches are
+    # where instead of only how many. Suffixes, since the event is already known.
+    plan = {"cap": cap, "outstanding": out, "failed": [k.split("_", 1)[1] for k in failed],
+            "curated": [], "awaitingCuration": [], "readyBlocked": [], "queued": []}
+    for key in keys:
+        suf = key.split("_", 1)[1]
+        if suf in plan["failed"]:
+            continue
+        if _curated(key):
+            plan["curated"].append(suf)
+        elif bundles.get(key, 0.0) > answers.get(key, 0.0):
+            plan["awaitingCuration"].append(suf)
+        elif _detected(key):
+            plan["readyBlocked"].append(suf)      # detected, waiting for a free cap slot
+        else:
+            plan["queued"].append(suf)            # not detected yet
+
     report(f"{len(curated)}/{len(keys)} curated \u00b7 {out} bundle(s) awaiting curation"
            + (f" \u00b7 pushed {pushed}" if pushed else "")
            + (f" \u00b7 {len(failed)} failed" if failed else ""),
-           len(curated), len(keys))
+           len(curated), len(keys), plan)
     return len(curated), len(keys), failed, False
 
 
@@ -486,11 +510,19 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
     _save_jobs(jobs)
     last = [0.0]
 
-    def report(note: str, i: int, total: int) -> None:
+    def report(note: str, i: int, total: int, plan: dict | None = None) -> None:
+        """Progress for a human, plus an optional STRUCTURED breakdown for the app.
+
+        `note` alone could not answer "which matches are in progress toward the cap" --
+        it is one line of prose, and only the latest one survives. `plan` carries the
+        per-match categories so the app can name them instead of implying them.
+        """
         print(f"[agent] job {job_id[:8]}: {note} ({i}/{total})", flush=True)
         rec = _load_jobs()
         cur = rec.get(job_id, {})
         cur.update({"state": "running", "note": note, "done": i, "total": total})
+        if plan is not None:
+            cur["plan"] = plan
         rec[job_id] = cur
         _save_jobs(rec)
         # Throttled, because a per-match post would spend the day's write budget.
@@ -511,7 +543,9 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
                  "done": done, "total": total, "failed": failed}
         entry["finishedAt" if complete else "updatedAt"] = _now_iso()
         if not complete:
-            entry["note"] = _load_jobs().get(job_id, {}).get("note")
+            prev = _load_jobs().get(job_id, {})
+            entry["note"] = prev.get("note")
+            entry["plan"] = prev.get("plan")
         jobs[job_id] = entry
         _save_jobs(jobs)
         if complete:
