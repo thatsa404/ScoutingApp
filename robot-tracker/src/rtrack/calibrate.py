@@ -531,6 +531,121 @@ def floor_shift(old_doc: dict, new_doc: dict, step_px: int = 40) -> dict | None:
         return None
 
 
+POSE_METHOD = "joint-floor-and-tags-v1"
+
+
+def camera_pose(doc: dict, min_tags: int = 6) -> dict | None:
+    """Where the camera stands: ONE pinhole camera, with its own focal length, principal
+    point and radial distortion, fitted through EVERY clicked point at once -- the floor
+    points at z = 0 and the AprilTags at their real heights.
+
+    WHY NOT THE LENS THE FLOOR FIT ALREADY HAS. A floor-only calibration cannot tell focal
+    length from distortion: over a plane, a wide lens with mild barrel distortion and a
+    narrower one with strong distortion map the clicked points almost identically, and the
+    homography absorbs the rest. 2026necmp1's floor fit settled on f = 724 px, k1 = -0.11;
+    the camera that actually explains its tags is f = 1355 px, k1 = -0.37. That is harmless
+    for ROUTES -- the floor mapping is still right to 2.4 cm -- but it is fatal for pose,
+    where points at different heights break the tie:
+
+      floor lens held fixed        floor 103 px   tags 93 px (max 185)
+      one camera, all free         floor 3.3 px   tags 3.8 px (max 6.3)   <- every tag fits
+
+    The two solvers this replaces each inherited the tie differently: one borrowed the
+    floor lens's focal length, the other ignored distortion entirely -- which at k1 = -0.37
+    is worst exactly in the frame corners, where tags 6 and 17 sat 270-790 px "wrong".
+    2026mawor escaped by luck: its floor fit landed on nearly the true focal length (1459
+    vs 1468) with weak distortion, so borrowing it worked.
+
+    Returns the camera in the ROUTE frame (the frame rtrack.export publishes), plus the
+    evidence a reader needs to trust it: floor and tag error, per-tag residuals, and how far
+    the camera moves when each tag is left out in turn. None without enough tags.
+    """
+    import cv2
+    import numpy as _np
+    from .autocal import load_layout
+    tags = doc.get("aprilTags") or []
+    if len(tags) < min_tags:
+        return None
+    ref = load_field_ref()
+    fl, fw = (float(v) for v in ref["fieldSizeM"])
+    r, ppm = ref["fieldRectPx"], float(ref["pxPerMeter"])
+    layout, _ = load_layout()
+    tag_ix = {int(t["pointIndex"]): int(t["tagId"]) for t in tags
+              if isinstance(t, dict) and isinstance(t.get("pointIndex"), int)}
+    obj, img, kind = [], [], []
+    for i, (vx, vy, fx, fy) in enumerate(doc["points"]):
+        if i in tag_ix:
+            if tag_ix[i] not in layout:
+                continue
+            p = layout[tag_ix[i]]["pose"]["translation"]
+            # WPILib -> route frame: the same 180-degree turn the calibrator's tag picker
+            # applies when it places a tag on the field diagram (x1 - x*ppm, y0 + y*ppm).
+            obj.append([fl - p["x"], fw - p["y"], p["z"]]); kind.append(tag_ix[i])
+        else:
+            obj.append([(fx - r["x0"]) / ppm, (r["y1"] - fy) / ppm, 0.0]); kind.append(None)
+        img.append([vx, vy])
+    obj, img = _np.array(obj, _np.float32), _np.array(img, _np.float32)
+    tg = [i for i, k in enumerate(kind) if k is not None]
+    fl_ = [i for i, k in enumerate(kind) if k is None]
+    if len(tg) < min_tags:
+        return None
+    W, H = 1920, 1080
+    flags = (cv2.CALIB_USE_INTRINSIC_GUESS | cv2.CALIB_ZERO_TANGENT_DIST
+             | cv2.CALIB_FIX_K3 | cv2.CALIB_FIX_ASPECT_RATIO)
+
+    def fit(idx):
+        best = None
+        # A focal-length scan, because a single start can settle in the wrong basin.
+        for f0 in range(500, 3001, 100):
+            K0 = _np.array([[f0, 0, W / 2], [0, f0, H / 2], [0, 0, 1]], _np.float64)
+            try:
+                rms, K, d, rv, tv = cv2.calibrateCamera([obj[idx]], [img[idx]], (W, H),
+                                                        K0, _np.zeros(5), flags=flags)
+            except cv2.error:
+                continue
+            if best is None or rms < best[0]:
+                best = (rms, K, d, rv[0], tv[0])
+        return best
+
+    best = fit(list(range(len(obj))))
+    if best is None:
+        return None
+    _rms, K, d, rv, tv = best
+    pr, _ = cv2.projectPoints(obj, rv, tv, K, d)
+    res = _np.linalg.norm(pr.reshape(-1, 2) - img, axis=1)
+    R, _ = cv2.Rodrigues(rv)
+    cam = (-R.T @ tv).ravel()
+
+    # Leave each tag out and refit: if the camera moves far, a single click is carrying it.
+    spread = []
+    for j in tg:
+        b = fit([i for i in range(len(obj)) if i != j])
+        if b is not None:
+            Rj, _ = cv2.Rodrigues(b[3])
+            cj = (-Rj.T @ b[4]).ravel()
+            spread.append(float(_np.linalg.norm(cj[:2] - cam[:2])))
+    loo = max(spread) if spread else None
+    tag_err, tag_max = float(res[tg].mean()), float(res[tg].max())
+    ok = tag_err < 10 and tag_max < 20 and (loo is not None and loo < 1.0) \
+        and not (0 <= cam[0] <= fl and 0 <= cam[1] <= fw) and 1.5 < cam[2] < 20
+    return {
+        "method": POSE_METHOD,
+        "routeXY": [round(float(cam[0]), 4), round(float(cam[1]), 4)],
+        "heightM": round(float(cam[2]), 3),
+        "intrinsics": {"f": round(float(K[0, 0]), 1), "cx": round(float(K[0, 2]), 1),
+                       "cy": round(float(K[1, 2]), 1),
+                       "k1": round(float(d.ravel()[0]), 4), "k2": round(float(d.ravel()[1]), 4)},
+        "floorErrPx": round(float(res[fl_].mean()), 2) if fl_ else None,
+        "tagErrPx": round(tag_err, 2), "tagErrMaxPx": round(tag_max, 2),
+        "perTagErrPx": {str(kind[i]): round(float(res[i]), 2) for i in tg},
+        "leaveOneTagOutMaxM": round(loo, 3) if loo is not None else None,
+        "points": int(len(obj)), "tags": int(len(tg)),
+        # Plausibility is part of the verdict, not a separate check: a camera inside the
+        # field or below the floor has fitted the clicks and still answered wrongly.
+        "verdict": "ok" if ok else "poor",
+    }
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage 2: video -> field homography.")
     ap.add_argument("video")
@@ -569,12 +684,36 @@ def main(argv: list[str] | None = None) -> int:
                          "clicked on 2026necmp1_qm1's footage and renamed for the event, "
                          "so the footage to grab a plate from and the calibration to "
                          "read and write are different names.")
+    ap.add_argument("--pose-only", action="store_true",
+                    help="recompute the camera pose (see camera_pose) for the EXISTING "
+                         "calibration and store it, without refitting the floor. Backs up "
+                         "first.")
     ap.add_argument("--no-lens", action="store_true",
                     help="skip radial-distortion estimation and fit a plain "
                          "homography (see rtrack.lens for why that is worse here)")
     args = ap.parse_args(argv)
 
     C.ensure_dirs()
+    if args.pose_only:
+        # Resolve the calibration WITHOUT requiring footage: the pose comes from the stored
+        # clicks alone, and the footage lookup is exactly what fails for a renamed camera.
+        camera = args.camera or args.video
+        dest = C.CALIB_DIR / f"{camera}.json"
+        if not dest.exists():
+            raise SystemExit(f"[calibrate] {dest} not found")
+        doc = json.loads(dest.read_text(encoding="utf-8"))
+        pose = camera_pose(doc)
+        if pose is None:
+            raise SystemExit(f"[calibrate] {camera} has fewer than 6 usable AprilTags; no pose")
+        from datetime import datetime as _dt
+        bak = dest.with_name(f"{dest.name}.bak-{_dt.now().strftime('%Y%m%d-%H%M%S')}")
+        bak.write_bytes(dest.read_bytes())
+        doc["cameraPose"] = pose
+        dest.write_text(json.dumps(doc, indent=2), encoding="utf-8")
+        print(json.dumps(pose, indent=2))
+        print(f"[calibrate] camera pose stored in {dest.name} (previous kept as {bak.name})")
+        return 0
+
     stem = video_id(args.video)          # the FOOTAGE: plate and frame grabs only
     camera = args.camera or stem          # the CALIBRATION: file, relay id, review images
     ref = load_field_ref()
@@ -788,6 +927,19 @@ def main(argv: list[str] | None = None) -> int:
     }
     if point_meta:
         doc["aprilTags"] = point_meta
+        # Every refit with enough tags records where the camera stands, so a correction can
+        # be frozen from it and the app can show it, without a separate step.
+        try:
+            pose = camera_pose(doc)
+        except Exception as exc:                      # noqa: BLE001 - never block the fit
+            pose = None
+            print(f"[calibrate] camera pose not computed ({type(exc).__name__}: {exc})")
+        if pose:
+            doc["cameraPose"] = pose
+            print(f"[pose] camera at route ({pose['routeXY'][0]:.2f}, {pose['routeXY'][1]:.2f}), "
+                  f"height {pose['heightM']:.2f} m | tags {pose['tagErrPx']:.1f} px "
+                  f"(max {pose['tagErrMaxPx']:.1f}), floor {pose['floorErrPx']} px | "
+                  f"leave-one-tag-out {pose['leaveOneTagOutMaxM']} m | {pose['verdict'].upper()}")
     dest = C.CALIB_DIR / f"{camera}.json"
     # BACK UP BEFORE OVERWRITING. Points now arrive from a phone and are applied by
     # rtrack.agent without anyone at the machine, so one careless click session must not

@@ -229,16 +229,19 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
 
     # ROUTE CORRECTION, keyed by the same camera stem as the calibration and occluders.
     # Applied here and nowhere upstream: see rtrack.route_correction for why the solver
-    # must keep seeing uncorrected projections. A camera without its own file publishes
+    # must keep seeing uncorrected projections. Without a frozen file, the 0.54 m shift
+    # comes from this camera's own calibrated pose; with neither, samples publish
     # uncorrected -- a correction fitted at one venue says nothing about another.
     from . import route_correction as _rc
     corr = _rc.load(calib_stem or stem) if route_correction else None
     if corr:
         _sim = next((st for st in corr["steps"] if st["op"] == "similarity"), {})
         _sh = next((st for st in corr["steps"] if st["op"] == "radialShift"), {})
-        print(f"[export] route correction for {corr.get('camera')}: radial "
-              f"{_sh.get('meters', 0):.2f} m, then scale {_sim.get('scale', 1):.6f} + "
-              f"translation {_sim.get('translationM')}")
+        print(f"[export] route correction for {corr.get('camera')} "
+              f"({corr.get('source', 'frozen-file')}): radial "
+              f"{_sh.get('meters', 0):.2f} m from {_sh.get('fromXY')}"
+              + (f", then scale {_sim.get('scale', 1):.6f} + translation "
+                 f"{_sim.get('translationM')}" if _sim else ", no scale step"))
     elif route_correction:
         print(f"[export] no route correction for {calib_stem or stem}; publishing "
               f"uncorrected samples")

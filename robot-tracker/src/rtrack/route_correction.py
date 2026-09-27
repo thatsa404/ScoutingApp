@@ -59,8 +59,55 @@ def path_for(camera: str) -> Path:
     return C.CALIB_DIR / f"{camera}_route_correction.json"
 
 
+SHIFT_M = 0.54
+
+
+def from_pose(camera: str) -> dict | None:
+    """The AUTOMATIC correction: the radial shift alone, from the camera pose that
+    rtrack.calibrate stores with every calibration that has enough AprilTags.
+
+    No similarity step, deliberately. Refitting 2026mawor with its joint-model camera
+    left the occupancy fit's 2-3% scale unchanged (1.02-1.06 depending on thresholds),
+    and 2026necmp1's swung from 0.90 to 1.12 on the same knobs -- the envelope method
+    cannot tell a projection error from robots simply not driving to every wall. The
+    shift is a physical quantity (near face to robot centre) and needs only the camera
+    position, which the tags pin to a few centimetres. So it applies to every camera
+    with a trustworthy pose; scale waits for an independent measurement.
+
+    A pose whose verdict is not "ok" gives NO correction: a shift pushed from the wrong
+    point moves every sample the wrong way.
+    """
+    p = C.CALIB_DIR / f"{camera}.json"
+    if not p.exists():
+        return None
+    try:
+        pose = json.loads(p.read_text(encoding="utf-8")).get("cameraPose") or {}
+    except (OSError, ValueError):
+        return None
+    if pose.get("verdict") != "ok" or len(pose.get("routeXY") or []) != 2:
+        return None
+    return {
+        "schemaVersion": SCHEMA,
+        "kind": KIND,
+        "camera": camera,
+        "source": "calibration-pose",
+        "frame": "rtrack.project sample frame -- the x/y rtrack.export publishes",
+        "frozenAt": None,
+        "steps": [{"op": "radialShift", "meters": SHIFT_M,
+                   "fromXY": [float(v) for v in pose["routeXY"]],
+                   "why": "near-face floor contact -> robot centre, directly away from the "
+                          "camera's ground point"}],
+        "provenance": {"cameraPose": {k: pose.get(k) for k in
+                                      ("method", "routeXY", "heightM", "tagErrPx",
+                                       "leaveOneTagOutMaxM", "tags")}},
+    }
+
+
 def load(camera: str | None) -> dict | None:
-    """The frozen correction for this camera, or None. Never raises.
+    """The correction for this camera, or None. Never raises.
+
+    A frozen file (calib/<camera>_route_correction.json) wins when present; otherwise
+    the automatic shift from the calibration's camera pose (see from_pose).
 
     A malformed file is reported and IGNORED rather than half-applied: an export that
     silently used a broken correction would publish routes that are wrong and say they
@@ -70,7 +117,7 @@ def load(camera: str | None) -> dict | None:
         return None
     p = path_for(camera)
     if not p.exists():
-        return None
+        return from_pose(camera)
     try:
         doc = json.loads(p.read_text(encoding="utf-8"))
         if doc.get("kind") != KIND or doc.get("schemaVersion") != SCHEMA:
@@ -113,6 +160,7 @@ def summary(doc: dict) -> dict:
     return {
         "applied": True,
         "camera": doc.get("camera"),
+        "source": doc.get("source", "frozen-file"),
         "frozenAt": doc.get("frozenAt"),
         "steps": [{k: v for k, v in st.items() if k != "why"} for st in doc["steps"]],
     }
