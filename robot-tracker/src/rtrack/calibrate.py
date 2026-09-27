@@ -498,6 +498,39 @@ def interactive(stem: str, frame_idx: int, ref: dict,
     return pairs
 
 
+def floor_shift(old_doc: dict, new_doc: dict, step_px: int = 40) -> dict | None:
+    """How far a refit moved the FLOOR, in metres, over the part of the frame on the field.
+
+    The number that decides whether a refit was harmless. AprilTag clicks are kept out of
+    the planar fit, so adding tags to a calibration should move the floor by ~nothing --
+    and if it does not, every route already projected through the old fit is now in a
+    slightly different place from anything projected through the new one. Measured, not
+    assumed: a grid of image pixels is projected through both fits (homography AND lens),
+    and only pixels the OLD fit puts on the field count.
+    """
+    import numpy as _np
+    from .project import project_points
+    try:
+        ref = load_field_ref()
+        fl, fw = (float(v) for v in ref["fieldSizeM"])
+        H0 = _np.array(old_doc["H_video_to_fieldpx"], dtype=_np.float64)
+        H1 = _np.array(new_doc["H_video_to_fieldpx"], dtype=_np.float64)
+        w, h = 1920, 1080
+        g = _np.array([[x, y] for y in range(0, h, step_px) for x in range(0, w, step_px)],
+                      dtype=_np.float32)
+        a = project_points(g, H0, ref, old_doc.get("lens"))
+        b = project_points(g, H1, ref, new_doc.get("lens"))
+        on = ((a[:, 0] >= 0) & (a[:, 0] <= fl) & (a[:, 1] >= 0) & (a[:, 1] <= fw)
+              & _np.isfinite(a).all(axis=1) & _np.isfinite(b).all(axis=1))
+        if not on.any():
+            return None
+        d = _np.linalg.norm(b[on] - a[on], axis=1)
+        return {"maxM": round(float(d.max()), 4), "medianM": round(float(_np.median(d)), 4),
+                "p95M": round(float(_np.percentile(d, 95)), 4), "gridPoints": int(on.sum())}
+    except (KeyError, ValueError, TypeError):
+        return None
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(description="Stage 2: video -> field homography.")
     ap.add_argument("video")
@@ -529,13 +562,21 @@ def main(argv: list[str] | None = None) -> int:
                     help="do not use the traced near barrier as a straightness "
                          "constraint (see rtrack.lens: without it the lens "
                          "parameters are degenerate)")
+    ap.add_argument("--camera", default=None, metavar="STEM",
+                    help="the CALIBRATION's name, when it differs from the footage's. "
+                         "Defaults to the video stem. A calibration is named for the "
+                         "camera and reused by every match shot on it: 2026necmp1's was "
+                         "clicked on 2026necmp1_qm1's footage and renamed for the event, "
+                         "so the footage to grab a plate from and the calibration to "
+                         "read and write are different names.")
     ap.add_argument("--no-lens", action="store_true",
                     help="skip radial-distortion estimation and fit a plain "
                          "homography (see rtrack.lens for why that is worse here)")
     args = ap.parse_args(argv)
 
     C.ensure_dirs()
-    stem = video_id(args.video)
+    stem = video_id(args.video)          # the FOOTAGE: plate and frame grabs only
+    camera = args.camera or stem          # the CALIBRATION: file, relay id, review images
     ref = load_field_ref()
 
     if args.export_frame is not None:
@@ -549,7 +590,10 @@ def main(argv: list[str] | None = None) -> int:
             raise SystemExit("[calibrate] could not encode the plate")
         doc = {
             "schemaVersion": 1,
-            "videoId": stem,
+            # The relay id, which the phone posts points back under -- so it must be
+            # the CAMERA, or the points would come back addressed to one match's clip.
+            "videoId": camera,
+            "footage": stem,
             "frame": None,                       # a plate, not one frame
             "w": int(plate.shape[1]), "h": int(plate.shape[0]),
             "img": "data:image/jpeg;base64," + base64.b64encode(buf).decode("ascii"),
@@ -564,7 +608,7 @@ def main(argv: list[str] | None = None) -> int:
         # re-clicking everything is most annoying. --interactive already seeded this way
         # (see below); only the remote path was missing it.
         if not args.fresh:
-            prev = C.CALIB_DIR / f"{stem}.json"
+            prev = C.CALIB_DIR / f"{camera}.json"
             if prev.exists():
                 try:
                     fit = json.loads(prev.read_text(encoding="utf-8"))
@@ -587,7 +631,13 @@ def main(argv: list[str] | None = None) -> int:
                                   ("reprojErrorM", "inliers", "pointCount",
                                    "cornersOutsideFrame", "perPointErrorM")
                                   if k in fit}
-                    shot = C.STAGE2_DIR / f"{stem}_reproject.png"
+                    shot = C.STAGE2_DIR / f"{camera}_reproject.png"
+                    # Fall back to the footage-named overlay: a calibration renamed
+                    # for its camera (2026necmp1, from 2026necmp1_qm1) still has its
+                    # last overlay under the old name until it is next refitted, and
+                    # the first review should not arrive without it.
+                    if not shot.exists():
+                        shot = C.STAGE2_DIR / f"{stem}_reproject.png"
                     if shot.exists():
                         img = cv2.imread(str(shot))
                         if img is not None:
@@ -603,19 +653,19 @@ def main(argv: list[str] | None = None) -> int:
                                       f"({len(bufj) / 1e6:.1f} MB as JPEG)")
                 except Exception as e:
                     print(f"[calibrate] could not read {prev.name} ({e}); starting empty")
-        dest = (C.STAGE3_DIR / f"{stem}_calib_frame.json"
+        dest = (C.STAGE3_DIR / f"{camera}_calib_frame.json"
                 if str(args.export_frame) == "AUTO" else args.export_frame)
         dest.parent.mkdir(parents=True, exist_ok=True)
         dest.write_text(json.dumps(doc, separators=(",", ":")), encoding="utf-8")
         print(f"[calibrate] {dest} ({dest.stat().st_size / 1e6:.1f} MB)\n"
-              f"[calibrate] push it:  uv run -m rtrack.relay push-calib {stem}")
+              f"[calibrate] push it:  uv run -m rtrack.relay push-calib {camera}")
         return 0
 
     point_meta = None
     if args.interactive:
         seed = None
         if not args.fresh:
-            p = C.CALIB_DIR / f"{stem}.json"
+            p = C.CALIB_DIR / f"{camera}.json"
             if p.exists():
                 seed = json.loads(p.read_text(encoding="utf-8")).get("points") or None
                 if seed:
@@ -714,20 +764,21 @@ def main(argv: list[str] | None = None) -> int:
     lens_cfg = ({k: lens_params[k] for k in ("f", "k1", "k2", "cx", "cy")
                  if k in lens_params} if lens_params else None)
     field = cv2.imread(str(C.REPO_ROOT / ref["image"]))
-    preview(frame0, field, H, C.STAGE2_DIR / f"{stem}_warp.png", lens=lens_cfg)
+    preview(frame0, field, H, C.STAGE2_DIR / f"{camera}_warp.png", lens=lens_cfg)
     rep_corners = reproject_overlay(frame0, H, ref,
-                                    C.STAGE2_DIR / f"{stem}_reproject.png",
+                                    C.STAGE2_DIR / f"{camera}_reproject.png",
                                     lens=lens_cfg)
     report.update(rep_corners)
     if rep_corners["cornersOutsideFrame"]:
         print(f"[reproject] corners predicted OUTSIDE the frame: "
               f"{rep_corners['cornersOutsideFrame']}")
     report.update(error_jacobian(H, ref, frame0.shape,
-                                 C.STAGE2_DIR / f"{stem}_error_map.png",
+                                 C.STAGE2_DIR / f"{camera}_error_map.png",
                                  lens_params))
 
     doc = {
         "video": stem,
+        "camera": camera,
         "refFrame": args.frame,
         "mode": "static-homography",
         "H_video_to_fieldpx": H.tolist(),
@@ -737,16 +788,25 @@ def main(argv: list[str] | None = None) -> int:
     }
     if point_meta:
         doc["aprilTags"] = point_meta
-    dest = C.CALIB_DIR / f"{stem}.json"
+    dest = C.CALIB_DIR / f"{camera}.json"
+    # BACK UP BEFORE OVERWRITING. Points now arrive from a phone and are applied by
+    # rtrack.agent without anyone at the machine, so one careless click session must not
+    # be able to destroy a calibration that took real effort. Renamed copies, never
+    # deletions -- restoring one is a file rename.
+    if dest.exists():
+        from datetime import datetime as _dt
+        bak = dest.with_name(f"{dest.name}.bak-{_dt.now().strftime('%Y%m%d-%H%M%S')}")
+        bak.write_bytes(dest.read_bytes())
+        print(f"[calibrate] previous calibration kept as {bak.name}")
     dest.write_text(json.dumps(doc, indent=2), encoding="utf-8")
 
     print(json.dumps({k: v for k, v in report.items() if k != "perPointErrorM"},
                      indent=2))
     print(f"per-point error (m): {report['perPointErrorM']}")
     print(f"\n-> {dest}")
-    print(f"-> {C.STAGE2_DIR / f'{stem}_warp.png'}   <-- LOOK AT THIS")
-    print(f"-> {C.STAGE2_DIR / f'{stem}_reproject.png'}   <-- AND THIS ONE")
-    print(f"-> {C.STAGE2_DIR / f'{stem}_error_map.png'}")
+    print(f"-> {C.STAGE2_DIR / f'{camera}_warp.png'}   <-- LOOK AT THIS")
+    print(f"-> {C.STAGE2_DIR / f'{camera}_reproject.png'}   <-- AND THIS ONE")
+    print(f"-> {C.STAGE2_DIR / f'{camera}_error_map.png'}")
     return 0
 
 

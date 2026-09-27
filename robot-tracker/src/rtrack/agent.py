@@ -268,7 +268,7 @@ def pending_jobs(agent_id: str) -> list[dict]:
         if it.get("cancelled"):
             continue
         rec = ledger.get(it.get("id") or "") or None
-        if rec and rec.get("state") in ("done", "failed"):
+        if rec and rec.get("state") in ("done", "failed", "superseded"):
             continue
         out.append(it)
     return sorted(out, key=lambda it: it.get("at") or 0)
@@ -298,6 +298,51 @@ def outstanding_count(bundles: dict, answers: dict) -> int:
     much unreachable work as ten necmp1 ones.
     """
     return sum(1 for key, at in bundles.items() if answers.get(key, 0.0) <= at)
+
+
+def next_job(pending: list[dict]) -> dict | None:
+    """Which pending job gets this loop's turn.
+
+    NOT simply the oldest, which is what it used to be and which starved everything: a
+    `process` job deliberately stays unfinished until every match in its range is
+    curated -- days, for a 100-match event -- so as the oldest job it won every loop,
+    and a calibration request queued behind it never ran at all. Now the job that has
+    waited longest since its LAST turn goes next. A job that has never run has waited
+    forever, so a new request always goes next, and long-running jobs take turns.
+
+    Identical `process` requests are also collapsed here. Pressing Process again -- to
+    change the bundle cap, say -- queued a second copy rather than replacing the first;
+    2026necmp1 had four for qm1-qm100. The NEWEST is kept, since its settings are the
+    ones the person meant, and the older copies are retired as superseded. Nothing is
+    lost by switching: progress is read from disk and the relay, not from the job id.
+    """
+    if not pending:
+        return None
+    ledger = _load_jobs()
+    groups: dict[tuple, list[dict]] = {}
+    for it in pending:
+        if it.get("jobType") == "process":
+            groups.setdefault((it.get("event"), it.get("matches")), []).append(it)
+    retired = set()
+    for same in groups.values():
+        if len(same) < 2:
+            continue
+        same.sort(key=lambda it: it.get("at") or 0)
+        keep = same[-1]
+        for old in same[:-1]:
+            rec = ledger.get(old["id"], {})
+            rec.update({"state": "superseded", "supersededBy": keep["id"],
+                        "finishedAt": _now_iso(), "type": "process",
+                        "event": old.get("event")})
+            ledger[old["id"]] = rec
+            retired.add(old["id"])
+            print(f"[agent] job {old['id'][:8]} superseded by {keep['id'][:8]} "
+                  f"(same range, newer request)", flush=True)
+    if retired:
+        _save_jobs(ledger)
+    live = [it for it in pending if it["id"] not in retired]
+    return min(live, key=lambda it: (float(ledger.get(it["id"], {}).get("lastRunAt") or 0),
+                                     it.get("at") or 0)) if live else None
 
 
 def _detected(match_key: str) -> bool:
@@ -750,7 +795,163 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     return len(curated), len(keys), failed, False
 
 
-JOB_RUNNERS = {"process": run_process, "detect": run_detect, "bundle": run_bundle}
+# ── CALIBRATION REVIEW ──────────────────────────────────────────────────────
+#
+# A calibration can be pulled from the app, corrected or extended on a phone, and sent
+# back -- without anyone at this machine. The phone side (public/rtrack/calibrate.html)
+# already loads the existing points and lets AprilTags be added to them; what was missing
+# was any way to ASK for the bundle, and anything that applied the points that came back.
+#
+# Requesting is a job (calib). Applying is standing behaviour, like the watcher and
+# curation answers: whenever the relay holds points newer than this camera's calibration,
+# they are applied, the floor is checked, and the refreshed bundle goes back up so the
+# person who sent them sees the result and can refine again.
+
+
+def _camera_footage(camera: str, hint: str | None = None) -> str | None:
+    """A clip to grab the plate from. The calibration is named for the camera; the
+    footage is some match shot on it. 2026necmp1's doc even says video=2026necmp1 since
+    its rename, and no clip has that name -- so try, in order: an explicit hint, what the
+    agent used last time, the doc's own field, then the earliest clip for the camera."""
+    for cand in (hint, _load_state().get("calibFootage", {}).get(camera)):
+        if cand and (C.RAW_DIR / f"{cand}.mp4").exists():
+            return cand
+    doc_p = C.CALIB_DIR / f"{camera}.json"
+    if doc_p.exists():
+        try:
+            v = json.loads(doc_p.read_text(encoding="utf-8")).get("video")
+            if v and (C.RAW_DIR / f"{v}.mp4").exists():
+                return v
+        except (OSError, json.JSONDecodeError):
+            pass
+    def num(p):
+        m = re.search(r"_qm(\d+)$", p.stem)
+        return int(m.group(1)) if m else 10**6
+    clips = sorted(C.RAW_DIR.glob(f"{camera}_qm*.mp4"), key=num)
+    return clips[0].stem if clips else None
+
+
+def _calib_state(camera: str, **fields) -> None:
+    st = _load_state()
+    cal = dict(st.get("calibration", {}))
+    cal[camera] = {**cal.get(camera, {}), **fields}
+    st["calibration"] = cal
+    _save_state(st)
+
+
+def publish_calib_bundle(camera: str, footage: str) -> tuple[bool, str]:
+    """Build the review bundle (plate + existing points + last fit + overlay) and push it."""
+    rc, tail = _run_logged([PY, "-m", "rtrack.calibrate", footage, "--camera", camera,
+                            "--export-frame"], cwd=C.TRACKER_ROOT)
+    if rc != 0:
+        return False, failure_reason(tail, rc)
+    rc, tail = _run_logged([PY, "-m", "rtrack.relay", "push-calib", camera],
+                           cwd=C.TRACKER_ROOT)
+    if rc != 0:
+        return False, failure_reason(tail, rc)
+    return True, ""
+
+
+def run_calib(job: dict, report) -> tuple[int, int, list[str], bool]:
+    """Put a camera's calibration on the relay for review. The job the app requests."""
+    camera = job.get("camera") or job.get("event")
+    if not camera:
+        raise RuntimeError("calib job names no camera")
+    footage = _camera_footage(camera, job.get("video"))
+    if not footage:
+        raise RuntimeError(f"no footage for {camera}: need a clip in data/raw to take "
+                           f"the plate from")
+    report(f"building the review bundle for {camera} from {footage}", 0, 1)
+    ok, why = publish_calib_bundle(camera, footage)
+    if not ok:
+        raise RuntimeError(why)
+    _calib_state(camera, footage=footage, bundlePostedAt=_now_iso(), state="awaiting points")
+    st = _load_state(); st.setdefault("calibFootage", {})[camera] = footage; _save_state(st)
+    report(f"{camera} is on the relay: open it from Cameras to review", 1, 1)
+    return 1, 1, [], True
+
+
+JOB_RUNNERS = {"process": run_process, "detect": run_detect, "bundle": run_bundle,
+               "calib": run_calib}
+
+
+def pending_points() -> list[tuple[str, float]]:
+    """Cameras whose points on the relay have not been applied yet.
+
+    Two guards, both needed. NEWER THAN THE CALIBRATION FILE, so a points document that
+    was already applied by hand is never re-applied -- the relay keeps them for a day.
+    NEWER THAN THE LAST ATTEMPT, so a set of points that FAILS to fit is not retried on
+    every loop forever; sending new points is what retries.
+    """
+    url, _ = R._env()
+    import requests
+    r = requests.get(f"{url}/index", timeout=60)
+    r.raise_for_status()
+    tried = _load_state().get("pointsTried", {})
+    out = []
+    for it in r.json().get("items", []):
+        if it.get("kind") != "points":
+            continue
+        cam, at = it.get("id") or "", (it.get("at") or 0) / 1000.0
+        cal = C.CALIB_DIR / f"{cam}.json"
+        if cal.exists() and at <= cal.stat().st_mtime + 1:
+            continue
+        if at <= float(tried.get(cam, 0)) + 1:
+            continue
+        out.append((cam, at))
+    return out
+
+
+def apply_points(camera: str, at: float) -> None:
+    """Fit the points a phone sent, measure the floor, and send the result back."""
+    st = _load_state(); st.setdefault("pointsTried", {})[camera] = at; _save_state(st)
+    footage = _camera_footage(camera)
+    if not footage:
+        _calib_state(camera, state="failed", error="no footage to fit against",
+                     appliedAt=_now_iso())
+        return
+    doc = R.get("points", camera)
+    if doc is None:
+        return
+    pts = C.STAGE3_DIR / f"{camera}_points.json"
+    pts.write_text(json.dumps(doc, indent=1), encoding="utf-8")
+    cal_p = C.CALIB_DIR / f"{camera}.json"
+    old = json.loads(cal_p.read_text(encoding="utf-8")) if cal_p.exists() else None
+    n_tags = len(doc.get("aprilTags") or [])
+    print(f"[agent] applying {len(doc.get('points') or [])} point(s) for {camera} "
+          f"({n_tags} AprilTag) against {footage}", flush=True)
+    # Frame 200, NOT --plate. The refit also traces the near barrier to fit the lens, and
+    # measured: re-fitting 2026necmp1 from its own 15 points this way reproduced it
+    # EXACTLY (floor shift 0.0 m). A different image could move the lens, and so the floor,
+    # with no change to the points at all.
+    rc, tail = _run_logged([PY, "-m", "rtrack.calibrate", footage, "--camera", camera,
+                            "--points", str(pts)], cwd=C.TRACKER_ROOT)
+    if rc != 0:
+        _calib_state(camera, state="failed", error=failure_reason(tail, rc),
+                     appliedAt=_now_iso())
+        print(f"[agent] calibration for {camera} FAILED: {failure_reason(tail, rc)}",
+              flush=True)
+        return
+    new = json.loads(cal_p.read_text(encoding="utf-8"))
+    from .calibrate import floor_shift
+    shift = floor_shift(old, new) if old else None
+    moved = bool(shift and shift["maxM"] > 0.02)
+    _calib_state(camera, state="applied", appliedAt=_now_iso(), pointsAt=at, error=None,
+                 points=len(new.get("points") or []), aprilTags=len(new.get("aprilTags") or []),
+                 reprojErrorM=new.get("reprojErrorM"), floorShift=shift,
+                 # If the FLOOR moved, every route already projected through the old fit
+                 # is now offset from anything projected through the new one. Not acted on
+                 # automatically -- re-projecting an event is a decision -- but said plainly.
+                 floorMoved=moved)
+    print(f"[agent] {camera} calibration applied: {len(new.get('points') or [])} points, "
+          f"{len(new.get('aprilTags') or [])} tags, floor shift {shift}"
+          + ("  -- FLOOR MOVED: existing routes used the previous fit" if moved else ""),
+          flush=True)
+    # Close the loop: the refreshed bundle carries the new fit and its overlay, so the
+    # person holding the phone sees what their points did and can refine again.
+    ok, why = publish_calib_bundle(camera, footage)
+    if not ok:
+        print(f"[agent] could not re-publish {camera} for review: {why}", flush=True)
 
 
 def run_job(job_item: dict, agent_id: str, on_report) -> None:
@@ -769,7 +970,7 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
         return
 
     prev_entry = jobs.get(job_id) or {}
-    jobs[job_id] = {"state": "running", "type": doc.get("type"),
+    jobs[job_id] = {"state": "running", "type": doc.get("type"), "lastRunAt": time.time(),
                     "event": doc.get("event"), "startedAt": _now_iso(),
                     # Carried across the pass boundary so the app keeps a breakdown to
                     # show while the next pass is still working.
@@ -814,6 +1015,9 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
             prev = _load_jobs().get(job_id, {})
             entry["note"] = prev.get("note")
             entry["plan"] = prev.get("plan")
+            # Kept across the rewrite, or a long-running job would look like it had never
+            # had a turn and win every tie again -- the starvation next_job() exists to end.
+            entry["lastRunAt"] = prev.get("lastRunAt")
         jobs[job_id] = entry
         _save_jobs(jobs)
         if complete:
@@ -933,6 +1137,9 @@ def post_status(agent_id: str, watcher: Watcher, desired: dict | None,
         "queue": queue_depth(watcher.event) if watcher.alive else {},
         "jobs": job_summary(agent_id),
         "detected": detected_summary(),
+        # Per camera: where its review round trip stands, and whether the last applied
+        # points moved the floor. What the app's Cameras section reads.
+        "calibration": _load_state().get("calibration", {}),
         "stream": (desired or {}).get("stream"),
         "error": error,
     }
@@ -1270,6 +1477,17 @@ def main(argv=None) -> int:
                 watcher.started_at = None
                 changed = True
 
+            # Calibration points BEFORE jobs: someone is holding a phone waiting to see
+            # what their points did, and a fit takes seconds where a job pass takes
+            # minutes.
+            try:
+                for cam, at in pending_points():
+                    apply_points(cam, at)
+                    changed = True
+            except Exception as exc:                  # noqa: BLE001
+                print(f"[agent] points check failed ({type(exc).__name__}: {exc})",
+                      flush=True)
+
             # AFTER reconcile, so an arm/disarm is never stuck behind a long backfill,
             # and one job at a time: they compete for one GPU, and two detections in
             # flight make both slower rather than finishing either sooner.
@@ -1278,11 +1496,12 @@ def main(argv=None) -> int:
             except Exception as exc:                  # noqa: BLE001
                 print(f"[agent] job check failed ({type(exc).__name__}: {exc})", flush=True)
                 jobs_todo = []
-            if jobs_todo:
+            chosen = next_job(jobs_todo)
+            if chosen:
                 beat = lambda: post_status(agent_id, watcher, desired, applied_nonce,
                                            "running" if watcher.alive else "working",
                                            last_error)
-                run_job(jobs_todo[0], agent_id, beat)
+                run_job(chosen, agent_id, beat)
                 changed = True
 
             run_state = "running" if watcher.alive else ("error" if last_error else "idle")

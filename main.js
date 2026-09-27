@@ -10081,6 +10081,10 @@ function renderRelayControl(hostId, relay, items) {
           <button id="rcProcess" style="padding:5px 12px;border-radius:5px;border:0;
                   background:#2563eb;color:#fff;cursor:pointer;font-size:0.78em;font-weight:600;">
             Process</button>
+          <button id="rcCalib" title="Put this event's camera calibration on the relay to review, correct or add AprilTags to"
+                  style="padding:5px 10px;border-radius:5px;border:1px solid #334155;
+                  background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
+            Review calibration</button>
           <span style="color:#64748b;font-size:0.74em;">detect \u2192 bundle \u2192 route,
             <input id="rcOutstanding" type="number" min="1" max="12" value="4"
                    title="How many uncurated bundles to leave on the relay at once"
@@ -10146,6 +10150,18 @@ function renderRelayControl(hostId, relay, items) {
                 Number(document.getElementById('rcOutstanding').value) || 4)),
             options: { perMatch: true },
         }, statusEl);
+    };
+
+    // The camera is named for the event by convention (calib/<event>.json), so the event
+    // field is the camera. The machine picks the footage to take the plate from.
+    document.getElementById('rcCalib').onclick = async () => {
+        rememberToken();
+        const cam = document.getElementById('rcEvent').value.trim().toLowerCase();
+        if (!cam) { statusEl.innerHTML = `<span style="color:#f87171;">An event key is required.</span>`; return; }
+        const ok = await postJob(relay, agent.id, { type: 'calib', camera: cam, event: cam }, statusEl);
+        if (ok) statusEl.innerHTML = `<span style="color:#22c55e;">Requested. When the machine has
+            posted it (usually under a minute), ${galleryEsc(cam)} appears under <b>Cameras</b>
+            below with a <b>Calibrate</b> link. Your existing points load with it.</span>`;
     };
 
     document.getElementById('rcStop').onclick = async () => {
@@ -10302,6 +10318,31 @@ async function renderTracksTab() {
     // filtering these by event prefix is what hid 2026mawor's only camera. Anything the
     // relay holds a calib frame for can be calibrated or have occluders drawn on it.
     const cams = (items || []).filter(it => it.kind === 'calib').map(it => it.id).sort();
+    // Where each camera's review round trip stands. The relay says whether points are
+    // waiting (posted after the bundle); the agent says what applying them did -- and
+    // above all whether the FLOOR moved, because that is the one outcome that changes
+    // where already-published routes should be.
+    const calibAt = new Map((items || []).filter(it => it.kind === 'calib').map(it => [it.id, it.at || 0]));
+    const pointsAt = new Map((items || []).filter(it => it.kind === 'points').map(it => [it.id, it.at || 0]));
+    const calState = (_agentStatusDoc && _agentStatusDoc.calibration) || {};
+    const calibCell = id => {
+        const st = calState[id] || {};
+        const p = pointsAt.get(id) || 0, c = calibAt.get(id) || 0;
+        if (p && p > c) return pill('points sent · applying', '#f59e0b');
+        if (st.state === 'failed')
+            return `<span style="color:#f87171;" title="${galleryEsc(st.error || '')}">fit failed: ${galleryEsc((st.error || '').slice(0, 60))}</span>`;
+        if (st.state === 'applied') {
+            const fs = st.floorShift;
+            const floor = fs ? `floor moved ${(fs.maxM * 100).toFixed(1)} cm max` : 'floor not compared';
+            const err = st.reprojErrorM?.mean != null ? ` · ${(st.reprojErrorM.mean * 100).toFixed(1)} cm fit` : '';
+            return `<span style="color:${st.floorMoved ? '#fbbf24' : '#22c55e'};"
+                title="${st.floorMoved ? 'The floor fit changed: routes already published for this camera used the previous calibration.' : 'Floor unchanged, so published routes are unaffected.'}">
+                ${st.aprilTags || 0} tag${st.aprilTags === 1 ? '' : 's'} · ${floor}${err}</span>`
+                + (st.floorMoved ? ` <span style="color:#fbbf24;">· re-project to use it</span>` : '');
+        }
+        return st.state === 'awaiting points' ? '<span style="color:#93c5fd;">ready to review</span>'
+                                              : '<span style="color:#64748b;">—</span>';
+    };
     const occlOn = new Set((items || []).filter(it => it.kind === 'occl').map(it => it.id));
     const cameraBlock = cams.length ? `
       <details data-rtrack-section="cameras" style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
@@ -10311,11 +10352,13 @@ async function renderTracksTab() {
       <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
         <tr style="color:#64748b;text-align:left;">
           <th style="padding:6px 4px;">Camera</th>
+          <th style="padding:6px 4px;">Calibration</th>
           <th style="padding:6px 4px;">Occluders</th>
           <th style="padding:6px 4px;text-align:right;">Actions</th>
         </tr>
         ${cams.map(id => `<tr style="border-top:1px solid #1e293b;">
           <td style="padding:7px 4px;font-weight:600;">${id}</td>
+          <td style="padding:7px 4px;font-size:0.9em;">${calibCell(id)}</td>
           <td style="padding:7px 4px;">${occlOn.has(id)
               ? pill('sent · pull with wait-occl', '#22c55e')
               : '<span style="color:#64748b;">not drawn</span>'}</td>
