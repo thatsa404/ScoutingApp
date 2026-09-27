@@ -9835,19 +9835,21 @@ function renderRelayControl(hostId, relay, items) {
                     display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
           <span style="color:#64748b;font-size:0.76em;font-weight:700;letter-spacing:0.05em;
                        text-transform:uppercase;">Request work</span>
-          <input id="rcDetectRange" placeholder="qm26-qm100"
-                 style="width:110px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+          <input id="rcRange" placeholder="qm29-qm100"
+                 style="width:120px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
                         border-radius:5px;padding:5px 7px;font-size:0.78em;">
-          <button id="rcDetect" style="padding:5px 10px;border-radius:5px;border:1px solid #334155;
-                  background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
-            Detect</button>
-          <span style="color:#334155;">|</span>
-          <input id="rcBundleN" type="number" min="1" max="8" value="3"
-                 style="width:52px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
-                        border-radius:5px;padding:5px 7px;font-size:0.78em;">
-          <button id="rcBundle" style="padding:5px 10px;border-radius:5px;border:1px solid #334155;
-                  background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
-            Bundle next</button>
+          <button id="rcProcess" style="padding:5px 12px;border-radius:5px;border:0;
+                  background:#2563eb;color:#fff;cursor:pointer;font-size:0.78em;font-weight:600;">
+            Process</button>
+          <span style="color:#64748b;font-size:0.74em;">detect \u2192 bundle \u2192 route,
+            <input id="rcOutstanding" type="number" min="1" max="12" value="4"
+                   title="How many uncurated bundles to leave on the relay at once"
+                   style="width:44px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                          border-radius:4px;padding:2px 4px;font-size:0.95em;"> at a time</span>
+        </div>
+        <div style="color:#64748b;font-size:0.74em;margin-top:4px;">
+          Ask once per range. Each match is detected, then a curation bundle is posted; as
+          you curate one the route publishes itself and the next bundle takes its place.
         </div>
         ${(() => {
             const det = (_agentDetected || {})[eventKey];
@@ -9895,30 +9897,24 @@ function renderRelayControl(hostId, relay, items) {
         }, statusEl);
     };
 
-    document.getElementById('rcDetect').onclick = async () => {
+    // ONE request per range, not one per stage. The job stays active until every match in
+    // the range is curated: it detects, posts a bundle, and as each bundle is answered the
+    // watcher publishes that route and the job pushes the next bundle in its place.
+    document.getElementById('rcProcess').onclick = async () => {
         rememberToken();
         const ev = document.getElementById('rcEvent').value.trim().toLowerCase();
-        const range = document.getElementById('rcDetectRange').value.trim();
+        const range = document.getElementById('rcRange').value.trim();
         if (!ev || !range) {
             statusEl.innerHTML = `<span style="color:#f87171;">An event key and a match `
-                + `range are both required, e.g. qm26-qm100.</span>`;
+                + `range are both required, e.g. qm29-qm100.</span>`;
             return;
         }
         await postJob(relay, agent.id, {
-            type: 'detect', event: ev, matches: range,
+            type: 'process', event: ev, matches: range,
             calibFrom: document.getElementById('rcCalib').value.trim() || ev,
+            maxOutstanding: Math.max(1, Math.min(12,
+                Number(document.getElementById('rcOutstanding').value) || 4)),
             options: { perMatch: true },
-        }, statusEl);
-    };
-
-    document.getElementById('rcBundle').onclick = async () => {
-        rememberToken();
-        const ev = document.getElementById('rcEvent').value.trim().toLowerCase();
-        if (!ev) { statusEl.innerHTML = `<span style="color:#f87171;">An event key is required.</span>`; return; }
-        await postJob(relay, agent.id, {
-            type: 'bundle', event: ev,
-            count: Math.max(1, Math.min(8, Number(document.getElementById('rcBundleN').value) || 3)),
-            calibFrom: document.getElementById('rcCalib').value.trim() || ev,
         }, statusEl);
     };
 

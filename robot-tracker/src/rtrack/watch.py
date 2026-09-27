@@ -132,6 +132,25 @@ def finish_gallery(review_id: str) -> bool:
     return True
 
 
+def calib_for(key: str, calib_from: str | None, event: str | None) -> str:
+    """Which calibration stem to project this match with.
+
+    THE ARMED EVENT'S CALIBRATION IS NOT ALWAYS THE RIGHT ONE. Once answers from any
+    event are processed (--any-event), a match from a different event can arrive while
+    the agent is armed elsewhere, and projecting 2026mawor through 2026necmp1's
+    homography would put every robot in the wrong place -- silently, since a
+    homography happily transforms any point.
+
+    So --calib-from applies only to matches of the event it was given for; everything
+    else uses its own event stem, which is the convention the calibrations are named by
+    (calib/<event>.json).
+    """
+    own = key.split("_", 1)[0]
+    if calib_from and (event is None or key.startswith(event + "_")):
+        return calib_from
+    return own
+
+
 def finish(key: str, calib_from: str | None, event: str | None) -> bool:
     """Pull the answer, then run the match to publication."""
     print(f"\n[watch] {key}: answers are newer than what is on disk -- processing")
@@ -139,11 +158,12 @@ def finish(key: str, calib_from: str | None, event: str | None) -> bool:
     if subprocess.run(a).returncode != 0:
         print(f"[watch] {key}: could not fetch the answer")
         return False
-    b = [PY, "-m", "rtrack.pipeline", key, "--match", key]
-    if calib_from:
-        b += ["--calib-from", calib_from]
-    if event:
-        b += ["--event", event]
+    own_event = key.split("_", 1)[0]
+    cf = calib_for(key, calib_from, event)
+    if cf != (calib_from or own_event):
+        print(f"[watch] {key}: using calibration {cf} (not {calib_from})")
+    b = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--calib-from", cf,
+         "--event", own_event]
     rc = subprocess.run(b).returncode
     if rc == 3:
         print(f"[watch] {key}: another match holds the event lock; will retry")
@@ -192,6 +212,12 @@ def finish(key: str, calib_from: str | None, event: str | None) -> bool:
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(description="Finish matches as curators answer them.")
     ap.add_argument("--event", default=None, help="only watch this event key")
+    ap.add_argument("--any-event", action="store_true",
+                    help="process answers for EVERY event, not just --event. A curated "
+                         "bundle is work a human already did, so leaving it unprocessed "
+                         "because the machine is armed elsewhere just loses it. --event "
+                         "still selects which calibration --calib-from applies to; see "
+                         "calib_for.")
     ap.add_argument("--season", type=int, default=None,
                     help="only apply gallery answers for this season")
     ap.add_argument("--calib-from", default=None, metavar="VIDEO")
@@ -203,13 +229,14 @@ def main(argv=None) -> int:
 
     R._env()          # fail now, loudly, if the relay is not configured
     print(f"[watch] polling every {args.poll:.0f}s"
-          + (f" for {args.event}" if args.event else "")
+          + (" for every event" if args.any_event
+             else f" for {args.event}" if args.event else "")
           + ("  (once)" if args.once else "  -- Ctrl-C to stop"))
 
     seen_quiet = False
     while True:
         try:
-            todo = pending(args.event)
+            todo = pending(None if args.any_event else args.event)
         except Exception as e:
             print(f"[watch] relay unreachable ({e}); retrying")
             todo = []

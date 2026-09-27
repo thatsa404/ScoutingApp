@@ -89,6 +89,18 @@ JOB_REPORT_S = 60.0
 # for. Each bundle is 2-7 MB in a store that caps values at 25 MiB and expires them in 24
 # hours, so an unbounded request would push bundles nobody can reach before they expire.
 MAX_BUNDLE_BATCH = 8
+
+# How many uncurated bundles a `process` job will leave on the relay at once. This is the
+# throttle that lets ONE request cover a whole range: bundles are 2-7 MB and die after 24
+# hours, so pushing 72 of them would expire most unread. Instead the job keeps a few in
+# flight and pushes the next as each is answered, which also means the curator always has
+# work without ever having a backlog they cannot reach.
+MAX_OUTSTANDING_BUNDLES = 4
+
+# Detection is minutes per match and blocks this pass, so a pass does a bounded number and
+# returns. That keeps arm/disarm responsive -- a 72-match request must not make the control
+# poll wait hours.
+DETECT_PER_PASS = 3
 TASK_NAME = "RTrackAgent"
 
 
@@ -135,7 +147,10 @@ class Watcher:
         return self.proc is not None and self.proc.poll() is None
 
     def start(self, event: str, calib_from: str | None) -> None:
-        a = [PY, "-m", "rtrack.watch", "--event", event]
+        # --any-event: a curated bundle is work a human already did, so leaving it
+        # unprocessed because the machine happens to be armed on another event just
+        # loses it. --event still scopes which calibration --calib-from applies to.
+        a = [PY, "-m", "rtrack.watch", "--event", event, "--any-event"]
         if calib_from:
             a += ["--calib-from", calib_from]
         print(f"[agent] starting watcher: {' '.join(a[2:])}", flush=True)
@@ -222,6 +237,32 @@ def pending_jobs(agent_id: str) -> list[dict]:
             continue
         out.append(it)
     return sorted(out, key=lambda it: it.get("at") or 0)
+
+
+def relay_bundle_state() -> tuple[dict, dict]:
+    """(bundle timestamp by match, answer timestamp by match) from one /index read."""
+    url, _ = R._env()
+    import requests
+    r = requests.get(f"{url}/index", timeout=60)
+    r.raise_for_status()
+    bundles, answers = {}, {}
+    for it in r.json().get("items", []):
+        kind, ident, at = it.get("kind"), it.get("id") or "", (it.get("at") or 0) / 1000.0
+        if kind == "bundle":
+            bundles[ident] = at
+        elif kind == "answer":
+            answers[ident] = at
+    return bundles, answers
+
+
+def outstanding_count(bundles: dict, answers: dict) -> int:
+    """Bundles nobody has answered yet -- uncurated work already sitting on the relay.
+
+    Counted across EVERY event on purpose. The cap exists to protect a person's attention
+    and a 24-hour TTL, and neither is per-event: ten stale mawor bundles are exactly as
+    much unreachable work as ten necmp1 ones.
+    """
+    return sum(1 for key, at in bundles.items() if answers.get(key, 0.0) <= at)
 
 
 def _detected(match_key: str) -> bool:
@@ -321,7 +362,108 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
     return done, len(todo), failed
 
 
-JOB_RUNNERS = {"detect": run_detect, "bundle": run_bundle}
+def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
+    """Take a range of matches from nothing to a curation bundle, then keep it flowing.
+
+    ONE REQUEST PER MATCH, which is the whole point: asking for qm29-qm100 once should
+    eventually produce a curated route for every one of them without anybody pressing
+    anything again. So this job does not run to completion and exit -- it does a bounded
+    pass and reports itself unfinished, and the agent re-enters it each poll until every
+    requested match is curated.
+
+    The loop per match is: detect if needed (prep-only, no event lock), then push a
+    curation bundle if fewer than the cap are already waiting. A human answers one, the
+    watcher turns that answer into a published route and writes the corrections file, and
+    the next pass sees that match as curated and pushes the next bundle in its place. The
+    backpressure is the curator's own pace, which is the only rate that matters.
+
+    Returns (curated, total, failed, complete).
+    """
+    from .replay import parse_matches
+    event = job["event"]
+    keys = [f"{event}_{suf}" for suf in parse_matches(job.get("matches") or "")]
+    if not keys:
+        return 0, 0, [], True
+    cap = max(1, min(int(job.get("maxOutstanding") or MAX_OUTSTANDING_BUNDLES), 12))
+
+    curated = [k for k in keys if _curated(k)]
+    if len(curated) == len(keys):
+        report(f"all {len(keys)} match(es) curated", len(keys), len(keys))
+        return len(keys), len(keys), [], True
+
+    try:
+        bundles, answers = relay_bundle_state()
+    except Exception as exc:                      # noqa: BLE001
+        report(f"relay unreachable ({type(exc).__name__}); will retry", len(curated), len(keys))
+        return len(curated), len(keys), [], False
+
+    out = outstanding_count(bundles, answers)
+    failed, detected_now, pushed, attempts = [], 0, 0, 0
+    # ATTEMPTS, not successes. A failed push does not consume the cap, so bounding
+    # only successes let one systematically broken match carry the pass through every
+    # remaining bundle in the range -- a full pipeline run each, for nothing. A dry
+    # run measured 11 attempts against a cap of 4.
+    attempt_budget = max(1, cap - out) + 2
+
+    for key in keys:
+        if _curated(key):
+            continue
+        if not _detected(key):
+            if detected_now >= DETECT_PER_PASS:
+                break                             # yield to the control poll
+            suffix = key.split("_", 1)[1]
+            if not (C.RAW_DIR / f"{key}.mp4").exists():
+                report(f"fetching {suffix}", len(curated), len(keys))
+                ra = [PY, "-m", "rtrack.replay", event, "--matches", suffix]
+                if job.get("options", {}).get("perMatch", True):
+                    ra.append("--per-match")
+                subprocess.run(ra, cwd=C.TRACKER_ROOT)
+            if not (C.RAW_DIR / f"{key}.mp4").exists():
+                failed.append(key)
+                continue
+            report(f"detecting {suffix}", len(curated), len(keys))
+            a = [PY, "-m", "rtrack.pipeline", key, "--match", key,
+                 "--event", event, "--prep-only"]
+            if job.get("calibFrom"):
+                a += ["--calib-from", job["calibFrom"]]
+            detected_now += 1
+            if subprocess.run(a, cwd=C.TRACKER_ROOT).returncode != 0:
+                failed.append(key)
+                continue
+
+        # A bundle already waiting for this match is not re-pushed: that would reset a
+        # curator's 24-hour window and churn the relay for no gain.
+        if bundles.get(key, 0.0) > answers.get(key, 0.0):
+            continue
+        if out >= cap or attempts >= attempt_budget:
+            continue
+        attempts += 1
+        suffix = key.split("_", 1)[1]
+        report(f"bundling {suffix}", len(curated), len(keys))
+        a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
+        if job.get("calibFrom"):
+            a += ["--calib-from", job["calibFrom"]]
+        rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+        bundle = _bundle_path(key)
+        if rc != 0 or not bundle.exists():
+            failed.append(key)
+            continue
+        push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
+        if subprocess.run(push, cwd=C.TRACKER_ROOT).returncode != 0:
+            failed.append(key)
+            continue
+        out += 1
+        pushed += 1
+
+    waiting = len(keys) - len(curated)
+    report(f"{len(curated)}/{len(keys)} curated \u00b7 {out} bundle(s) awaiting curation"
+           + (f" \u00b7 pushed {pushed}" if pushed else "")
+           + (f" \u00b7 {len(failed)} failed" if failed else ""),
+           len(curated), len(keys))
+    return len(curated), len(keys), failed, False
+
+
+JOB_RUNNERS = {"process": run_process, "detect": run_detect, "bundle": run_bundle}
 
 
 def run_job(job_item: dict, agent_id: str, on_report) -> None:
@@ -357,14 +499,24 @@ def run_job(job_item: dict, agent_id: str, on_report) -> None:
             on_report()
 
     try:
-        done, total, failed = runner(doc, report)
+        result = runner(doc, report)
+        # A runner may report itself UNFINISHED (process does, since it waits on a human
+        # between bundles). Such a job stays out of the done/failed set, so pending_jobs
+        # hands it back on the next poll and it resumes where it stopped.
+        done, total, failed, complete = (result if len(result) == 4
+                                         else (*result, True))
         jobs = _load_jobs()
-        jobs[job_id] = {"state": "done", "type": doc.get("type"), "event": doc.get("event"),
-                        "done": done, "total": total, "failed": failed,
-                        "finishedAt": _now_iso()}
+        entry = {"state": "done" if complete else "running",
+                 "type": doc.get("type"), "event": doc.get("event"),
+                 "done": done, "total": total, "failed": failed}
+        entry["finishedAt" if complete else "updatedAt"] = _now_iso()
+        if not complete:
+            entry["note"] = _load_jobs().get(job_id, {}).get("note")
+        jobs[job_id] = entry
         _save_jobs(jobs)
-        print(f"[agent] job {job_id[:8]}: finished {done}/{total}"
-              + (f", {len(failed)} failed" if failed else ""), flush=True)
+        if complete:
+            print(f"[agent] job {job_id[:8]}: finished {done}/{total}"
+                  + (f", {len(failed)} failed" if failed else ""), flush=True)
     except Exception as exc:                          # noqa: BLE001
         # A job that raises must be recorded as failed rather than retried forever: the
         # usual cause is a missing video or a bad calibration, and neither fixes itself.
@@ -679,11 +831,17 @@ def main(argv=None) -> int:
                    help="print the current control and status documents")
     g.add_argument("--request", choices=sorted(JOB_RUNNERS), default=None,
                    metavar="TYPE",
-                   help="post a job document (detect | bundle), as the app will")
+                   help="post a job document. `process` takes a match range from nothing "
+                        "to a curated route and keeps it flowing; detect and "
+                        "bundle are the older single-stage requests.")
     g.add_argument("--matches", default=None, metavar="SPEC",
-                   help="for --request detect: qm26-qm100 or qm1,qm7")
+                   help="for --request process/detect: qm26-qm100 or qm1,qm7")
     g.add_argument("--count", type=int, default=3,
                    help="for --request bundle: how many uncurated matches to bundle")
+    g.add_argument("--max-outstanding", type=int, default=MAX_OUTSTANDING_BUNDLES,
+                   metavar="N",
+                   help="for --request process: how many uncurated bundles to leave on "
+                        "the relay at once")
     g.add_argument("--jobs", action="store_true",
                    help="list this machine's job ledger")
     g.add_argument("--calib-from", default=None, metavar="VIDEO",
@@ -705,7 +863,7 @@ def main(argv=None) -> int:
         print(json.dumps(job_summary(agent_id), indent=2))
         return 0
     if args.request:
-        if args.request == "detect" and not args.matches:
+        if args.request in ("detect", "process") and not args.matches:
             print("[agent] --request detect needs --matches, e.g. qm26-qm100",
                   file=sys.stderr)
             return 2
@@ -714,6 +872,7 @@ def main(argv=None) -> int:
                "type": args.request,
                "event": args.arm or (args.calib_from or None),
                "matches": args.matches, "count": args.count,
+               "maxOutstanding": args.max_outstanding,
                "calibFrom": args.calib_from,
                "requestedBy": f"cli:{socket.gethostname()}", "requestedAt": _now_iso()}
         if not doc["event"]:
