@@ -458,6 +458,28 @@ def process_plan(keys: list[str], event: str, bundles: dict, answers: dict,
     return plan
 
 
+def control_pending(agent_id: str | None) -> bool:
+    """Is there a control command this agent has not applied yet?
+
+    The main loop reads /control only BETWEEN job passes, and a pass blocks for minutes --
+    up to three fetch-and-detect cycles plus full pipeline runs for bundling and publishing.
+    A lead scout pressed Stop, then Start, and the panel reported "asked to run 2026necmp1
+    but the machine reports working" for the rest of the pass: both commands sat unread.
+
+    So a pass checks this between matches and gives way. One GET per match, a read; it
+    bounds the delay to whatever single step is already running rather than a whole pass.
+    """
+    if not agent_id:
+        return False
+    try:
+        doc = R.get("control", agent_id)
+    except Exception:                             # noqa: BLE001
+        return False                              # an unreachable relay is not a command
+    if not doc or not doc.get("nonce"):
+        return False
+    return doc["nonce"] != _load_state().get("appliedNonce")
+
+
 def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     """Take a range of matches from nothing to a curation bundle, then keep it flowing.
 
@@ -514,6 +536,12 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     for key in keys:
         if _curated(key):
             continue
+        # Give way to a command the moment one is waiting, rather than at the end of a pass.
+        # The job is not lost: it stays `running` in the ledger and resumes next iteration,
+        # after the main loop has applied the command.
+        if control_pending(job.get("agentId")):
+            report("pausing: a new control command is waiting", len(curated), len(keys))
+            break
         if not _detected(key):
             if detected_now >= DETECT_PER_PASS:
                 break                             # yield to the control poll

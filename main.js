@@ -9904,7 +9904,13 @@ function relayLiveParts(agent, eventKey) {
     const full = (_agentStatusDoc && _agentStatusDoc.agentId === agent.id) ? _agentStatusDoc : null;
     const st = { ...(agent.status || {}), jobs: full?.jobs };
     const want = agent.control?.desired;
-    const drift = want === 'running' && st.state !== 'running' && !h.stale;
+    // Two different situations used to share one message. If the machine has not yet
+    // applied the latest command (its appliedNonce lags the control document), it is not
+    // disagreeing -- it has not read it, typically because it is finishing the step it was
+    // on. Only once it HAS applied the command is "asked for X, reports Y" a real mismatch.
+    const cmdNonce = agent.control?.nonce;
+    const pendingCmd = !!cmdNonce && st.appliedNonce !== cmdNonce && !h.stale;
+    const drift = !pendingCmd && want === 'running' && st.state !== 'running' && !h.stale;
     const running = st.state === 'running';
     const queue = (st.pendingAnswers != null || st.pendingGallery != null)
         ? `${st.pendingAnswers ?? '?'} answer${st.pendingAnswers === 1 ? '' : 's'}, `
@@ -9918,6 +9924,9 @@ function relayLiveParts(agent, eventKey) {
           ${queue ? `<span>${galleryEsc(queue)}</span>` : ''}
         </div>
         ${st.error ? `<div style="color:#f87171;font-size:0.78em;margin-top:5px;">${galleryEsc(st.error)}</div>` : ''}
+        ${pendingCmd ? `<div style="color:#93c5fd;font-size:0.78em;margin-top:5px;">
+            Your ${galleryEsc(want === 'running' ? 'Start' : 'Stop')} command is waiting for
+            the home machine, which picks it up when the step it is on finishes.</div>` : ''}
         ${drift ? `<div style="color:#fbbf24;font-size:0.78em;margin-top:5px;">
             Asked to run ${galleryEsc(agent.control.event || '')} but the machine reports
             ${galleryEsc(st.state || 'idle')}.</div>` : ''}`;
