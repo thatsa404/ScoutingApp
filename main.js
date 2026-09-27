@@ -2100,10 +2100,17 @@ window.refreshPrepHighlight = function () {
 async function getMatchHistory(teamNumber, year) {
     const url = `https://api.statbotics.io/v3/team_matches?team=${teamNumber}&year=${year}`;
     const response = await fetch(url);
+    // A team that did not exist in `year` is a 404 with a JSON error body, which is the
+    // normal case when loading an old event: the roster comes from TBA (present-day) and
+    // is queried against a past season. Not an error worth propagating -- no matches is
+    // the right answer.
+    if (!response.ok) return [];
     const json = await response.json();
     const matchArray = json.data || json.results || json;
 
-    if (!matchArray || matchArray.length === 0) return [];
+    // Array.isArray, not a length check: an error body is an object whose `length` is
+    // undefined, which passes `!== 0` and then fails on .sort().
+    if (!Array.isArray(matchArray) || matchArray.length === 0) return [];
 
     // We still sort it so the order is preserved in the database
     matchArray.sort((a, b) => a.time - b.time);
@@ -2157,10 +2164,10 @@ async function processTeamPerformance(teamNumber, eventKey, force = false, teamE
     console.log(`-> Fetching full matches for ${teamNumber}...`);
     const fullMatchData = await getMatchHistory(teamNumber, year);
 
-    if (!fullMatchData || fullMatchData.length === 0) {
-        console.warn(`-> No match data found for ${teamNumber}`);
-        return null;
-    }
+    // Empty history is normal when the event predates the team, and the record is still
+    // written: the roster came from TBA, so bailing here would drop the team from the
+    // team list entirely rather than showing it with no EPA.
+    if (!fullMatchData.length) console.warn(`-> No match data found for ${teamNumber}`);
 
     const playedMatches = fullMatchData.filter(m => m.status === 'Completed' && m.epa?.post);
     const currentEPA = eventEpaEnd
@@ -3193,6 +3200,38 @@ window.saveScoutingSheetUrl = function () {
     renderScoutingSection();
 };
 
+// Re-pastes over (or blanks out) the per-device match-scouting sheet override once one is
+// already configured -- the normal render collapses the input box into a badge+Sync button,
+// so this is the only way to change or remove a link after the fact without devtools.
+window.changeScoutingSheetUrl = function () {
+    const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
+    if (!eventKey) return;
+    const current = localStorage.getItem(`scoutingSheetUrl_${eventKey}`) || '';
+    const raw = prompt(
+        `Match scouting sheet for ${eventKey}\n(paste a new Sheet ID/URL to replace it, or clear the box and press OK to remove it)`,
+        current);
+    if (raw === null) return; // cancelled
+    if (!raw.trim()) {
+        window.removeScoutingSheetUrl(eventKey, /*skipConfirm*/ true);
+        return;
+    }
+    const url = sheetsInputToCsvUrl(raw.trim());
+    if (!url) { alert('Could not parse that as a Google Sheets URL or ID.'); return; }
+    localStorage.setItem(`scoutingSheetUrl_${eventKey}`, url);
+    renderScoutingSection();
+};
+
+// Clears a per-device match-scouting link override. If the event also has a hardcoded
+// source in SCOUTING_SOURCES, that takes over again (see getScoutingSource) rather than
+// leaving the event unconfigured -- an override can only remove itself, not the registry.
+window.removeScoutingSheetUrl = function (eventKey, skipConfirm = false) {
+    eventKey = eventKey || document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
+    if (!eventKey) return;
+    if (!skipConfirm && !confirm(`Remove the stored match scouting link for ${eventKey}?`)) return;
+    localStorage.removeItem(`scoutingSheetUrl_${eventKey}`);
+    renderScoutingSection();
+};
+
 window.savePitSheetUrl = function () {
     const eventKey = document.getElementById('eventKeyInput')?.value.trim().toLowerCase();
     const raw = document.getElementById('pitUrlInput')?.value.trim();
@@ -3615,6 +3654,10 @@ function renderScoutingSection() {
                     <span style="color:#64748b;font-size:0.85em;min-width:100px;">Match Scouting</span>
                     ${matchBadge}
                     ${gameLabel}
+                    <button onclick="changeScoutingSheetUrl()" style="background:transparent;border:1px solid #334155;color:#94a3b8;font-size:0.75em;padding:3px 8px;">Change link</button>
+                    ${localStorage.getItem(`scoutingSheetUrl_${eventKey}`)
+                        ? `<button onclick="removeScoutingSheetUrl()" style="background:transparent;border:1px solid #334155;color:#f87171;font-size:0.75em;padding:3px 8px;">Remove</button>`
+                        : ''}
                 </div>
                 <div style="display:flex;gap:10px;flex-wrap:wrap;align-items:center;">
                     <button id="btn-syncScoutingData" onclick="syncScoutingData()">Sync Match Data</button>
