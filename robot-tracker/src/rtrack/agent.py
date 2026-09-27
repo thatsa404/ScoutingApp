@@ -273,6 +273,11 @@ def _detected(match_key: str) -> bool:
     return (C.STAGE1_DIR / f"{match_key}_tracks_stitched.jsonl").exists()
 
 
+def _corrections_exist(match_key: str) -> bool:
+    """A human has answered this match, whatever became of the route afterwards."""
+    return (C.TRACKER_ROOT / "corrections" / f"{match_key}_corrections.json").exists()
+
+
 def _curated(match_key: str) -> bool:
     """Has this match reached a PUBLISHED ROUTE at least as new as its corrections?
 
@@ -463,6 +468,24 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
                 failed.append(key)
                 continue
 
+        # ALREADY CURATED BUT NOT PUBLISHED: solve and publish, never re-bundle.
+        #
+        # This is the state that the old _curated test hid and the new one exposes: 19
+        # 2026necmp1 matches have a corrections file and no route. The work a human did
+        # still exists on disk, so asking them to curate the same match a second time
+        # would be wasting it. Running the pipeline with corrections present re-solves and
+        # publishes instead of building a bundle, which is exactly what is wanted -- and it
+        # consumes no bundle slot, because it produces no bundle.
+        if _corrections_exist(key):
+            report(f"publishing {key.split('_', 1)[1]} from existing corrections",
+                   len(curated), len(keys))
+            a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
+            if job.get("calibFrom"):
+                a += ["--calib-from", job["calibFrom"]]
+            if subprocess.run(a, cwd=C.TRACKER_ROOT).returncode != 0 or not _curated(key):
+                failed.append(key)
+            continue
+
         # A bundle already waiting for this match is not re-pushed: that would reset a
         # curator's 24-hour window and churn the relay for no gain.
         if bundles.get(key, 0.0) > answers.get(key, 0.0):
@@ -513,13 +536,16 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             "setAside": sorted(k.split("_", 1)[1] for k, n in
                                _load_jobs().get("_strikes", {}).items()
                                if n >= MAX_MATCH_STRIKES and k.startswith(event + "_")),
-            "curated": [], "awaitingCuration": [], "readyBlocked": [], "queued": []}
+            "curated": [], "awaitingCuration": [], "awaitingPublish": [],
+            "readyBlocked": [], "queued": []}
     for key in keys:
         suf = key.split("_", 1)[1]
         if suf in plan["failed"]:
             continue
         if _curated(key):
             plan["curated"].append(suf)
+        elif _corrections_exist(key):
+            plan["awaitingPublish"].append(suf)   # answered already; only the route is missing
         elif bundles.get(key, 0.0) > answers.get(key, 0.0):
             plan["awaitingCuration"].append(suf)
         elif _detected(key):
