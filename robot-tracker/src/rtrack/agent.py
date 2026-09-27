@@ -71,7 +71,7 @@ PY = sys.executable
 
 # Reading desired state is a KV READ, and reads are effectively free next to the 1k/day
 # write cap. This is what makes arming feel immediate.
-CONTROL_POLL_S = 30.0
+CONTROL_POLL_S = 10.0             # a READ; puts an arm/disarm receipt within ~12 s
 
 # STATUS POST BUDGET, and the arithmetic that was got wrong once.
 #
@@ -89,10 +89,20 @@ CONTROL_POLL_S = 30.0
 # by simply leaving it out of the accounting: bundles, answers and routes are never
 # throttled, they just spend from the same pool. The budget is deliberately well under
 # 500 puts to leave that room.
-STATUS_POSTS_PER_DAY = 160          # ~320 writes; leaves ~180 puts/day for real work
-HEARTBEAT_IDLE_S = 1800.0           # 30 min
-HEARTBEAT_RUNNING_S = 420.0         # 7 min, which is 160 posts over a 19-hour day
-HEARTBEAT_FLOOR_S = 90.0            # even a state change will not post faster than this
+#
+# NOW ON THE WORKERS PAID PLAN: 1,000,000 writes a MONTH (~33,000/day), confirmed live by a
+# write succeeding at 18:38 UTC on the same UTC day the free quota ran out at 17:15. The
+# doubling above still applies, so the arithmetic is: a 30 s heartbeat for a whole day is
+# 2,880 posts = 5,760 writes, ~173k a month. Real work sits on top of that comfortably.
+#
+# The ration is KEPT, raised to a runaway guard rather than a squeeze. Overage on paid is
+# $5 per million writes -- cheap, but a loop posting every iteration would still find it,
+# and a cap that never binds in normal use costs nothing. 6,000 posts/day is 12,000 writes,
+# 360k a month at worst, leaving well over half the included million for everything else.
+STATUS_POSTS_PER_DAY = 6000
+HEARTBEAT_IDLE_S = 300.0            # 5 min
+HEARTBEAT_RUNNING_S = 30.0          # the lag a lead scout sees in the relay panel
+HEARTBEAT_FLOOR_S = 10.0            # a burst of state changes still cannot flood
 
 STATE_FILE = C.OUT_DIR / "agent_state.json"
 JOBS_FILE = C.OUT_DIR / "agent_jobs.json"

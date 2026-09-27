@@ -43,7 +43,11 @@ from . import relay as R
 # listing down with it while every other endpoint stayed healthy. The worker now serves
 # /index from a manifest key (an ordinary get), which removes the cliff; this is the belt
 # to that braces. A curator takes minutes per match, so polling faster buys nothing.
-POLL_S = 60.0
+# 20 s now. The 60 s this replaced protected a free-plan limit that no longer binds:
+# /index has been a manifest GET rather than a KV list() for some time, and on the paid
+# plan reads are 10M a month. What the poll interval actually buys is how long a curated
+# answer waits before processing starts, which is worth shortening once it is free to.
+POLL_S = 20.0
 PY = sys.executable
 
 

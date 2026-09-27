@@ -9853,6 +9853,10 @@ let _agentDetected = {};
 // of a phone picked up at an event, and the state in which listing every event the season
 // ever produced a bundle for is least useful.
 let _agentEvent = null;
+// The whole status document from the last fetch. The /index metadata that drives the
+// heartbeat strip carries only a handful of summary fields -- the worker never copies
+// `jobs` into it -- so rendering the ledger from index metadata alone rendered nothing.
+let _agentStatusDoc = null;
 
 // A match that has been DETECTED but has no bundle and no routes is invisible otherwise:
 // rtrack.pipeline --prep-only writes stage1 tracks and nothing the relay or the published
@@ -9875,7 +9879,7 @@ async function refreshAgentDetected(relay, items) {
     const agents = relayAgents(items);
     const savedId = localStorage.getItem(AGENT_ID_KEY) || '';
     const agent = agents.find(a => a.id === savedId) || agents[0] || null;
-    if (!relay || !agent) { _agentDetected = {}; _agentEvent = null; return; }
+    if (!relay || !agent) { _agentDetected = {}; _agentEvent = null; _agentStatusDoc = null; return; }
     // One extra GET per Tracks render, not per row: the index metadata deliberately does
     // not carry the match lists, only the summary fields the heartbeat strip needs.
     try {
@@ -9884,7 +9888,89 @@ async function refreshAgentDetected(relay, items) {
         const doc = r.ok ? await r.json() : null;
         _agentDetected = doc?.detected || {};
         _agentEvent = doc?.event || null;
-    } catch { _agentDetected = {}; _agentEvent = null; }
+        _agentStatusDoc = doc;
+    } catch { _agentDetected = {}; _agentEvent = null; _agentStatusDoc = null; }
+}
+
+// The parts of the panel that change on their own: health, state line, ledger. Factored
+// out so the auto-refresh can repaint them WITHOUT re-rendering the form -- re-rendering
+// the whole panel every few seconds would wipe whatever the lead scout is mid-way through
+// typing into the event, range or token fields.
+function relayLiveParts(agent, eventKey) {
+    const h = agentHealth(agent);
+    // LEDGER FROM THE FULL DOCUMENT. agent.status is the /index metadata row, which never
+    // carries `jobs`; the full status document does. Without this merge the job lines and
+    // per-match breakdown rendered as nothing, whatever the agent was actually doing.
+    const full = (_agentStatusDoc && _agentStatusDoc.agentId === agent.id) ? _agentStatusDoc : null;
+    const st = { ...(agent.status || {}), jobs: full?.jobs };
+    const want = agent.control?.desired;
+    const drift = want === 'running' && st.state !== 'running' && !h.stale;
+    const running = st.state === 'running';
+    const queue = (st.pendingAnswers != null || st.pendingGallery != null)
+        ? `${st.pendingAnswers ?? '?'} answer${st.pendingAnswers === 1 ? '' : 's'}, `
+          + `${st.pendingGallery ?? '?'} gallery pending`
+        : '';
+    const top = `
+        <div style="color:#94a3b8;font-size:0.8em;margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;">
+          <span>state <strong style="color:${running ? '#22c55e' : '#e2e8f0'};">${galleryEsc(st.state || '?')}</strong></span>
+          ${st.event ? `<span>event <strong style="color:#e2e8f0;">${galleryEsc(st.event)}</strong></span>` : ''}
+          ${st.watcherAlive != null ? `<span>watcher ${st.watcherAlive ? 'alive' : '<span style="color:#f87171;">not running</span>'}</span>` : ''}
+          ${queue ? `<span>${galleryEsc(queue)}</span>` : ''}
+        </div>
+        ${st.error ? `<div style="color:#f87171;font-size:0.78em;margin-top:5px;">${galleryEsc(st.error)}</div>` : ''}
+        ${drift ? `<div style="color:#fbbf24;font-size:0.78em;margin-top:5px;">
+            Asked to run ${galleryEsc(agent.control.event || '')} but the machine reports
+            ${galleryEsc(st.state || 'idle')}.</div>` : ''}`;
+    const bottom = `
+        ${(() => {
+            const det = (_agentDetected || {})[eventKey];
+            if (!eventKey || !Array.isArray(det)) return '';
+            return `<div style="color:#64748b;font-size:0.76em;margin-top:5px;">
+                      ${det.length} match${det.length === 1 ? '' : 'es'} detected for
+                      <strong style="color:#94a3b8;">${galleryEsc(eventKey)}</strong>
+                      \u2014 detection writes no bundle and no routes, so these show as
+                      <em>detected \u00b7 awaiting bundle</em> below until you request one.
+                    </div>`;
+        })()}
+        ${renderJobLines(st.jobs)}`;
+    return { h, st, running, top, bottom };
+}
+
+// AUTO-REFRESH of the live parts, while the Tracks tab is actually on screen. Without it
+// the panel only changed when the tab was opened or Refresh pressed, so a faster agent
+// heartbeat would not have shortened the lag anyone saw.
+//
+// Two GETs per tick per open viewer (/index and /status). On the paid plan's 10M reads a
+// month that is nothing; on the free plan it would still have been fine, since only WRITES
+// were ever scarce.
+const RELAY_PANEL_REFRESH_MS = 20000;
+let _relayPanelTimer = null;
+
+function startRelayPanelRefresh(relay) {
+    clearInterval(_relayPanelTimer);
+    _relayPanelTimer = null;
+    if (!relay) return;
+    _relayPanelTimer = setInterval(async () => {
+        const tab = document.getElementById('tools-tab-tracks');
+        if (document.hidden || !tab || tab.style.display === 'none') return;
+        if (!document.getElementById('rcLiveTop')) return;   // panel not rendered yet
+        const items = await _relayIndex(relay);
+        if (!items) return;                                  // relay unreachable: keep last view
+        await refreshAgentDetected(relay, items);
+        const agents = relayAgents(items);
+        const savedId = localStorage.getItem(AGENT_ID_KEY) || '';
+        const agent = agents.find(a => a.id === savedId) || agents[0] || null;
+        if (!agent) return;
+        const eventKey = (document.getElementById('eventKeyInput')?.value || '').trim().toLowerCase();
+        const live = relayLiveParts(agent, eventKey);
+        const set = (id, html) => { const el = document.getElementById(id); if (el) el.innerHTML = html; };
+        set('rcLiveTop', live.top);
+        set('rcLiveBottom', live.bottom);
+        const hEl = document.getElementById('rcHealth');
+        if (hEl) { hEl.style.color = live.h.colour; hEl.textContent = `${live.h.dot} ${live.h.text}`; }
+        const box = document.getElementById('rcBox');
+        if (box) box.style.borderColor = live.h.stale ? '#7f1d1d' : '#334155';
+    }, RELAY_PANEL_REFRESH_MS);
 }
 
 function renderRelayControl(hostId, relay, items) {
@@ -9913,27 +9999,19 @@ function renderRelayControl(hostId, relay, items) {
         return;
     }
 
-    const h = agentHealth(agent);
-    const st = agent.status || {};
-    const want = agent.control?.desired;
     // DESIRED VS ACTUAL, shown separately on purpose. "You asked for running, the machine
     // says idle" is the single most useful thing this panel can tell a lead scout, and
-    // collapsing the two into one badge would hide it.
-    const drift = want === 'running' && st.state !== 'running' && !h.stale;
-    const running = st.state === 'running';
-    const queue = (st.pendingAnswers != null || st.pendingGallery != null)
-        ? `${st.pendingAnswers ?? '?'} answer${st.pendingAnswers === 1 ? '' : 's'}, `
-          + `${st.pendingGallery ?? '?'} gallery pending`
-        : '';
+    // collapsing the two into one badge would hide it. See relayLiveParts.
+    const { h, st, running, top: liveTop, bottom: liveBottom } = relayLiveParts(agent, eventKey);
     const stream = eventKey ? resolveEventStream(eventKey) : null;
 
     el.innerHTML = `
-      <div style="border:1px solid ${h.stale ? '#7f1d1d' : '#334155'};border-radius:8px;
+      <div id="rcBox" style="border:1px solid ${h.stale ? '#7f1d1d' : '#334155'};border-radius:8px;
                   padding:10px 12px;margin-bottom:12px;">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span style="color:#94a3b8;font-size:0.75em;font-weight:700;letter-spacing:0.06em;
                        text-transform:uppercase;">Relay Control</span>
-          <span style="color:${h.colour};font-size:0.82em;font-weight:600;">${h.dot} ${h.text}</span>
+          <span id="rcHealth" style="color:${h.colour};font-size:0.82em;font-weight:600;">${h.dot} ${h.text}</span>
           <span style="color:#64748b;font-size:0.78em;">${galleryEsc(agent.id)}</span>
           ${agents.length > 1 ? `<select id="rcAgent" style="background:#0f172a;color:#e2e8f0;
               border:1px solid #334155;border-radius:5px;padding:3px 6px;font-size:0.78em;">
@@ -9942,16 +10020,7 @@ function renderRelayControl(hostId, relay, items) {
             </select>` : ''}
         </div>
 
-        <div style="color:#94a3b8;font-size:0.8em;margin-top:6px;display:flex;gap:10px;flex-wrap:wrap;">
-          <span>state <strong style="color:${running ? '#22c55e' : '#e2e8f0'};">${galleryEsc(st.state || '?')}</strong></span>
-          ${st.event ? `<span>event <strong style="color:#e2e8f0;">${galleryEsc(st.event)}</strong></span>` : ''}
-          ${st.watcherAlive != null ? `<span>watcher ${st.watcherAlive ? 'alive' : '<span style="color:#f87171;">not running</span>'}</span>` : ''}
-          ${queue ? `<span>${galleryEsc(queue)}</span>` : ''}
-        </div>
-        ${st.error ? `<div style="color:#f87171;font-size:0.78em;margin-top:5px;">${galleryEsc(st.error)}</div>` : ''}
-        ${drift ? `<div style="color:#fbbf24;font-size:0.78em;margin-top:5px;">
-            Asked to run ${galleryEsc(agent.control.event || '')} but the machine reports
-            ${galleryEsc(st.state || 'idle')}.</div>` : ''}
+        <div id="rcLiveTop">${liveTop}</div>
 
         <div id="rcForm" style="margin-top:9px;padding-top:9px;border-top:1px solid #1e293b;
                     display:flex;gap:6px;flex-wrap:wrap;align-items:center;">
@@ -10000,17 +10069,7 @@ function renderRelayControl(hostId, relay, items) {
           Ask once per range. Each match is detected, then a curation bundle is posted; as
           you curate one the route publishes itself and the next bundle takes its place.
         </div>
-        ${(() => {
-            const det = (_agentDetected || {})[eventKey];
-            if (!eventKey || !Array.isArray(det)) return '';
-            return `<div style="color:#64748b;font-size:0.76em;margin-top:5px;">
-                      ${det.length} match${det.length === 1 ? '' : 'es'} detected for
-                      <strong style="color:#94a3b8;">${galleryEsc(eventKey)}</strong>
-                      \u2014 detection writes no bundle and no routes, so these show as
-                      <em>detected \u00b7 awaiting bundle</em> below until you request one.
-                    </div>`;
-        })()}
-        ${renderJobLines(st.jobs)}
+        <div id="rcLiveBottom">${liveBottom}</div>
         <div id="rcStatus" style="color:#94a3b8;font-size:0.78em;margin-top:6px;min-height:1em;"></div>
       </div>`;
 
@@ -10127,6 +10186,7 @@ async function renderTracksTab() {
     // alive decides how to read everything below it.
     await refreshAgentDetected(relay, items);
     renderRelayControl('trkControl', relay, items);
+    startRelayPanelRefresh(relay);
 
     const gal = (man.gallery || {})[eventKey] || {};
     const galleryReviews = relay
