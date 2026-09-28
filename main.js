@@ -13513,7 +13513,29 @@ async function renderTeamRoutesTab(teamNumber) {
     host.innerHTML = `<p style="color:#94a3b8; margin-top:18px;">Loading…</p>`;
 
     const man = await loadTracksManifest();
-    const forTeam = (man.matches || [])
+    // RELAY ROUTES COUNT HERE TOO, as they do in the Tracks tab. The committed manifest
+    // only lists what has been pushed to git, so a match the watcher had just published
+    // showed under Tracks and never here. The relay index carries no team list, so it
+    // comes from the synced schedule (quals) or, failing that, a copy already cached in
+    // Dexie; a relay match with neither is skipped rather than downloaded blind.
+    const listed = new Map((man.matches || []).map(r => [r.key, r]));
+    let relayOnly = [];
+    try { relayOnly = [...(await relayTracksIndex()).keys()].filter(k => !listed.has(k)); } catch {}
+    if (relayOnly.length) {
+        const teamsOf = new Map();
+        try {
+            (await db.matches.where('key').anyOf(relayOnly).toArray())
+                .forEach(m => teamsOf.set(m.key, [...(m.red || []), ...(m.blue || [])].map(String)));
+        } catch {}
+        try {
+            (await db.matchTracks.where('key').anyOf(relayOnly.filter(k => !teamsOf.has(k))).toArray())
+                .forEach(d => teamsOf.set(d.key, (d.robots || []).map(r => String(r.team))));
+        } catch {}
+        for (const k of relayOnly) {
+            if (teamsOf.has(k)) listed.set(k, { key: k, eventKey: k.split('_')[0], teams: teamsOf.get(k) });
+        }
+    }
+    const forTeam = [...listed.values()]
         .filter(r => (r.teams || []).map(String).includes(team))
         .sort((a, b) => String(a.key).localeCompare(String(b.key)));
     // Event comes from the match key's prefix when the manifest does not carry one --
