@@ -241,6 +241,11 @@ body.mobile-ui .mobile-team-chip {
     font-size: 0.93rem;
     font-weight: 800;
     text-align: center;
+    /* A long-press highlights the team (see main.js); without these the browser's own
+       press-and-hold text selection / callout menu fires first and eats the gesture. */
+    -webkit-touch-callout: none;
+    -webkit-user-select: none;
+    user-select: none;
 }
 
 body.mobile-ui .mobile-team-chip.red { color: #fca5a5; }

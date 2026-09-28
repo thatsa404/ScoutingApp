@@ -813,6 +813,53 @@ function mobileTeamChip(teamNumber, alliance) {
         onclick="openMobileTeamProfile('${encodeURIComponent(team)}')">${escapeMobileText(team)}${team === OWN_TEAM ? ' ★' : ''}</button>`;
 }
 
+// Long-press a mobile schedule chip to highlight the team (like the desktop table's
+// click); a plain tap keeps opening its profile via the chip's own onclick. Delegated
+// on document rather than wired per-chip, so it keeps working across every re-render
+// of the match cards without re-attaching anything.
+const CHIP_LONG_PRESS_MS = 500;
+const CHIP_MOVE_CANCEL_PX = 10;
+let _chipPressTimer = null, _chipPressXY = null, _chipSuppressClick = false;
+
+function _chipPressStart(e) {
+    const chip = e.target.closest('.mobile-team-chip');
+    if (!chip || !e.isPrimary) return;
+    _chipPressXY = { x: e.clientX, y: e.clientY };
+    clearTimeout(_chipPressTimer);
+    _chipPressTimer = setTimeout(() => {
+        _chipPressTimer = null;
+        _chipSuppressClick = true;          // eat the click the browser fires after pointerup
+        if (navigator.vibrate) navigator.vibrate(12);
+        window.highlightTeam(chip.dataset.team);
+    }, CHIP_LONG_PRESS_MS);
+}
+function _chipPressMove(e) {
+    if (!_chipPressTimer || !_chipPressXY) return;
+    // A finger sliding off the chip is a scroll, not a hold -- don't hijack it.
+    if (Math.hypot(e.clientX - _chipPressXY.x, e.clientY - _chipPressXY.y) > CHIP_MOVE_CANCEL_PX) {
+        clearTimeout(_chipPressTimer);
+        _chipPressTimer = null;
+    }
+}
+function _chipPressEnd() {
+    clearTimeout(_chipPressTimer);
+    _chipPressTimer = null;
+}
+document.addEventListener('pointerdown', _chipPressStart);
+document.addEventListener('pointermove', _chipPressMove);
+document.addEventListener('pointerup', _chipPressEnd);
+document.addEventListener('pointercancel', _chipPressEnd);
+// Capture phase, ahead of the chip's own onclick attribute, so a long-press's resulting
+// click never reaches openMobileTeamProfile.
+document.addEventListener('click', e => {
+    if (!_chipSuppressClick) return;
+    _chipSuppressClick = false;
+    if (e.target.closest('.mobile-team-chip')) {
+        e.preventDefault();
+        e.stopImmediatePropagation();
+    }
+}, true);
+
 function renderMobileScheduleCards(matches) {
     const host = document.getElementById('mobileScheduleCards');
     if (!host) return;
@@ -13245,7 +13292,7 @@ async function renderOverview(team, tbaTeam) {
     const rowLabel = text =>
         `<td style="padding:8px 12px;border-bottom:1px solid #1e293b;color:#94a3b8;font-size:0.8em;font-weight:600;text-transform:uppercase;letter-spacing:0.04em;white-space:nowrap;">${text}</td>`;
 
-    const scoutHeader = `<img src="sheets.png" style="height:11px;vertical-align:middle;margin-right:3px;opacity:0.7;">Scouting${scoutIsFused ? ' <span style="color:#34d399;font-size:0.85em;vertical-align:middle;">●</span>' : ''}${scoutIsAdj ? ' <span style="color:#fbbf24;font-size:0.75em;font-weight:700;">ADJ</span>' : ''}`;
+    const scoutHeader = `<img src="sheets.png" class="source-logo" style="height:11px;margin:0 3px 0 0;vertical-align:middle;opacity:0.7;">Scouting${scoutIsFused ? ' <span style="color:#34d399;font-size:0.85em;vertical-align:middle;">●</span>' : ''}${scoutIsAdj ? ' <span style="color:#fbbf24;font-size:0.75em;font-weight:700;">ADJ</span>' : ''}`;
 
     el.innerHTML = `
         <div style="display:flex; gap:24px; align-items:flex-start; flex-wrap:wrap; margin-bottom:24px;">
@@ -13269,7 +13316,7 @@ async function renderOverview(team, tbaTeam) {
                 <tr style="background:#1e293b;border-bottom:2px solid #334155;">
                     <th style="text-align:left;padding:10px 12px;color:#64748b;font-weight:600;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;"></th>
                     <th style="text-align:right;padding:10px 12px;color:#64748b;font-weight:600;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">
-                        <img src="statbotics.ico" style="height:11px;vertical-align:middle;margin-right:3px;opacity:0.7;">${isLocalEpaEnabled() && !teamHasSbEventData(team) ? 'Local Est' : 'Statbotics'}
+                        <img src="statbotics.ico" class="source-logo" style="height:11px;margin:0 3px 0 0;vertical-align:middle;opacity:0.7;">${isLocalEpaEnabled() && !teamHasSbEventData(team) ? 'Local Est' : 'Statbotics'}
                     </th>
                     <th style="text-align:right;padding:10px 12px;color:#64748b;font-weight:600;font-size:0.75em;text-transform:uppercase;letter-spacing:0.05em;">
                         <img src="tba.png" class="source-logo" style="height:11px;margin:0 3px 0 0;vertical-align:middle;opacity:0.7;">TBA OPR
