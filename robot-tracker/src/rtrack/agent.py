@@ -734,10 +734,18 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
         if job.get("calibFrom"):
             a += ["--calib-from", job["calibFrom"]]
-        rc = subprocess.run(a, cwd=C.TRACKER_ROOT).returncode
+        # Logged like every other step. This one used to run bare and strike with no
+        # reason, which is how 2026necmp1 qm45-qm65 were set aside with nothing to say why.
+        rc, btail = _run_logged(a, cwd=C.TRACKER_ROOT)
+        if rc == 3:
+            # Event lock held (the watcher publishing a curated answer, usually).
+            # Transient: not a strike, same as the publish path above.
+            report("event busy (lock held); will retry", len(curated), len(keys))
+            break
         bundle = _bundle_path(key)
         if rc != 0 or not bundle.exists():
-            failed.append(key)
+            fail(key, "bundle", failure_reason(btail, rc) if rc != 0
+                 else "pipeline succeeded but wrote no curation bundle")
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
         prc, ptail = _run_logged(push, cwd=C.TRACKER_ROOT)
@@ -1211,8 +1219,8 @@ def install_task(agent_id: str, extra: list[str] | None = None) -> int:
     args = f"--agent-id {agent_id}" + (" " + " ".join(extra) if extra else "")
     # `start /min` so the console does not take focus at every logon, and a titled window
     # so it is identifiable in the taskbar rather than being an anonymous python.exe.
-    # Joined, not escaped: a .cmd wants CRLF, and newline="" on the write means these are
-    # the exact bytes that land on disk.
+    # Output is APPENDED to out/agent.log: a console window keeps nothing, and when ten
+    # 2026necmp1 matches were set aside there was no record of why.
     # Joined rather than escaped: a .cmd file wants CRLF, and newline="" on the write
     # below means these are the exact bytes that land on disk.
     body = "\r\n".join([
@@ -1221,7 +1229,8 @@ def install_task(agent_id: str, extra: list[str] | None = None) -> int:
         "rem Installed by: rtrack.agent --install-task",
         "rem Remove it by deleting THIS FILE, or: rtrack.agent --uninstall-task",
         f'cd /d "{C.TRACKER_ROOT}"',
-        f'start "rtrack agent" /min "{PY}" -m rtrack.agent {args}',
+        f'start "rtrack agent" /min cmd /c ""{PY}" -m rtrack.agent {args} '
+        f'>> "{C.TRACKER_ROOT / "out" / "agent.log"}" 2>&1"',
         "",
     ])
     try:
