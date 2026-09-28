@@ -449,6 +449,18 @@ def run(stem: str, calib_stem: str | None = None, sample_s: float = SAMPLE_S) ->
     """
     src = raw_path(stem)
     ref = raw_path(calib_stem or stem)
+    if not Path(ref).exists() and calib_stem:
+        # A calibration is named for its CAMERA, and the clip it was clicked on is
+        # recorded in the doc. 2026necmp1's was renamed from 2026necmp1_qm1 and no
+        # 2026necmp1.mp4 exists, so this raised for every match after the rename and the
+        # pipeline projected qm27 onward with no camera-pose check at all -- qm40 opens
+        # on a different camera and nothing flagged it.
+        try:
+            doc = json.loads((C.CALIB_DIR / f"{calib_stem}.json").read_text(encoding="utf-8"))
+            if doc.get("video") and Path(raw_path(doc["video"])).exists():
+                ref = raw_path(doc["video"])
+        except (OSError, ValueError):
+            pass
     if not Path(ref).exists():
         raise SystemExit(f"[viewcheck] no clip for the calibration source {calib_stem}")
     probes = _probe_frames(Path(ref))

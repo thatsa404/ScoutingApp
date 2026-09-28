@@ -307,6 +307,25 @@ def _main(argv=None) -> int:
               f"(track/stitch/appear); gallery-dependent steps still to run")
         return 0
 
+    # CAMERA-POSE CHECK BEFORE THE SOLVE, NOT AFTER CURATION.
+    #
+    # rtrack.robots and rtrack.curate both drop detections outside the calibrated view
+    # (robots.drop_offview) -- but only when this file exists, and it used to be made
+    # only after curation, just before project. So on every first solve the filter was
+    # inert: 2026necmp1_qm40 opens on a close-up corner camera for 54 s, and two of its
+    # 18 curation frames came from that shot, asking a curator to label robots whose
+    # positions could never be right. Never fatal, same as before.
+    view = C.STAGE2_DIR / f"{stem}_view.json"
+    if args.calib_from or (C.CALIB_DIR / f"{stem}.json").exists():
+        if do("viewcheck", newer(view, raw)):
+            va = ["viewcheck", stem]
+            if args.calib_from:
+                va += ["--calib-from", args.calib_from]
+            if not run(*va):
+                print("    viewcheck: failed; solving without a camera-pose check")
+        else:
+            print("    viewcheck: up to date")
+
     # Votes need a gallery. Without one this is the event's first match and the solver
     # falls back to geometry plus bumper hue, which is ~13% correct -- expected, not an
     # error. Curating this match is what creates the gallery for the next.
@@ -408,7 +427,7 @@ def _main(argv=None) -> int:
             a += ["--corrections", corr]
         return run(*a)
 
-    if do("robots", newer(labeled, st, appear)) or corr.exists():
+    if do("robots", newer(labeled, st, appear, view)) or corr.exists():
         if not solve():
             return 1
     else:
@@ -461,15 +480,16 @@ def _main(argv=None) -> int:
             return 1
 
     # ---- downstream ---------------------------------------------------------
-    # Camera-pose check BEFORE project, because project reads its output. Never fatal:
-    # a clip where the check cannot form an opinion is still worth projecting, and
-    # is_valid_at keeps everything when the file is missing. A failure here must not
-    # cost a match its routes.
-    va = ["viewcheck", stem]
-    if args.calib_from:
-        va += ["--calib-from", args.calib_from]
-    if not run(*va):
-        print("[pipeline] viewcheck failed; projecting without a camera-pose check")
+    # Camera-pose check BEFORE project, because project reads its output. Normally
+    # already done before the solve (above); this catches a match curated before that
+    # step existed. Never fatal: is_valid_at keeps everything when the file is missing,
+    # and a failure here must not cost a match its routes.
+    if not newer(view, raw):
+        va = ["viewcheck", stem]
+        if args.calib_from:
+            va += ["--calib-from", args.calib_from]
+        if not run(*va):
+            print("[pipeline] viewcheck failed; projecting without a camera-pose check")
 
     pa = ["project", stem, "--tracks", labeled]
     if args.calib_from:
