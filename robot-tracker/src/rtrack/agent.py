@@ -267,6 +267,12 @@ def pending_jobs(agent_id: str) -> list[dict]:
             continue
         if it.get("cancelled"):
             continue
+        if it.get("jobType") and it["jobType"] not in JOB_RUNNERS:
+            # A job type this agent's code does not know yet -- the app was updated before
+            # the home machine was restarted. Leave it on the relay for an agent that
+            # does, rather than failing it for good, which is what happened to the first
+            # `followup` request.
+            continue
         rec = ledger.get(it.get("id") or "") or None
         if rec and rec.get("state") in ("done", "failed", "superseded"):
             continue
@@ -297,7 +303,20 @@ def outstanding_count(bundles: dict, answers: dict) -> int:
     and a 24-hour TTL, and neither is per-event: ten stale mawor bundles are exactly as
     much unreachable work as ten necmp1 ones.
     """
-    return sum(1 for key, at in bundles.items() if answers.get(key, 0.0) <= at)
+    return sum(1 for key, at in bundles.items()
+               if answers.get(key, 0.0) <= at and not _is_followup(key, at))
+
+
+def _is_followup(key: str, relay_at: float) -> bool:
+    """Is the bundle on the relay for this match a FOLLOW-UP (rtrack.agent run_followup)?
+
+    Follow-ups are asked for by a person, one match at a time, so they go around the
+    outstanding-bundle cap rather than queueing behind it or displacing a first-round
+    bundle from it. Recognised by the local follow-up file being at least as new as the
+    relay copy (the push happens straight after it is written).
+    """
+    p = C.STAGE3_DIR / f"{key}_followup_frames.json"
+    return p.exists() and p.stat().st_mtime >= relay_at - 120
 
 
 def next_job(pending: list[dict]) -> dict | None:
