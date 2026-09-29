@@ -340,6 +340,113 @@ def build_gallery(stem: str, labeled_p: Path, event: str,
 
 # ---------------------------------------------------------------- head
 
+def curated_tracks(event: str, exclude: tuple[str, ...] = (), quiet: bool = True):
+    """(match, stitched track id, team, embeddings) for every CURATOR-labelled track.
+
+    Truth is the curator's label and nothing else -- see build_head. Labels are resolved
+    onto the STITCHED tracks, the id space rtrack.appear caches embeddings in. A track the
+    curator labelled two ways is a chimera and is skipped.
+    """
+    from . import corrections as CO
+    corr_dir = C.TRACKER_ROOT / "corrections"
+    for corr_p in sorted(corr_dir.glob(f"{event}_*_corrections.json")):
+        stem = corr_p.name[: -len("_corrections.json")]
+        if stem in exclude:
+            continue
+        npz_p = appear_npz(stem, "cnn")
+        st_p = C.STAGE1_DIR / f"{stem}_tracks_stitched.jsonl"
+        if not (npz_p.exists() and st_p.exists()):
+            continue
+        z = np.load(npz_p, allow_pickle=False)
+        try:
+            cache_space = str(z["embeddingSpace"].item())
+        except (KeyError, ValueError, TypeError):
+            cache_space = None
+        if cache_space != EMBEDDING_SPACE:
+            if not quiet:
+                print(f"    {stem}: SKIPPED stale CNN cache ({cache_space!r})")
+            continue
+        doc = json.loads(corr_p.read_text(encoding="utf-8"))
+        human = [l for l in (doc.get("labels") or [])
+                 if l.get("src") == "human" and l.get("team")]
+        if not human:
+            continue
+        rows = [json.loads(l) for l in st_p.read_text(encoding="utf-8").splitlines()
+                if l.strip()]
+        votes: dict[int, Counter] = defaultdict(Counter)
+        for lab in CO.resolve(rows, human):
+            if lab["ok"] and lab["tid"] is not None:
+                votes[int(lab["tid"])][str(lab["team"])] += 1
+        tid_a, t_a, feat = z["tid"], z["t"], z["feat"]
+        for tid, c in votes.items():
+            team, n = c.most_common(1)[0]
+            if n < 0.8 * sum(c.values()):
+                continue
+            m = tid_a == tid
+            if int(m.sum()) < 4:
+                continue
+            order = np.argsort(t_a[m])
+            yield stem, int(tid), team, np.asarray(feat[m][order], np.float32)
+
+
+# ---- curated gallery -------------------------------------------------------------
+# THE BASELINE GALLERY, available before anyone reviews a crop. Built from the tracks a
+# curator labelled while curating, which is truth the pipeline already pays for. Measured
+# on 2026necmp1, leave-one-match-out on 1038 curator-labelled tracks: 87% of tracks
+# identified among the match's six teams (92% alliance-gated), against 24% for the
+# published reviewed gallery -- which covered 1.3 of each match's six teams, so nearly
+# every vote was forced onto a team the robot was not. Reviewed crops are ADDED to this
+# (see vote_tracks), never substituted for it.
+CURATED_KIND = "curated-gallery-v1"
+CURATED_PER_TRACK = 12     # evenly spread over the track, so long tracks do not dominate
+
+
+def curated_gallery_path(event: str) -> Path:
+    return C.STAGE3_DIR / f"{event}_curated_gallery.npz"
+
+
+def build_curated_gallery(event: str) -> Path | None:
+    emb, team, match, track = [], [], [], []
+    for stem, tid, t, F in curated_tracks(event):
+        pick = np.linspace(0, len(F) - 1, min(CURATED_PER_TRACK, len(F))).astype(int)
+        emb.append(F[pick]); team += [t] * len(pick)
+        match += [stem] * len(pick); track += [tid] * len(pick)
+    if not emb:
+        return None
+    season = int(str(event)[:4]) if str(event)[:4].isdigit() else C.YEAR
+    out = curated_gallery_path(event)
+    np.savez_compressed(
+        out, embedding=np.vstack(emb).astype(np.float32),
+        seasonTeam=np.array([f"{season}:{t}" for t in team]),
+        sourceMatch=np.array(match), sourceTrack=np.array(track, np.int32),
+        embeddingSpace=np.array(EMBEDDING_SPACE), kind=np.array(CURATED_KIND))
+    print(f"[reid] curated gallery: {len(team)} prototype(s), {len(set(team))} team(s), "
+          f"{len(set(match))} match(es) -> {out.name}")
+    return out
+
+
+def _curated_gallery(event: str, teams: list[str],
+                     exclude_match: str | None = None) -> dict | None:
+    p = curated_gallery_path(event)
+    if not p.exists():
+        return None
+    try:
+        z = np.load(p, allow_pickle=False)
+        if (str(z["kind"].item()) != CURATED_KIND
+                or str(z["embeddingSpace"].item()) != EMBEDDING_SPACE):
+            return None
+        pt = z["seasonTeam"].astype(str); sm = z["sourceMatch"].astype(str)
+        keep = np.array([x.split(":", 1)[1] in set(teams) for x in pt], dtype=bool)
+        if exclude_match:
+            keep &= sm != str(exclude_match)
+        if not keep.any():
+            return None
+        return {"teams": pt[keep], "embedding": z["embedding"][keep], "sourceMatch": sm[keep]}
+    except (KeyError, OSError, ValueError, TypeError) as exc:
+        print(f"[reid] curated gallery unavailable ({exc})")
+        return None
+
+
 def build_head(event: str, min_tracks: int = MIN_HEAD_TRACKS,
                exclude: tuple[str, ...] = ()) -> int:
     """Fit the whitening head from every CURATED match of this event.
@@ -352,61 +459,19 @@ def build_head(event: str, min_tracks: int = MIN_HEAD_TRACKS,
     near-duplicates; counting each would let a long track dominate the within-team
     covariance that the whole method rests on.
     """
-    from . import corrections as CO
-
-    V, teams = [], []
-    n_match = 0
-    corr_dir = C.TRACKER_ROOT / "corrections"
-    for corr_p in sorted(corr_dir.glob(f"{event}_*_corrections.json")):
-        stem = corr_p.name[: -len("_corrections.json")]
-        if stem in exclude:
-            print(f"    {stem}: EXCLUDED")
-            continue
-        npz_p = appear_npz(stem, "cnn")
-        # STITCHED, not _labeled. The npz is written by rtrack.appear against the
-        # stitched tracks, and robots.prepare_tracks then SPLITS those into a new id
-        # space -- qm10 has 25 stitched tracks against 117 labelled ones. The integers
-        # overlap (24 of 25 on that match) so resolving against _labeled silently pairs
-        # a curator label with a different robot's embedding and still looks fine.
-        st_p = C.STAGE1_DIR / f"{stem}_tracks_stitched.jsonl"
-        if not (npz_p.exists() and st_p.exists()):
-            continue
-        rows = [json.loads(l) for l in st_p.read_text(encoding="utf-8").splitlines()
-                if l.strip()]
-        doc = json.loads(corr_p.read_text(encoding="utf-8"))
-        human = [l for l in (doc.get("labels") or [])
-                 if l.get("src") == "human" and l.get("team")]
-        if not human:
-            continue
-        votes: dict[int, Counter] = defaultdict(Counter)
-        for lab in CO.resolve(rows, human):
-            if lab["ok"] and lab["tid"] is not None:
-                votes[int(lab["tid"])][str(lab["team"])] += 1
-        z = np.load(npz_p, allow_pickle=False)
-        try:
-            cache_space = str(z["embeddingSpace"].item())
-        except (KeyError, ValueError, TypeError):
-            cache_space = None
-        if cache_space != EMBEDDING_SPACE:
-            print(f"    {stem}: SKIPPED stale CNN cache ({cache_space!r})")
-            continue
-        tid_a, feat = z["tid"], z["feat"]
-        used = 0
-        for tid, c in votes.items():
-            team, n = c.most_common(1)[0]
-            # A track the curator labelled two different ways is a chimera; its mean
-            # embedding is a blend of two robots and would poison the covariance.
-            if n < 0.8 * sum(c.values()):
-                continue
-            m = tid_a == tid
-            if int(m.sum()) < 4:
-                continue
-            V.append(feat[m].mean(0))
-            teams.append(team)
-            used += 1
-        if used:
-            n_match += 1
-            print(f"    {stem}: {used} curator-labelled track(s)")
+    # STITCHED track ids, via curated_tracks: the npz is written by rtrack.appear against
+    # the stitched tracks, and robots.prepare_tracks then SPLITS those into a new id
+    # space -- qm10 has 25 stitched tracks against 117 labelled ones. The integers
+    # overlap (24 of 25 on that match) so resolving against _labeled silently pairs a
+    # curator label with a different robot's embedding and still looks fine.
+    V, teams, per_match = [], [], Counter()
+    for stem, _tid, team, F in curated_tracks(event, exclude, quiet=False):
+        V.append(F.mean(0))
+        teams.append(team)
+        per_match[stem] += 1
+    for stem, used in sorted(per_match.items()):
+        print(f"    {stem}: {used} curator-labelled track(s)")
+    n_match = len(per_match)
 
     if len(V) < min_tracks:
         raise SystemExit(f"[reid] only {len(V)} labelled track(s) across {n_match} "
@@ -494,13 +559,21 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
     season = int(str(event)[:4]) if str(event)[:4].isdigit() else C.YEAR
     reviewed = (_reviewed_gallery(season, teams, exclude_gallery_match)
                 if backend == "cnn" else None)
-    g = _load_gallery(gallery_path(event, backend))
-    if not g and reviewed is None:
+    # CURATED AND REVIEWED TOGETHER. The reviewed gallery used to REPLACE everything else
+    # whenever it existed, and voting is restricted to teams with prototypes -- so on
+    # 2026necmp1, where it held 1.3 of each match's six teams, almost every track was
+    # forced onto one of them: 25% correct at 0.95+ vote share. Curated prototypes cover
+    # every team a curator has labelled; reviewed crops add to them.
+    curated = (_curated_gallery(event, teams, exclude_gallery_match)
+               if backend == "cnn" else None)
+    pool = [x for x in (curated, reviewed) if x is not None]
+    g = _load_gallery(gallery_path(event, backend)) if not pool else {}
+    if not g and not pool:
         raise SystemExit(f"[reid] {gallery_path(event, backend)} missing or empty -- "
-                         f"run 'reid gallery' on a curated match first, or publish "
-                         f"a reviewed gallery for season {season}")
-    available = ({str(t).split(":", 1)[1] for t in reviewed["teams"]}
-                 if reviewed is not None else set(g))
+                         f"curate a match of {event} first, or publish a reviewed "
+                         f"gallery for season {season}")
+    available = ({str(t).split(":", 1)[1] for x in pool for t in x["teams"]}
+                 if pool else set(g))
     known = [t for t in teams if t in available]
     missing = [t for t in teams if t not in known]
     if not known:
@@ -539,10 +612,10 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
         alliance_confidence_a = np.zeros(len(tid_a), np.float32)
 
     head = load_head(event) if backend == "cnn" else None
-    if reviewed is not None:
-        C_mat = reviewed["embedding"]
-        proto_teams = [str(t).split(":", 1)[1] for t in reviewed["teams"]]
-        gallery_version = reviewed["version"]
+    gallery_version = reviewed["version"] if reviewed is not None else None
+    if pool:
+        C_mat = np.vstack([x["embedding"] for x in pool]).astype(np.float32)
+        proto_teams = [str(t).split(":", 1)[1] for x in pool for t in x["teams"]]
     else:
         C_mat = np.stack([g[t][0] for t in known])
         proto_teams = known
@@ -662,6 +735,10 @@ def vote_tracks(stem: str, tracks_p: Path, event: str, teams: list[str],
            "head": (head is not None), "gallery": str(gallery_path(event, backend)),
            "reviewedGallery": (gallery_version is not None),
            "galleryVersion": gallery_version,
+           # Prototype counts per source actually used for THIS match's teams, so a route
+           # can say whether its identities rest on curation, review, or both.
+           "curatedGallery": int(len(curated["teams"])) if curated is not None else 0,
+           "reviewedPrototypes": int(len(reviewed["teams"])) if reviewed is not None else 0,
            "excludedGalleryMatch": exclude_gallery_match,
            "embeddingSpace": EMBEDDING_SPACE if backend == "cnn" else None,
            "votePolicyVersion": VOTE_POLICY_VERSION if backend == "cnn" else None,
@@ -708,6 +785,13 @@ def main(argv=None) -> int:
     v.add_argument("--tracks", type=Path, default=None)
     v.add_argument("--max-votes", type=int, default=MAX_VOTES)
     v.add_argument("--out", type=Path, default=None)
+    v.add_argument("--exclude-gallery-match", default=None, metavar="MATCH",
+                   help="leave this match's own curated and reviewed prototypes out of "
+                        "the gallery. For held-out measurement (rtrack.metrics): a "
+                        "match must not identify itself from its own labels.")
+    cg = sub.add_parser("curated-gallery",
+                        help="build the event gallery from curator-labelled tracks")
+    cg.add_argument("--event", required=True)
 
     for q in (b, v):
         q.add_argument("--backend", choices=("hist", "cnn"), default="hist",
@@ -720,6 +804,8 @@ def main(argv=None) -> int:
     if args.cmd == "fit-head":
         build_head(args.event, args.min_tracks, tuple(args.exclude))
         return 0
+    if args.cmd == "curated-gallery":
+        return 0 if build_curated_gallery(args.event) else 1
 
     stem = video_id(args.video)
 
@@ -735,7 +821,8 @@ def main(argv=None) -> int:
     m = tba_mod.match_by_key(args.match)
     teams = [str(t) for t in m["red"]] + [str(t) for t in m["blue"]]
     doc = vote_tracks(stem, args.tracks, args.event, teams, args.max_votes,
-                      backend=args.backend)
+                      backend=args.backend,
+                      exclude_gallery_match=args.exclude_gallery_match)
     if doc is None:
         return 0                      # no coverage yet; not a failure, see vote_tracks
     out = args.out or (C.STAGE3_DIR /

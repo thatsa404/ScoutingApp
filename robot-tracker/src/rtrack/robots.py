@@ -773,6 +773,79 @@ def geometric_duplicates(rows, pos_at, sep_m: float = DUP_SEP_M,
     return out, merges
 
 
+INHERIT_COLOUR_MIN = 8       # coloured detections before a piece's own colour can veto
+INHERIT_COLOUR_DECISIVE = 0.75
+
+
+def inherit_sandwich_pins(rows, info, con, pinned: dict[int, str],
+                          preferred: dict[int, str], cflags: dict[int, str],
+                          red, blue, kin_hard: float = 1.5) -> dict[int, str]:
+    """Unlabelled pieces between two pieces pinned to the SAME team, on the same stitched
+    track, take that team.
+
+    The solver cuts a stitched track into many pieces (alliance, appearance, chimera and
+    step cuts), and a curator label pins only the piece it lands in. Everything between
+    two labels was then re-decided from scratch -- and measured on 2026necmp1, 72% of
+    wrong route time sat on an unlabelled piece next to a correctly pinned piece of the
+    same stitched track, 17% with correct pins on BOTH sides. 2026necmp1_qm11 track 2 was
+    labelled 1729 seventeen times, cut into 22 pieces, and three unpinned pieces between
+    two 1729 pins (6.8 s) went to 4925; the video shows 1729's bumper number throughout.
+
+    Only the two-sided case is inherited: a robot that is team T on both sides of a
+    stretch of one tracker track, with no curator answer in between, is overwhelmingly T
+    in between. Refused where the piece's own evidence disagrees -- its bumper colour is
+    decisively the other alliance's, or it is on screen together with another piece
+    pinned to T -- or where the curator said anything about it (a flag or a demoted pin),
+    or where any step along the chain is kinematically impossible: a position jump is
+    itself evidence the tracker changed robots there, which is why step cuts exist.
+    """
+    from .solve import pair_forbidden
+    team_alli = {str(t): "red" for t in red or ()} | {str(t): "blue" for t in blue or ()}
+    src_of: dict[int, Counter] = defaultdict(Counter)
+    colour: dict[int, Counter] = defaultdict(Counter)
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                src_of[d["tid"]][d.get("source_tid", d["tid"])] += 1
+                if d.get("alliance") in ("red", "blue"):
+                    colour[d["tid"]][d["alliance"]] += 1
+    by_src: dict[int, list[int]] = defaultdict(list)
+    for tid, c in src_of.items():
+        if tid in info:
+            by_src[c.most_common(1)[0][0]].append(tid)
+    out: dict[int, str] = {}
+    for src, pieces in by_src.items():
+        pieces.sort(key=lambda t: info[t]["t0"])
+        anchors = [i for i, t in enumerate(pieces) if t in pinned]
+        for a, b in zip(anchors, anchors[1:]):
+            team = pinned[pieces[a]]
+            if pinned[pieces[b]] != team or b - a < 2:
+                continue
+            run = pieces[a + 1:b]
+            if any(t in preferred or t in cflags for t in run):
+                continue
+            want = team_alli.get(str(team))
+            bad = False
+            for t in run:
+                c = colour[t]
+                n = sum(c.values())
+                other = "blue" if want == "red" else "red"
+                if want and n >= INHERIT_COLOUR_MIN and c[other] / n >= INHERIT_COLOUR_DECISIVE:
+                    bad = True; break
+                if any(pinned.get(o) == team for o in con.get(t, ())):
+                    bad = True; break
+            chain = pieces[a:b + 1]
+            if not bad and kin_hard > 0:
+                for p, q in zip(chain, chain[1:]):
+                    if ("end" in info[p] and "start" in info[q]
+                            and pair_forbidden(info[p], info[q], kin_hard)):
+                        bad = True; break
+            if not bad:
+                for t in run:
+                    out[t] = team
+    return out
+
+
 def track_info(rows, positions: dict | None, pos_at: dict | None = None):
     """Per-track span, alliance and endpoint positions (metres where available)."""
     info: dict[int, dict] = {}
@@ -2658,6 +2731,15 @@ def main(argv=None) -> int:
             for _tm, _k, _d, _nk, _nd in _imp:
                 print(f"[corrections]   {_tm}: kept #{_k} ({_nk} dets), demoted "
                       f"#{_d} ({_nd} dets)")
+    # PINS INHERITED ACROSS THE SOLVER'S OWN CUTS. See inherit_sandwich_pins.
+    inherited: dict[int, str] = {}
+    if pinned:
+        inherited = inherit_sandwich_pins(rows, info, con, pinned, preferred, cflags,
+                                          red, blue, kin_hard=args.kin_hard)
+        if inherited:
+            pinned.update(inherited)
+            print(f"[corrections] {len(inherited)} unlabelled piece(s) inherit the team "
+                  f"of the labelled pieces either side of them on the same tracker track")
     if args.normalize_fragment_votes:
         ident = normalize_identity_tallies(ident)
         print("[robots] normalized each non-empty fragment appearance tally to "
@@ -2797,6 +2879,11 @@ def main(argv=None) -> int:
                 pinned, preferred, clashes = CO.split_conflicts(pinned, rows, ident)
             info = track_info(rows, positions, pos_at=pos_at)
             con = conflicts(rows)
+            if args.corrections and pinned:
+                # re-derived pins lose inheritance; ids moved, so re-infer it
+                inherited = inherit_sandwich_pins(rows, info, con, pinned, preferred,
+                                                  cflags, red, blue, kin_hard=args.kin_hard)
+                pinned.update(inherited)
             rebind_edges = continuation_edges(rows, rebind_candidates)
             if args.continuity_weight > 0:
                 _team_hints = {int(t): str(v["team"])
@@ -3011,7 +3098,10 @@ def main(argv=None) -> int:
          # Recorded so detector false positives can be COUNTED rather than merely
          # excluded, and so a later pass knows which tracks a human has already
          # failed to identify instead of asking again.
-         "curator": {"pinned": {str(k): v for k, v in pinned.items()},
+         "curator": {"pinned": {str(k): v for k, v in pinned.items() if k not in inherited},
+                     # not curator answers: pieces that took the team of the pinned
+                     # pieces either side of them (inherit_sandwich_pins)
+                     "inherited": {str(k): v for k, v in inherited.items()},
                      "preferred": {str(k): v for k, v in preferred.items()},
                      "flags": {str(k): v for k, v in cflags.items()},
                      "clashes": clashes},

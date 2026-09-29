@@ -10475,6 +10475,10 @@ async function renderTracksTab() {
             // must not be mistaken for the stronger one.
             const ev = r.identityEvidence;
             const evidence = !r.published || !ev ? ''
+                : ev === 'curated+reviewed-gallery'
+                    ? `<span title="Solved with prototypes from curated matches plus reviewed gallery crops" style="color:#22c55e;font-size:0.82em;">gallery + review</span>`
+                : ev === 'curated-gallery'
+                    ? `<span title="Solved with prototypes from this event's curated matches (no reviewed crops for these teams yet)" style="color:#22c55e;font-size:0.82em;">curated gallery</span>`
                 : ev === 'reviewed-gallery'
                     ? `<span title="Solved with reviewed gallery prototypes" style="color:#22c55e;font-size:0.82em;">gallery</span>`
                 : ev === 'legacy-gallery'

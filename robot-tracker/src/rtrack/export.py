@@ -90,7 +90,7 @@ def _route_jump_gaps(samples: list[dict]) -> list[dict]:
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
           calib_stem: str | None = None, allow_stale: bool = False,
           allow_unsafe_calibration: bool = False,
-          route_correction: bool = True) -> dict:
+          route_correction: bool = True, clean_routes: bool = False) -> dict:
     # IDENTITY PROVENANCE. Appearance is an enhancement, not a gate, so a route can be
     # produced with a full gallery behind it or with nothing but the curator's anchors --
     # and those two are not the same claim about the route's reliability. Reading the votes
@@ -108,9 +108,12 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         _teams = _vd.get("teams") or []
         if not _teams:
             continue          # the file exists but carried no votes: anchors only
+        _cur, _rev = bool(_vd.get("curatedGallery")), bool(_vd.get("reviewedGallery"))
         identity = {
-            "evidence": "reviewed-gallery" if _vd.get("reviewedGallery")
-                        else "legacy-gallery",
+            "evidence": ("curated+reviewed-gallery" if _cur and _rev
+                         else "curated-gallery" if _cur
+                         else "reviewed-gallery" if _rev
+                         else "legacy-gallery"),
             "galleryVersion": _vd.get("galleryVersion"),
             "teamsVoted": len(_teams),
             "embeddingSpace": _vd.get("embeddingSpace"),
@@ -227,6 +230,19 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         print(f"[export] clipped {n_clipped} sample(s) outside the match "
               f"(t {lo:.0f}..{hi:.0f} s relative to auto start)")
 
+    # IDENTITY AND BOX CLEANING, on the full-rate samples and after clipping, so bumper
+    # colour is judged on the match alone -- pre-match staging put 44% blue detections on
+    # red 1768 in 2026necmp1_qm17 and would swamp the in-match signal. See route_clean.
+    clean_stats, clean_breaks = {}, []
+    if clean_routes:
+        from . import route_clean as _cl
+        _full_alliance = {t: a for t, a in alliance_of.items()}
+        by_team, clean_stats, clean_breaks = _cl.clean(
+            by_team, _full_alliance, _cl.load_boxes(lab))
+        by_team = defaultdict(list, by_team)
+        if clean_stats:
+            print(f"[export] route cleaning: {clean_stats}")
+
     # ROUTE CORRECTION, keyed by the same camera stem as the calibration and occluders.
     # Applied here and nowhere upstream: see rtrack.route_correction for why the solver
     # must keep seeing uncorrected projections. Without a frozen file, the 0.54 m shift
@@ -275,6 +291,12 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
                         for a, b in zip(picked, picked[1:])
                         if a["_tid"] != b["_tid"]
                         and (a["_tid"], b["_tid"]) not in selected_edges)
+        # Cleaning breaks: a stretch removed for belonging to another robot, or a
+        # handover whose next position the robot could not have reached from its
+        # heading. Either way the polyline must not join across it.
+        gaps.extend({"tStart": round(b_["tStart"] - t0, 3), "tEnd": round(b_["tEnd"] - t0, 3),
+                     "reason": b_["reason"]}
+                    for b_ in clean_breaks if b_["team"] == team)
         gaps.sort(key=lambda g: (g["tStart"], g["tEnd"]))
         out_robots.append({
             "team": team,
@@ -402,6 +424,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "meanCustody": round(
                 sum(r["custody"] for r in out_robots) / max(len(out_robots), 1), 4),
             "custodyConflicts": len(robots_doc.get("custodyConflicts") or []),
+            # What rtrack.route_clean changed, so a route is never silently different
+            # from the solver's answer. {"applied": false} unless run with --clean.
+            "cleaning": ({"applied": True, **clean_stats} if clean_routes
+                         else {"applied": False}),
             "curated": bool(n_labels),
             "curatorLabels": n_labels,
             # "reviewed-gallery" | "legacy-gallery" | "anchors-only". See the note where
@@ -453,6 +479,12 @@ def main(argv=None) -> int:
     ap.add_argument("--no-route-correction", action="store_true",
                     help="publish uncorrected samples even if calib/<camera>_route_"
                          "correction.json exists. For A/B checks; see rtrack.route_correction.")
+    ap.add_argument("--clean", action="store_true",
+                    help="EXPERIMENTAL, off by default: apply rtrack.route_clean "
+                         "(alliance-conflict, handover-momentum and partial-box fixes). "
+                         "Not for publishing yet -- its colour check misreads robots "
+                         "behind people and hub ramps, and it can drop curator-confirmed "
+                         "data. See the module docstring.")
     ap.add_argument("--calib-from", default=None, metavar="VIDEO",
                     help="reuse another video's calibration (same camera)")
     ap.add_argument("--no-relay", action="store_true",
@@ -476,7 +508,8 @@ def main(argv=None) -> int:
                 calib_stem=args.calib_from or None,
                 allow_stale=args.allow_stale,
                 allow_unsafe_calibration=args.allow_unsafe_calibration,
-                route_correction=not args.no_route_correction)
+                route_correction=not args.no_route_correction,
+                clean_routes=args.clean)
 
     problems = validate(doc)
     for p in problems:

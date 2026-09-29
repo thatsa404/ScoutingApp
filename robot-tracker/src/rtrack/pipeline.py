@@ -243,7 +243,9 @@ def _main(argv=None) -> int:
     gallery = C.STAGE3_DIR / f"{event}_gallery{_sfx}.npz"
     season = int(str(event)[:4]) if str(event)[:4].isdigit() else C.YEAR
     reviewed_latest = C.OUT_DIR / "gallery" / str(season) / "latest.json"
-    gallery_available = gallery.exists() or (args.appearance == "cnn" and reviewed_latest.exists())
+    curated_gallery = C.STAGE3_DIR / f"{event}_curated_gallery.npz"
+    gallery_available = gallery.exists() or (args.appearance == "cnn" and
+                                             (reviewed_latest.exists() or curated_gallery.exists()))
 
     si = STEPS.index(args.start) if args.start else -1
     def do(step: str, fresh: bool) -> bool:
@@ -334,7 +336,7 @@ def _main(argv=None) -> int:
         print("    votes: SKIPPED by --no-votes; identity from geometry and hue only")
     elif gallery_available:
         vote_inputs = [appear_cnn if args.appearance == "cnn" else appear, gallery,
-                       reviewed_latest]
+                       reviewed_latest, curated_gallery]
         votes_fresh = (newer(votes, *vote_inputs) and
                        _votes_current(votes, args.appearance, reviewed_latest))
         if do("votes", votes_fresh):
@@ -502,6 +504,16 @@ def _main(argv=None) -> int:
         ea += ["--calib-from", args.calib_from]
     if not run(*ea):
         return 1
+
+    # CURATED GALLERY: this match's curator labels become prototypes for every later
+    # match of the event. Cheap (cached embeddings, no video decode) and never fatal --
+    # appearance improves routes, it does not authorise them.
+    if corr.exists() and args.appearance == "cnn":
+        try:
+            from .reid import build_curated_gallery
+            build_curated_gallery(event)
+        except Exception as e:
+            print(f"[pipeline] curated gallery not rebuilt ({type(e).__name__}: {e})")
 
     # Gallery LAST: reviewed appearance learning is explicitly separate from route
     # curation.  The old command remains available only as a migration/control path;

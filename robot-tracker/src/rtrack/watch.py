@@ -95,8 +95,12 @@ def pending_gallery(season: int | None = None) -> list[tuple[str, float]]:
         rid = it.get("id") or ""
         at = (it.get("at") or 0) / 1000.0
         local = answer_dir / f"{rid}_answer.json"
-        if not local.exists() or at > local.stat().st_mtime + 1:
-            out.append((rid, at))
+        if local.exists() and at <= local.stat().st_mtime + 1:
+            continue                      # applied, and nothing newer since
+        failed = answer_dir / f"{rid}_failed.json"
+        if failed.exists() and at <= failed.stat().st_mtime + 1:
+            continue                      # failed on THIS answer; a new submission retries
+        out.append((rid, at))
     return sorted(out)
 
 
@@ -105,32 +109,46 @@ def finish_gallery(review_id: str) -> bool:
     print(f"\n[watch] gallery {review_id}: answer is ready -- applying")
     answer_dir = C.OUT_DIR / "gallery" / "review"
     answer_dir.mkdir(parents=True, exist_ok=True)
+    # The answer is written under a PENDING name and promoted only once it has been
+    # applied and the gallery rebuilt. The final name is what pending_gallery reads as
+    # "done", so writing it first made every failed apply look finished: 22 of 24
+    # 2026necmp1 answers were refused and never retried or reported.
     answer_path = answer_dir / f"{review_id}_answer.json"
+    pending_path = answer_dir / f"{review_id}_answer.pending.json"
+    failed_path = answer_dir / f"{review_id}_failed.json"
+
+    def fail(reason: str) -> bool:
+        print(f"[watch] gallery {review_id}: NOT APPLIED -- {reason}")
+        failed_path.write_text(json.dumps({"reviewId": review_id, "reason": reason,
+                                           "at": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime())},
+                                          indent=1), encoding="utf-8")
+        return False
+
     answer = R.get("gallery-answer", review_id)
     if answer is None:
         print(f"[watch] gallery {review_id}: answer disappeared before fetch")
         return False
-    answer_path.write_text(json.dumps(answer, indent=1), encoding="utf-8")
+    pending_path.write_text(json.dumps(answer, indent=1), encoding="utf-8")
     bundle_path = answer_dir / f"{review_id}.json"
     if not bundle_path.exists():
         bundle = R.get("gallery-bundle", review_id)
         if bundle is None:
-            print(f"[watch] gallery {review_id}: source bundle is unavailable")
-            return False
+            return fail("source bundle is unavailable")
         bundle_path.write_text(json.dumps(bundle, indent=1), encoding="utf-8")
     season = None
     try:
         season = int(json.loads(bundle_path.read_text(encoding="utf-8"))["season"])
-        a = [PY, "-m", "rtrack.gallery_review", "apply", str(answer_path),
+        a = [PY, "-m", "rtrack.gallery_review", "apply", str(pending_path),
              "--bundle", str(bundle_path)]
         if subprocess.run(a).returncode != 0:
-            return False
+            return fail("gallery_review apply failed (see the lines above)")
         b = [PY, "-m", "rtrack.gallery_review", "rebuild", "--season", str(season)]
         if subprocess.run(b).returncode != 0:
-            return False
+            return fail("gallery_review rebuild failed (see the lines above)")
     except (OSError, json.JSONDecodeError, KeyError, ValueError) as exc:
-        print(f"[watch] gallery {review_id}: {exc}")
-        return False
+        return fail(f"{type(exc).__name__}: {exc}")
+    pending_path.replace(answer_path)
+    failed_path.unlink(missing_ok=True)
     print(f"[watch] gallery {review_id}: published season {season}; replay is queued "
           "for vote-diff review")
     return True

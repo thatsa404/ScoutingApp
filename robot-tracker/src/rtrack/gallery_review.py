@@ -747,6 +747,9 @@ def _append_answer(answer: dict, bundle: dict, manifest: dict, stamp: str) -> in
     selected = 0
     reviewed_ids = manifest.setdefault("reviewedCandidateIds", [])
     reviewed_set = {str(value) for value in reviewed_ids}
+    # Crops already accepted, so a re-applied or rebased answer adds only what is new.
+    decided = {(str(d.get("candidateId")), h) for d in manifest.get("decisions", [])
+               for h in d.get("acceptedViewHashes", [])}
     all_candidate_ids = {str(c.get("candidateId"))
                          for group in bundle.get("teams", [])
                          for c in group.get("candidates", []) if c.get("candidateId")}
@@ -760,6 +763,8 @@ def _append_answer(answer: dict, bundle: dict, manifest: dict, stamp: str) -> in
         for crop_hash in selection.get("include", []):
             candidate = allowed[str(crop_hash)]
             reviewed_set.add(str(candidate["candidateId"]))
+            if (str(candidate["candidateId"]), str(crop_hash)) in decided:
+                continue
             source = candidate.get("source", {})
             # One selected image becomes one independently revocable prototype. The
             # source crop is retained without its transient base64 thumbnail.
@@ -808,7 +813,8 @@ def apply_answers(answer_paths: list[Path]) -> Path:
     base = manifest_version(manifest)
     for answer, _ in pairs:
         if answer.get("baseGalleryVersion") and answer["baseGalleryVersion"] != base:
-            raise SystemExit("[gallery] batch answers were not based on the same current gallery")
+            print(f"[gallery] {answer['reviewId'][:8]}: based on an older gallery -- "
+                  f"rebasing (append-only; crops already accepted are skipped)")
     stamp = _now()
     selected = sum(_append_answer(answer, bundle, manifest, stamp)
                    for answer, bundle in pairs)
@@ -832,7 +838,14 @@ def apply_answer(answer_path: Path, *, bundle_path: Path | None = None) -> Path:
     manifest = load_manifest(season)
     base = answer.get("baseGalleryVersion")
     if base and base != manifest_version(manifest):
-        raise SystemExit("[gallery] answer was based on an older gallery; regenerate the bundle")
+        # REBASE, DO NOT REJECT. Decisions are append-only, one prototype per accepted
+        # crop, so an answer made against an older gallery conflicts only where a crop
+        # was already accepted -- and _append_answer skips exactly those. Rejecting here
+        # lost 22 of 24 2026necmp1 answers (353 of 367 selected crops): a reviewer
+        # answering several bundles from one gallery snapshot had every answer after the
+        # first refused, because the first changed the manifest version.
+        print(f"[gallery] {rid[:8]}: based on an older gallery -- rebasing "
+              f"(append-only; crops already accepted are skipped)")
     stamp = _now()
     selected = _append_answer(answer, bundle, manifest, stamp)
     manifest["schemaVersion"] = MANIFEST_SCHEMA
