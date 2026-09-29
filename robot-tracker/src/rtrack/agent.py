@@ -56,7 +56,7 @@ import os
 import os
 import platform
 import re
-from collections import deque
+from collections import defaultdict, deque
 import socket
 import subprocess
 import sys
@@ -456,12 +456,14 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
         # is the opposite of a batch. Build locally, push, move on.
         rc, btail = _run_logged(a, cwd=C.TRACKER_ROOT)
         if rc == 3:
-            report("event busy (lock held); will retry", len(curated), len(keys))
+            report("event busy (lock held); will retry", i, len(todo))
             break
         bundle = _bundle_path(key)
         if rc != 0 or not bundle.exists():
-            fail(key, "bundle", failure_reason(btail, rc) if rc != 0
-                 else "pipeline succeeded but produced no curation bundle")
+            print(f"[agent] {key} bundle failed: "
+                  + (failure_reason(btail, rc) if rc != 0
+                     else "pipeline succeeded but produced no curation bundle"), flush=True)
+            failed.append(key)
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
         if subprocess.run(push, cwd=C.TRACKER_ROOT).returncode == 0:
@@ -879,8 +881,108 @@ def run_calib(job: dict, report) -> tuple[int, int, list[str], bool]:
     return 1, 1, [], True
 
 
+# ── FOLLOW-UP CURATION ──────────────────────────────────────────────────────
+#
+# A small second bundle for ONE already-curated match, at moments a person chose while
+# watching its routes -- plus, optionally, the middle of the longest stretches of each
+# route since that team was last labelled. Measured on 2026necmp1, curation fixes the
+# moments it labels and little else (held-out per-image accuracy 89.7% uncurated against
+# 90.9% curated), and no automatic signal located the remaining errors well (solver
+# uncertainty covered 5% of wrong route time; robot contact is near 86% of ALL route
+# time). A person watching the route is the detector; this makes asking cheap.
+#
+# The answer comes back through the normal relay path and rtrack.relay MERGES it into the
+# match's corrections, so the first round's labels survive; the watcher then re-solves.
+FOLLOWUP_MAX_FRAMES = 12
+FOLLOWUP_SNAP_S = 1.0        # a requested moment snaps to the busiest frame this close
+
+
+def _followup_frames(key: str, times: list[float], gaps: int) -> tuple[list[int], list[str]]:
+    lab = C.STAGE3_DIR / f"{key}_labeled.jsonl"
+    rj = C.STAGE3_DIR / f"{key}_robots.json"
+    if not (lab.exists() and rj.exists()):
+        raise RuntimeError(f"{key} has no solved routes to follow up")
+    win = json.loads(rj.read_text(encoding="utf-8")).get("custodyWindow") or [0.0]
+    off = float(win[0])                       # match t = 0 in video seconds
+    rows = [json.loads(l) for l in lab.read_text(encoding="utf-8").splitlines() if l.strip()]
+    busy = [(r["t"], r["f"], sum(1 for d in r["dets"] if d["tid"] >= 0)) for r in rows]
+    chosen: list[tuple[float, int, str]] = []
+
+    def take(vt: float, why: str) -> None:
+        near = [b for b in busy if abs(b[0] - vt) <= FOLLOWUP_SNAP_S and b[2] >= 1]
+        if not near:
+            return
+        t, f, _n = max(near, key=lambda b: (b[2], -abs(b[0] - vt)))
+        if all(abs(t - c[0]) > FOLLOWUP_SNAP_S for c in chosen):
+            chosen.append((t, f, why))
+
+    for t in times:
+        take(off + float(t), f"requested at {float(t):.1f}s")
+
+    if gaps > 0:
+        corr = C.TRACKER_ROOT / "corrections" / f"{key}_corrections.json"
+        labels = (json.loads(corr.read_text(encoding="utf-8")).get("labels") or []
+                  if corr.exists() else [])
+        t_of = {r["f"]: r["t"] for r in rows}
+        spans, seen = [], defaultdict(list)
+        for r in rows:
+            for d in r["dets"]:
+                if d.get("team"):
+                    seen[str(d["team"])].append(r["t"])
+        for team, ts in seen.items():
+            lt = sorted(t_of[int(l["f"])] for l in labels
+                        if str(l.get("team")) == team and int(l["f"]) in t_of)
+            edges = [min(ts)] + lt + [max(ts)]
+            spans += [(b - a, (a + b) / 2, team) for a, b in zip(edges, edges[1:])]
+        for length, mid, team in sorted(spans, reverse=True):
+            if sum(1 for c in chosen if c[2].startswith("gap")) >= gaps:
+                break
+            take(mid, f"gap {team} {length:.0f}s")
+
+    chosen.sort()
+    return [f for _t, f, _w in chosen[:FOLLOWUP_MAX_FRAMES]], \
+           [w for _t, _f, w in chosen[:FOLLOWUP_MAX_FRAMES]]
+
+
+def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
+    """Build and push a follow-up bundle for one curated match."""
+    key = job.get("match")
+    if not key:
+        raise RuntimeError("followup job names no match")
+    times = [float(t) for t in (job.get("times") or [])]
+    gaps = max(0, min(int(job.get("gaps") or 0), FOLLOWUP_MAX_FRAMES))
+    if not times and not gaps:
+        raise RuntimeError("followup job has no moments and no gap frames to ask about")
+    report(f"follow-up {key}: choosing frames", 0, 2)
+    frames, why = _followup_frames(key, times, gaps)
+    if not frames:
+        raise RuntimeError(f"none of the requested moments in {key} shows a tracked robot")
+    from . import curate as CU
+    event = key.split("_")[0]
+    st = C.STAGE1_DIR / f"{key}_tracks_stitched.jsonl"
+    n_req = sum(1 for w in why if w.startswith("requested"))
+    note = (f"Follow-up: {len(frames)} frame(s) -- {n_req} flagged from the route view"
+            + (f", {len(frames) - n_req} from the longest unlabelled stretches" if len(frames) > n_req else "")
+            + ". Boxes are pre-filled from the current routes; fix any that are wrong.")
+    report(f"follow-up {key}: building {len(frames)} frame(s)", 1, 2)
+    doc = CU.build_frames(key, st, key, 0, 0, frames=frames, note=note,
+                          frame_w=800, frame_q=45, calib_stem=job.get("calibFrom") or event,
+                          legible=False, guess_p=C.STAGE3_DIR / f"{key}_labeled.jsonl",
+                          window=False)
+    doc["followup"] = {"round": "followup", "reasons": why,
+                       "requestedAt": job.get("requestedAt"), "times": times, "gaps": gaps}
+    out = C.STAGE3_DIR / f"{key}_followup_frames.json"
+    out.write_text(json.dumps(doc), encoding="utf-8")
+    rc, tail = _run_logged([PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(out)],
+                           cwd=C.TRACKER_ROOT)
+    if rc != 0:
+        raise RuntimeError(f"push failed: {failure_reason(tail, rc)}")
+    report(f"follow-up {key}: {len(frames)} frame(s) on the relay for curation", 2, 2)
+    return 1, 1, []
+
+
 JOB_RUNNERS = {"process": run_process, "detect": run_detect, "bundle": run_bundle,
-               "calib": run_calib}
+               "calib": run_calib, "followup": run_followup}
 
 
 def pending_points() -> list[tuple[str, float]]:

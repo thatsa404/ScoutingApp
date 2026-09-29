@@ -212,10 +212,47 @@ def main(argv=None) -> int:
     }
     out = args.out or dests[kind]
     out.parent.mkdir(parents=True, exist_ok=True)
+    if kind == "answer" and out.exists():
+        doc = merge_answer(out, doc)
     out.write_text(json.dumps(doc, indent=1), encoding="utf-8")
     n = len(doc.get("labels") or doc.get("points") or doc.get("regions") or [])
     print(f"[relay] {n} item(s) -> {out}")
     return 0
+
+
+def merge_answer(existing: Path, new: dict) -> dict:
+    """Fold a curation answer into the corrections already on disk.
+
+    An answer holds labels only for the frames of the bundle it answers. That used to be
+    fine because a match had one bundle; a follow-up bundle (rtrack.agent's `followup`
+    job) shows a handful of new frames, and writing its answer over the file would throw
+    away the first round's labels. So answers ACCUMULATE: labels are keyed by (frame,
+    position) and a newer answer wins where both speak, which also makes re-sending a
+    round harmless. The previous file is kept as a backup, and each round's session is
+    kept in `rounds` so curation time stays measurable per round.
+    """
+    try:
+        old = json.loads(existing.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return new
+    key = lambda l: (int(l.get("f", -1)), tuple(int(v) for v in (l.get("xy") or ())))
+    merged = {key(l): l for l in old.get("labels") or []}
+    added = sum(1 for l in new.get("labels") or [] if key(l) not in merged)
+    for l in new.get("labels") or []:
+        merged[key(l)] = l
+    from datetime import datetime as _dt
+    bak = existing.with_name(f"{existing.name}.bak-{_dt.now().strftime('%Y%m%d-%H%M%S')}")
+    bak.write_bytes(existing.read_bytes())
+    rounds = list(old.get("rounds") or [{"createdAt": old.get("createdAt"),
+                                          "session": old.get("session"),
+                                          "labels": len(old.get("labels") or [])}])
+    rounds.append({"createdAt": new.get("createdAt"), "session": new.get("session"),
+                   "labels": len(new.get("labels") or [])})
+    print(f"[relay] merged into existing corrections: {added} new label(s), "
+          f"{len(new.get('labels') or []) - added} updated; round {len(rounds)} "
+          f"(previous kept as {bak.name})")
+    return {**old, **{k: v for k, v in new.items() if k != "labels"},
+            "labels": list(merged.values()), "rounds": rounds}
 
 
 if __name__ == "__main__":

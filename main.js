@@ -2047,12 +2047,87 @@ async function renderMatchTracks(matchKey) {
         }
     };
 
+    // FOLLOW-UP CURATION. Measured on 2026necmp1, no automatic signal located the errors
+    // left after curation well, so the detector is a person watching this view: scrub to
+    // where a route looks wrong, flag it, and ask the home machine for a small bundle of
+    // those moments. Flags live in this browser until the request is sent.
+    if (relayUrl()) mountFollowupFlags(host, matchKey, () => (tNow >= tMax ? null : tNow), setT);
+
     // The img may already be cached (complete) or still loading — handle both, exactly
     // as initFieldTab does for the drawing canvas.
     if (img.complete && img.naturalWidth) resize();
     else img.addEventListener('load', resize, { once: true });
     window.addEventListener('resize', resize);
     host._trackResize = resize;   // so closeMatchDetail can unhook it
+}
+
+const FLAG_KEY = (matchKey) => `rtrackFlags:${matchKey}`;
+
+function readFlags(matchKey) {
+    try { return JSON.parse(localStorage.getItem(FLAG_KEY(matchKey)) || '[]').filter(Number.isFinite); }
+    catch { return []; }
+}
+
+function writeFlags(matchKey, flags) {
+    try { localStorage.setItem(FLAG_KEY(matchKey), JSON.stringify(flags)); } catch { /* private window */ }
+}
+
+function mountFollowupFlags(host, matchKey, currentT, seekTo) {
+    const btn = 'padding:4px 11px;font-size:12px;border-radius:6px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;';
+    host.insertAdjacentHTML('beforeend', `
+        <div id="mtFollow" style="margin-top:12px;padding:10px;border:1px solid #1e293b;border-radius:8px;">
+          <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
+            <button id="mtFlag" style="${btn}" title="Scrub the slider to a moment where a route looks wrong, then flag it">⚑ Flag this moment</button>
+            <label style="font-size:12px;color:#94a3b8;display:inline-flex;gap:5px;align-items:center;"
+                   title="Also ask about the middle of the longest stretches of each route since that team was last labelled">
+              <input type="checkbox" id="mtGaps" checked> + longest unlabelled stretches
+              <input type="number" id="mtGapN" min="1" max="8" value="3" style="width:42px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px;">
+            </label>
+            <button id="mtRequest" style="${btn}color:#93c5fd;">Request follow-up curation</button>
+          </div>
+          <div id="mtFlags" style="display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;"></div>
+          <div id="mtFollowMsg" style="font-size:12px;color:#94a3b8;margin-top:6px;"></div>
+        </div>`);
+    const list = host.querySelector('#mtFlags'), msg = host.querySelector('#mtFollowMsg');
+    const draw = () => {
+        const flags = readFlags(matchKey);
+        list.innerHTML = flags.length
+            ? flags.map((t, i) => `<span style="display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border-radius:12px;background:#1e293b;color:#fbbf24;font-size:12px;">
+                 <a href="#" data-i="${i}" class="mtGo" style="color:inherit;text-decoration:none;">⚑ ${t.toFixed(1)}s</a>
+                 <a href="#" data-i="${i}" class="mtDel" title="Remove" style="color:#64748b;text-decoration:none;">×</a></span>`).join('')
+            : '<span style="font-size:12px;color:#64748b;">No moments flagged.</span>';
+        list.querySelectorAll('.mtGo').forEach(a => a.onclick = (e) => { e.preventDefault(); seekTo(flags[+a.dataset.i]); });
+        list.querySelectorAll('.mtDel').forEach(a => a.onclick = (e) => {
+            e.preventDefault(); flags.splice(+a.dataset.i, 1); writeFlags(matchKey, flags); draw();
+        });
+    };
+    host.querySelector('#mtFlag').onclick = () => {
+        const t = currentT();
+        if (t == null) { msg.textContent = 'Scrub or play to the moment first -- the slider is showing the whole match.'; return; }
+        const flags = readFlags(matchKey);
+        if (!flags.some(x => Math.abs(x - t) < 1)) flags.push(Math.round(t * 10) / 10);
+        flags.sort((a, b) => a - b); writeFlags(matchKey, flags); msg.textContent = ''; draw();
+    };
+    host.querySelector('#mtRequest').onclick = async () => {
+        const flags = readFlags(matchKey);
+        const gaps = host.querySelector('#mtGaps').checked
+            ? Math.max(1, Math.min(8, parseInt(host.querySelector('#mtGapN').value, 10) || 3)) : 0;
+        if (!flags.length && !gaps) { msg.textContent = 'Flag at least one moment, or tick the unlabelled-stretches option.'; return; }
+        const relay = relayUrl();
+        const agents = relayAgents(await _relayIndex(relay) || []);
+        if (!agents.length) { msg.innerHTML = '<span style="color:#f87171;">No home machine has reported to the relay.</span>'; return; }
+        if (!controlToken()) {
+            msg.innerHTML = '<span style="color:#f87171;">Enter the control token in Relay Control (Tracks tab) first.</span>'; return;
+        }
+        const ok = await postJob(relay, agents[0].id, {
+            type: 'followup', event: matchKey.split('_')[0], match: matchKey, times: flags, gaps,
+        }, msg);
+        if (ok) {
+            writeFlags(matchKey, []); draw();
+            msg.innerHTML = `<span style="color:#22c55e;">Requested. When the bundle is ready, ${galleryEsc(matchKey)} shows as awaiting curation in the Tracks tab; the answers are added to its existing curation and the routes re-solve.</span>`;
+        }
+    };
+    draw();
 }
 
 window.openLightbox = function (url) {
