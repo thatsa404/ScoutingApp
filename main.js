@@ -1897,6 +1897,10 @@ async function renderMatchTracks(matchKey) {
                   style="padding:4px 11px; font-size:12px; border-radius:6px;
                          border:1px solid #334155; background:transparent; color:#94a3b8;
                          cursor:pointer;">⛶ Full screen</button>
+          <button id="mtInspect" title="Movement over time, coverage and implausible stretches -- where to look before flagging"
+                  style="padding:4px 11px; font-size:12px; border-radius:6px;
+                         border:1px solid #334155; background:transparent; color:#94a3b8;
+                         cursor:pointer;">🔍 Inspect</button>
           <button id="mtAuto" style="padding:4px 11px; font-size:12px; border-radius:6px;
                   cursor:pointer; border:1px solid #334155; background:transparent;
                   color:#94a3b8; font-weight:600;">Auto only</button>
@@ -1965,6 +1969,10 @@ async function renderMatchTracks(matchKey) {
         // whether auto-only is on should survive the jump to full screen.
         teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
         tMax: autoOnly ? autoEnd : null,
+    });
+    const inspectBtn = document.getElementById('mtInspect');
+    if (inspectBtn) inspectBtn.onclick = () => window.openRouteInspector(doc, matchKey, {
+        teams: shown, tNow: tNow >= tMax ? null : tNow,
     });
     const autoBtn = document.getElementById('mtAuto');
     const autoNote = document.getElementById('mtAutoNote');
@@ -11161,6 +11169,282 @@ window.openRoutesFull = function (doc, opts = {}) {
         }
     };
     document.addEventListener('keydown', onKey);
+};
+
+// ── ROUTE INSPECTION ─────────────────────────────────────────────────────────
+//
+// Where to look before asking for follow-up curation. An identity swap is usually a
+// place where a route does something no robot can: the 1 s average speed spikes past
+// what an FRC drivetrain reaches, often across a gap the tracker could not see. So the
+// inspector plots every robot's movement over time on one axis, with the field at the
+// chosen moment beside it and the implausible stretches listed as places to check.
+//
+// GAPS ARE FILLED LINEARLY between the tracked points either side, so a robot that
+// vanished at one spot and reappeared at another still produces a speed -- which is the
+// point: a swap across a gap shows up as the speed the swap would have required.
+// Interpolated stretches are drawn dashed and faded so they are never read as seen.
+const INSPECT_DT = 0.2;      // resample step (s): the export's 5 Hz
+const INSPECT_WIN = 1.0;     // speed = displacement over this window, the "average"
+const INSPECT_GAP = 0.45;    // samples further apart than this bracket an unseen stretch
+const INSPECT_FAST = 4.5;    // m/s: above what FRC drivetrains sustain; worth a look
+
+function _alpha(colour, a) {
+    const m = /^#([0-9a-f]{6})$/i.exec(String(colour || ''));
+    if (!m) return colour;
+    const n = parseInt(m[1], 16);
+    return `rgba(${n >> 16},${(n >> 8) & 255},${n & 255},${a})`;
+}
+
+function inspectSeries(doc) {
+    let tMin = Infinity, tMax = -Infinity;
+    for (const r of doc.robots || []) for (const s of r.samples || []) {
+        tMin = Math.min(tMin, s.t); tMax = Math.max(tMax, s.t);
+    }
+    if (!isFinite(tMin)) return null;
+    const grid = [];
+    for (let t = Math.ceil(tMin / INSPECT_DT) * INSPECT_DT; t <= tMax + 1e-9; t += INSPECT_DT)
+        grid.push(Math.round(t * 100) / 100);
+    const robots = (doc.robots || []).map((r, i) => {
+        const S = [...(r.samples || [])].sort((a, b) => a.t - b.t);
+        const find = (t) => { let lo = 0, hi = S.length - 1;
+            while (hi - lo > 1) { const m = (lo + hi) >> 1; if (S[m].t <= t) lo = m; else hi = m; }
+            return lo; };
+        const posAt = (t) => {
+            if (S.length < 2 || t < S[0].t || t > S[S.length - 1].t) return null;
+            const k = find(t), a = S[k], b = S[Math.min(k + 1, S.length - 1)];
+            const span = b.t - a.t, f = span > 0 ? (t - a.t) / span : 0;
+            return { x: a.x + (b.x - a.x) * f, y: a.y + (b.y - a.y) * f, interp: span > INSPECT_GAP };
+        };
+        const speed = [], interp = [], seen = [];
+        for (const t of grid) {
+            const p = posAt(t - INSPECT_WIN / 2), q = posAt(t + INSPECT_WIN / 2), c = posAt(t);
+            seen.push(c ? (c.interp ? 'interp' : 'seen') : null);
+            if (!p || !q) { speed.push(null); interp.push(false); continue; }
+            speed.push(Math.hypot(q.x - p.x, q.y - p.y) / INSPECT_WIN);
+            interp.push(!!(p.interp || q.interp || (c && c.interp)));
+        }
+        return { team: String(r.team), colour: window.trackColourFor(r, i), speed, interp, seen,
+                 breaks: (r.gaps || []).filter(g => g.reason && g.reason !== 'unobserved') };
+    });
+    const avg = grid.map((_t, k) => {
+        const v = robots.map(r => r.speed[k]).filter(x => x != null);
+        return v.length ? v.reduce((a, b) => a + b, 0) / v.length : null;
+    });
+    return { grid, robots, avg, tMin, tMax };
+}
+
+// Places worth looking at, most severe first: implausible speed runs (with their peak)
+// and the breaks the exporter already drew into the route (teleport / unlinked).
+function inspectSuspects(series) {
+    const out = [];
+    for (const r of series.robots) {
+        let run = null;
+        series.grid.forEach((t, k) => {
+            const v = r.speed[k];
+            if (v != null && v >= INSPECT_FAST) {
+                if (!run) run = { team: r.team, t0: t, t1: t, tPeak: t, peak: v, interp: r.interp[k] };
+                else { run.t1 = t; if (v > run.peak) { run.peak = v; run.tPeak = t; } run.interp ||= r.interp[k]; }
+            } else if (run) { out.push(run); run = null; }
+        });
+        if (run) out.push(run);
+        for (const g of r.breaks)
+            out.push({ team: r.team, t0: g.tStart, t1: g.tEnd, tPeak: g.tStart, peak: null, reason: g.reason });
+    }
+    return out.sort((a, b) => (b.peak ?? 99) - (a.peak ?? 99));
+}
+
+let _inspect = null;
+
+function closeRouteInspector() {
+    if (!_inspect) return;
+    try { _inspect.chart?.destroy(); } catch { /* already gone */ }
+    window.removeEventListener('resize', _inspect.onResize);
+    document.removeEventListener('keydown', _inspect.onKey);
+    _inspect.el.remove();
+    document.body.style.overflow = '';
+    _inspect = null;
+}
+window.closeRouteInspector = closeRouteInspector;
+
+window.openRouteInspector = function (doc, matchKey, opts = {}) {
+    closeRouteInspector();
+    const series = inspectSeries(doc);
+    if (!series) return;
+    const key = matchKey || doc.match?.key || doc.key;
+    const all = series.robots.map(r => r.team);
+    let shown = new Set(opts.teams ? [...opts.teams].map(String) : all);
+    let tNow = opts.tNow != null && opts.tNow < series.tMax ? opts.tNow : series.tMin;
+    const BASE = import.meta.env.BASE_URL;
+    const btn = 'padding:5px 11px;font-size:12px;border-radius:6px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;';
+
+    const el = document.createElement('div');
+    el.id = 'routeInspector';
+    el.style.cssText = 'position:fixed;inset:0;z-index:9000;background:#0b1220;overflow:auto;padding:10px;display:flex;flex-direction:column;gap:8px;';
+    el.innerHTML = `
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
+        <b style="font-size:15px;">Inspect ${galleryEsc(key || 'routes')}</b>
+        <span style="color:#64748b;font-size:12px;">1 s average speed; gaps filled linearly (dashed, faded); red line ${INSPECT_FAST} m/s</span>
+        <span style="flex:1;"></span>
+        <button onclick="closeRouteInspector()" style="padding:6px 14px;border-radius:8px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;cursor:pointer;">Close</button>
+      </div>
+      <div id="riTeams" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
+      <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;">
+        <div style="flex:2 1 520px;min-width:0;">
+          <div style="position:relative;height:280px;"><canvas id="riChart"></canvas></div>
+          <canvas id="riStrip" style="display:block;width:100%;margin-top:4px;"></canvas>
+          <div style="font-size:11px;color:#64748b;margin-top:3px;">
+            Coverage per robot: solid = tracked, faded = filled across a gap, red tick = route break. Click the chart or strip to move to that moment.
+          </div>
+        </div>
+        <div style="flex:1 1 300px;min-width:260px;">
+          <div id="riInner" style="position:relative;width:100%;border-radius:8px;overflow:hidden;">
+            <img id="riImg" src="${BASE}${doc.field.imageRef}" alt="field" style="display:block;width:100%;height:auto;">
+            <canvas id="riField" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
+          </div>
+          <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
+            <button id="riBack" style="${btn}">◀ 1s</button>
+            <span id="riClock" style="font-variant-numeric:tabular-nums;font-size:13px;color:#e2e8f0;min-width:70px;text-align:center;"></span>
+            <button id="riFwd" style="${btn}">1s ▶</button>
+          </div>
+          <div id="riFollow"></div>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:13px;font-weight:700;margin:6px 0 4px;">Where to look</div>
+        <div id="riSuspects" style="display:flex;flex-direction:column;gap:3px;font-size:12px;"></div>
+      </div>`;
+    document.body.appendChild(el);
+    document.body.style.overflow = 'hidden';
+
+    const img = el.querySelector('#riImg'), fieldCv = el.querySelector('#riField');
+    applyFieldOrientation(el.querySelector('#riInner'), doc);
+    const strip = el.querySelector('#riStrip');
+
+    const cursor = {
+        id: 'riCursor',
+        afterDatasetsDraw(c) {
+            const x = c.scales.x.getPixelForValue(tNow), a = c.chartArea;
+            if (x < a.left || x > a.right) return;
+            const g = c.ctx; g.save(); g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5;
+            g.beginPath(); g.moveTo(x, a.top); g.lineTo(x, a.bottom); g.stroke(); g.restore();
+        },
+    };
+    const pts = (arr) => series.grid.map((t, k) => ({ x: t, y: arr[k] }));
+    const chart = new Chart(el.querySelector('#riChart').getContext('2d'), {
+        type: 'line',
+        data: { datasets: [
+            ...series.robots.map(r => ({
+                label: r.team, data: pts(r.speed), borderColor: r.colour, borderWidth: 1.5,
+                pointRadius: 0, spanGaps: false, hidden: !shown.has(r.team),
+                segment: {
+                    borderDash: c => (r.interp[c.p1DataIndex] ? [4, 4] : undefined),
+                    borderColor: c => (r.interp[c.p1DataIndex] ? _alpha(r.colour, 0.45) : r.colour),
+                },
+            })),
+            { label: 'average of all robots', data: pts(series.avg), borderColor: '#e2e8f0',
+              borderWidth: 2.5, pointRadius: 0 },
+            { label: `${INSPECT_FAST} m/s`, data: [{ x: series.tMin, y: INSPECT_FAST }, { x: series.tMax, y: INSPECT_FAST }],
+              borderColor: 'rgba(248,113,113,0.7)', borderDash: [6, 4], borderWidth: 1, pointRadius: 0 },
+        ] },
+        options: {
+            animation: false, responsive: true, maintainAspectRatio: false, parsing: false,
+            interaction: { mode: 'nearest', axis: 'x', intersect: false },
+            scales: {
+                x: { type: 'linear', min: series.tMin, max: series.tMax,
+                     title: { display: true, text: 'match time (s)', color: '#94a3b8' },
+                     ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+                y: { min: 0, suggestedMax: 5,
+                     title: { display: true, text: 'speed, 1 s average (m/s)', color: '#94a3b8' },
+                     ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
+            },
+            plugins: { legend: { display: false },
+                       tooltip: { callbacks: { title: it => `${(+it[0].parsed.x).toFixed(1)} s`,
+                                               label: it => `${it.dataset.label}: ${it.parsed.y == null ? '—' : it.parsed.y.toFixed(2)} m/s` } } },
+            onClick: (e) => setT(chart.scales.x.getValueForPixel(e.x)),
+        },
+        plugins: [cursor],
+    });
+
+    const drawStrip = () => {
+        const a = chart.chartArea; if (!a) return;
+        const W = strip.clientWidth || strip.parentElement.clientWidth, rowH = 11;
+        const rows = series.robots.filter(r => shown.has(r.team));
+        strip.width = W; strip.height = rows.length * rowH + 2;
+        const g = strip.getContext('2d'); g.clearRect(0, 0, W, strip.height);
+        const px = (t) => a.left + (t - series.tMin) / Math.max(series.tMax - series.tMin, 1e-6) * (a.right - a.left);
+        const w = Math.max(1, (a.right - a.left) * INSPECT_DT / Math.max(series.tMax - series.tMin, 1e-6) + 0.5);
+        rows.forEach((r, i) => {
+            const y = i * rowH + 1;
+            g.fillStyle = '#94a3b8'; g.font = '9px sans-serif'; g.textAlign = 'right';
+            g.fillText(r.team, a.left - 4, y + 8);
+            series.grid.forEach((t, k) => {
+                const s = r.seen[k]; if (!s) return;
+                g.fillStyle = s === 'seen' ? r.colour : _alpha(r.colour, 0.25);
+                g.fillRect(px(t), y, w, rowH - 2);
+            });
+            g.fillStyle = '#f87171';
+            for (const b of r.breaks) g.fillRect(px(b.tStart) - 1, y - 1, 2, rowH);
+        });
+        const x = px(tNow); g.fillStyle = '#fbbf24'; g.fillRect(x - 0.75, 0, 1.5, strip.height);
+    };
+    strip.onclick = (e) => {
+        const a = chart.chartArea, r = strip.getBoundingClientRect();
+        setT(series.tMin + ((e.clientX - r.left) - a.left) / (a.right - a.left) * (series.tMax - series.tMin));
+    };
+
+    const paintField = () => {
+        if (!_trackSizeCanvas(img, fieldCv)) return;
+        renderFieldRoutes(fieldCv, doc, { teams: shown, tNow, trailOnly: true, dots: true });
+    };
+    function setT(t) {
+        tNow = Math.max(series.tMin, Math.min(series.tMax, t));
+        el.querySelector('#riClock').textContent = `${tNow.toFixed(1)} s`;
+        chart.update('none'); drawStrip(); paintField();
+    }
+    el.querySelector('#riBack').onclick = () => setT(tNow - 1);
+    el.querySelector('#riFwd').onclick = () => setT(tNow + 1);
+
+    el.querySelector('#riTeams').innerHTML = series.robots.map(r =>
+        `<button data-team="${r.team}" style="padding:4px 10px;font-size:12px;border-radius:999px;cursor:pointer;border:1px solid ${r.colour};background:transparent;color:${r.colour};">${r.team}</button>`).join('');
+    const syncTeams = () => {
+        el.querySelectorAll('#riTeams button').forEach(b => { b.style.opacity = shown.has(b.dataset.team) ? '1' : '0.32'; });
+        series.robots.forEach((r, i) => { chart.data.datasets[i].hidden = !shown.has(r.team); });
+        chart.update('none'); drawStrip(); paintField();
+    };
+    el.querySelectorAll('#riTeams button').forEach(b => b.onclick = () => {
+        const t = b.dataset.team;
+        if (shown.has(t)) shown.delete(t); else shown.add(t);
+        if (!shown.size) shown = new Set(all);
+        syncTeams();
+    });
+
+    const sus = inspectSuspects(series).slice(0, 15);
+    el.querySelector('#riSuspects').innerHTML = sus.length
+        ? sus.map((s, i) => `<a href="#" data-i="${i}" style="color:#cbd5e1;text-decoration:none;padding:3px 6px;border-radius:4px;background:#111827;">
+            <b style="color:${series.robots.find(r => r.team === s.team)?.colour || '#e2e8f0'};">${galleryEsc(s.team)}</b>
+            ${s.peak != null
+              ? `${s.peak.toFixed(1)} m/s at ${s.tPeak.toFixed(1)} s (${(s.t1 - s.t0 + INSPECT_DT).toFixed(1)} s above ${INSPECT_FAST})${s.interp ? ' — across a gap' : ''}`
+              : `route break (${galleryEsc(s.reason)}) ${s.t0.toFixed(1)}–${s.t1.toFixed(1)} s`}</a>`).join('')
+        : '<span style="color:#64748b;">Nothing implausible: no robot exceeds ' + INSPECT_FAST + ' m/s and the routes have no breaks.</span>';
+    el.querySelectorAll('#riSuspects a').forEach(a => a.onclick = (e) => {
+        e.preventDefault(); setT(sus[+a.dataset.i].tPeak);
+    });
+
+    // Flag and request, the same list and job as the match view's controls.
+    if (key && relayUrl()) mountFollowupFlags(el.querySelector('#riFollow'), key, () => tNow, setT);
+
+    const onResize = () => { drawStrip(); paintField(); };
+    const onKey = (e) => {
+        if (e.key === 'Escape') closeRouteInspector();
+        else if (e.key === 'ArrowLeft') setT(tNow - INSPECT_DT);
+        else if (e.key === 'ArrowRight') setT(tNow + INSPECT_DT);
+    };
+    window.addEventListener('resize', onResize);
+    document.addEventListener('keydown', onKey);
+    _inspect = { el, chart, onResize, onKey };
+    if (img.complete && img.naturalWidth) setT(tNow);
+    else img.addEventListener('load', () => setT(tNow), { once: true });
+    requestAnimationFrame(() => setT(tNow));
 };
 
 function _trackSizeCanvas(img, canvas) {
