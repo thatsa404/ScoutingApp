@@ -2065,21 +2065,28 @@ async function renderMatchTracks(matchKey) {
 
 const FLAG_KEY = (matchKey) => `rtrackFlags:${matchKey}`;
 
+// A flag is {t, teams}: the moment, and the robot(s) whose route it questions -- the
+// follow-up job then picks frames where THAT robot's route claims a detection, since a
+// frame without it can neither confirm nor falsify the route. Bare numbers (flags saved
+// before teams were recorded) read as unfocused flags.
 function readFlags(matchKey) {
-    try { return JSON.parse(localStorage.getItem(FLAG_KEY(matchKey)) || '[]').filter(Number.isFinite); }
-    catch { return []; }
+    try {
+        return JSON.parse(localStorage.getItem(FLAG_KEY(matchKey)) || '[]')
+            .map(f => (typeof f === 'number' ? { t: f, teams: [] } : f))
+            .filter(f => f && Number.isFinite(f.t));
+    } catch { return []; }
 }
 
 function writeFlags(matchKey, flags) {
     try { localStorage.setItem(FLAG_KEY(matchKey), JSON.stringify(flags)); } catch { /* private window */ }
 }
 
-function mountFollowupFlags(host, matchKey, currentT, seekTo) {
+function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () => []) {
     const btn = 'padding:4px 11px;font-size:12px;border-radius:6px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;';
     host.insertAdjacentHTML('beforeend', `
         <div id="mtFollow" style="margin-top:12px;padding:10px;border:1px solid #1e293b;border-radius:8px;">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <button id="mtFlag" style="${btn}" title="Scrub the slider to a moment where a route looks wrong, then flag it">⚑ Flag this moment</button>
+            <button id="mtFlag" style="${btn}" title="Move to where a route looks wrong and flag it. Each flag asks the curator about 3 frames spread across +-5 s of it, so labels land on both sides of whatever went wrong.">⚑ Flag this moment</button>
             <label style="font-size:12px;color:#94a3b8;display:inline-flex;gap:5px;align-items:center;"
                    title="Also ask about the middle of the longest stretches of each route since that team was last labelled">
               <input type="checkbox" id="mtGaps" checked> + longest unlabelled stretches
@@ -2094,11 +2101,12 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo) {
     const draw = () => {
         const flags = readFlags(matchKey);
         list.innerHTML = flags.length
-            ? flags.map((t, i) => `<span style="display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border-radius:12px;background:#1e293b;color:#fbbf24;font-size:12px;">
-                 <a href="#" data-i="${i}" class="mtGo" style="color:inherit;text-decoration:none;">⚑ ${t.toFixed(1)}s</a>
+            ? flags.map((fl, i) => `<span style="display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border-radius:12px;background:#1e293b;color:#fbbf24;font-size:12px;">
+                 <a href="#" data-i="${i}" class="mtGo" style="color:inherit;text-decoration:none;"
+                    title="${fl.teams.length ? 'Frames will be chosen where the route of this robot claims a detection' : 'No robot singled out: the busiest frames nearby are used'}">⚑ ${fl.t.toFixed(1)}s${fl.teams.length ? ' · ' + galleryEsc(fl.teams.join('/')) : ''}</a>
                  <a href="#" data-i="${i}" class="mtDel" title="Remove" style="color:#64748b;text-decoration:none;">×</a></span>`).join('')
             : '<span style="font-size:12px;color:#64748b;">No moments flagged.</span>';
-        list.querySelectorAll('.mtGo').forEach(a => a.onclick = (e) => { e.preventDefault(); seekTo(flags[+a.dataset.i]); });
+        list.querySelectorAll('.mtGo').forEach(a => a.onclick = (e) => { e.preventDefault(); seekTo(flags[+a.dataset.i].t); });
         list.querySelectorAll('.mtDel').forEach(a => a.onclick = (e) => {
             e.preventDefault(); flags.splice(+a.dataset.i, 1); writeFlags(matchKey, flags); draw();
         });
@@ -2107,8 +2115,11 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo) {
         const t = currentT();
         if (t == null) { msg.textContent = 'Scrub or play to the moment first -- the slider is showing the whole match.'; return; }
         const flags = readFlags(matchKey);
-        if (!flags.some(x => Math.abs(x - t) < 1)) flags.push(Math.round(t * 10) / 10);
-        flags.sort((a, b) => a - b); writeFlags(matchKey, flags); msg.textContent = ''; draw();
+        const teams = (focusTeams() || []).map(String);
+        const same = flags.find(x => Math.abs(x.t - t) < 1);
+        if (same) same.teams = [...new Set([...same.teams, ...teams])];
+        else flags.push({ t: Math.round(t * 10) / 10, teams });
+        flags.sort((a, b) => a.t - b.t); writeFlags(matchKey, flags); msg.textContent = ''; draw();
     };
     host.querySelector('#mtRequest').onclick = async () => {
         const flags = readFlags(matchKey);
@@ -2122,7 +2133,8 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo) {
             msg.innerHTML = '<span style="color:#f87171;">Enter the control token in Relay Control (Tracks tab) first.</span>'; return;
         }
         const ok = await postJob(relay, agents[0].id, {
-            type: 'followup', event: matchKey.split('_')[0], match: matchKey, times: flags, gaps,
+            type: 'followup', event: matchKey.split('_')[0], match: matchKey, gaps,
+            flags, times: flags.map(f => f.t),       // `times` for agents older than flags-with-teams
         }, msg);
         if (ok) {
             writeFlags(matchKey, []); draw();
@@ -11180,6 +11192,7 @@ const INSPECT_DT = 0.2;      // resample step (s): the export's 5 Hz
 const INSPECT_WIN = 1.0;     // speed = displacement over this window, the "average"
 const INSPECT_GAP = 0.45;    // samples further apart than this bracket an unseen stretch
 const INSPECT_FAST = 4.5;    // m/s: above what FRC drivetrains sustain; worth a look
+const INSPECT_FIELD_S = 5;   // the field shows the slider time +- this many seconds
 
 function _alpha(colour, a) {
     const m = /^#([0-9a-f]{6})$/i.exec(String(colour || ''));
@@ -11390,9 +11403,14 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         setT(series.tMin + ((e.clientX - r.left) - a.left) / (a.right - a.left) * (series.tMax - series.tMin));
     };
 
+    // Only the moment in question: the slider time +- INSPECT_FIELD_S. The whole match
+    // up to now is spaghetti when the question is "what happened HERE"; ten seconds is
+    // enough to see where each robot came from and went, and matches what a flag asks
+    // a curator about (see the follow-up job).
     const paintField = () => {
         if (!_trackSizeCanvas(img, fieldCv)) return;
-        renderFieldRoutes(fieldCv, doc, { teams: shown, tNow, trailOnly: true, dots: true });
+        renderFieldRoutes(fieldCv, doc, { teams: shown, tNow, trailOnly: false, dots: true,
+                                          tMin: tNow - INSPECT_FIELD_S, tMax: tNow + INSPECT_FIELD_S });
     };
     const span = Math.max(series.tMax - series.tMin, 1e-6);
     function setT(t) {
@@ -11453,7 +11471,16 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     // on 2026necmp1, no automatic signal located the errors left after curation well, so
     // the detector is a person: find where a route looks wrong, flag it, and ask the home
     // machine for a small bundle of those moments. Flags stay in this browser until sent.
-    if (key && relayUrl()) mountFollowupFlags(el.querySelector('#riFollow'), key, () => tNow, setT);
+    // The robot a flag is about: the teams on screen if the chips were narrowed to them,
+    // otherwise whichever robots are moving implausibly fast within 1 s of the moment.
+    const focusTeams = () => {
+        if (shown.size && shown.size < all.length) return [...shown];
+        const k0 = series.grid.findIndex(t => t >= tNow - 1), k1 = series.grid.findIndex(t => t > tNow + 1);
+        const hi = k1 < 0 ? series.grid.length : k1;
+        return series.robots.filter(r => r.speed.slice(Math.max(k0, 0), hi)
+            .some(v => v != null && v >= INSPECT_FAST)).map(r => r.team);
+    };
+    if (key && relayUrl()) mountFollowupFlags(el.querySelector('#riFollow'), key, () => tNow, setT, focusTeams);
 
     const onResize = () => { drawStrip(); paintField(); };
     const onKey = (e) => {
@@ -11512,6 +11539,8 @@ function renderFieldRoutes(canvas, doc, opts = {}) {
     // t <= autoEndT. Clipping here rather than filtering the doc keeps one source of
     // truth for the routes and lets the caller toggle without re-fetching.
     const tMax = (opts.tMax === undefined || opts.tMax === null) ? null : opts.tMax;
+    // Lower bound, for a moving window (the route inspector's slider +- a few seconds).
+    const tMin = (opts.tMin === undefined || opts.tMin === null) ? null : opts.tMin;
     // Direction is on by default: it is information the plot otherwise loses entirely.
     const arrows = opts.arrows !== false;
 
@@ -11641,6 +11670,7 @@ function renderFieldRoutes(canvas, doc, opts = {}) {
         if (only && !only.has(String(r.team))) return;
         let pts = r.samples || [];
         if (tMax !== null) pts = pts.filter(s => s.t <= tMax);
+        if (tMin !== null) pts = pts.filter(s => s.t >= tMin);
         if (!pts.length) return;
         const col = window.trackColourFor(r, i);
         const gaps = r.gaps || [];

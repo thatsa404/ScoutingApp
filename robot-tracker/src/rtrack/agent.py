@@ -912,11 +912,18 @@ def run_calib(job: dict, report) -> tuple[int, int, list[str], bool]:
 #
 # The answer comes back through the normal relay path and rtrack.relay MERGES it into the
 # match's corrections, so the first round's labels survive; the watcher then re-solves.
-FOLLOWUP_MAX_FRAMES = 12
+FOLLOWUP_MAX_FRAMES = 15
 FOLLOWUP_SNAP_S = 1.0        # a requested moment snaps to the busiest frame this close
+# EACH FLAG ANCHORS A SPAN, not an instant. A person flags where a route LOOKS wrong,
+# which is rarely the exact moment it went wrong -- and a swap is fixed by labels on
+# BOTH sides of it: pin inheritance (rtrack.robots.inherit_sandwich_pins) then carries
+# the team across the pieces in between. So a flag asks about the start, middle and end
+# of the same +-5 s window the route inspector draws around its slider.
+FOLLOWUP_SPAN_S = 10.0
+FOLLOWUP_PER_FLAG = 3
 
 
-def _followup_frames(key: str, times: list[float], gaps: int) -> tuple[list[int], list[str]]:
+def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[str], dict]:
     lab = C.STAGE3_DIR / f"{key}_labeled.jsonl"
     rj = C.STAGE3_DIR / f"{key}_robots.json"
     if not (lab.exists() and rj.exists()):
@@ -925,9 +932,34 @@ def _followup_frames(key: str, times: list[float], gaps: int) -> tuple[list[int]
     off = float(win[0])                       # match t = 0 in video seconds
     rows = [json.loads(l) for l in lab.read_text(encoding="utf-8").splitlines() if l.strip()]
     busy = [(r["t"], r["f"], sum(1 for d in r["dets"] if d["tid"] >= 0)) for r in rows]
+    by_f = {r["f"]: r for r in rows}
     chosen: list[tuple[float, int, str]] = []
+    focus_boxes: dict[int, list] = {}          # frame -> the flagged robots' boxes in it
 
-    def take(vt: float, why: str) -> None:
+    def team_boxes(f: int, teams: set) -> list:
+        return [d["xyxy"] for d in by_f[f]["dets"] if str(d.get("team")) in teams]
+
+    def take(vt: float, why: str, teams: set | None = None) -> None:
+        # WITH A ROBOT OF INTEREST, only frames where its route claims a detection are
+        # worth asking about: a frame without that robot cannot confirm or falsify its
+        # route. Largest box first -- the most legible look at the claim. Widen once
+        # before giving up, and say so when the robot is not in view at all.
+        if teams:
+            for radius in (FOLLOWUP_SNAP_S, 2 * FOLLOWUP_SNAP_S):
+                cands = []
+                for t, f, _n in busy:
+                    if abs(t - vt) <= radius:
+                        bx = team_boxes(f, teams)
+                        if bx:
+                            area = max((b[2] - b[0]) * (b[3] - b[1]) for b in bx)
+                            cands.append((area, -abs(t - vt), t, f))
+                if cands:
+                    _a, _d, t, f = max(cands)
+                    if all(abs(t - c[0]) > FOLLOWUP_SNAP_S for c in chosen):
+                        chosen.append((t, f, why))
+                        focus_boxes[f] = team_boxes(f, teams)
+                    return
+            why += f" -- {'/'.join(sorted(teams))} not in view"
         near = [b for b in busy if abs(b[0] - vt) <= FOLLOWUP_SNAP_S and b[2] >= 1]
         if not near:
             return
@@ -935,8 +967,16 @@ def _followup_frames(key: str, times: list[float], gaps: int) -> tuple[list[int]
         if all(abs(t - c[0]) > FOLLOWUP_SNAP_S for c in chosen):
             chosen.append((t, f, why))
 
-    for t in times:
-        take(off + float(t), f"requested at {float(t):.1f}s")
+    for flag in times:
+        # a flag is {t, teams} from the app, or a bare time from an older app
+        t0 = float(flag["t"]) if isinstance(flag, dict) else float(flag)
+        teams = ({str(x) for x in flag.get("teams") or []} if isinstance(flag, dict) else set())
+        who = f" {'/'.join(sorted(teams))}" if teams else ""
+        for k in range(FOLLOWUP_PER_FLAG):
+            # evenly across the span, ends inset by the snap radius so both stay inside it
+            frac = k / max(FOLLOWUP_PER_FLAG - 1, 1)
+            dt = -FOLLOWUP_SPAN_S / 2 + FOLLOWUP_SNAP_S + frac * (FOLLOWUP_SPAN_S - 2 * FOLLOWUP_SNAP_S)
+            take(off + t0 + dt, f"requested{who} at {t0:.1f}s ({dt:+.0f}s)", teams or None)
 
     if gaps > 0:
         corr = C.TRACKER_ROOT / "corrections" / f"{key}_corrections.json"
@@ -958,9 +998,33 @@ def _followup_frames(key: str, times: list[float], gaps: int) -> tuple[list[int]
                 break
             take(mid, f"gap {team} {length:.0f}s")
 
-    chosen.sort()
-    return [f for _t, f, _w in chosen[:FOLLOWUP_MAX_FRAMES]], \
-           [w for _t, _f, w in chosen[:FOLLOWUP_MAX_FRAMES]]
+    # requested frames first when trimming to the cap, then in time order for the curator
+    chosen.sort(key=lambda c: (not c[2].startswith("requested"), c[0]))
+    chosen = sorted(chosen[:FOLLOWUP_MAX_FRAMES])
+    keep = {f for _t, f, _w in chosen}
+    return ([f for _t, f, _w in chosen], [w for _t, _f, w in chosen],
+            {f: b for f, b in focus_boxes.items() if f in keep})
+
+
+def _focus_tids(doc: dict, focus_boxes: dict) -> dict:
+    """Map the flagged robots' boxes (solver track space) onto the bundle's own track ids,
+    so the curation screen highlights and preselects them (its `focus`, as the clash
+    follow-up uses). Nearest box centre, in original video pixels."""
+    out = {}
+    for fr in doc.get("frames", []):
+        want = focus_boxes.get(fr["f"])
+        if not want:
+            continue
+        tids = []
+        for b in want:
+            cx, cy = (b[0] + b[2]) / 2, (b[1] + b[3]) / 2
+            best = min(fr["dets"], key=lambda d: (d["xy"][0] - cx) ** 2 + (d["xy"][1] - cy) ** 2,
+                       default=None)
+            if best and ((best["xy"][0] - cx) ** 2 + (best["xy"][1] - cy) ** 2) ** 0.5 <= 60:
+                tids.append(int(best["tid"]))
+        if tids:
+            out[str(fr["f"])] = tids
+    return out
 
 
 def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
@@ -968,12 +1032,13 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     key = job.get("match")
     if not key:
         raise RuntimeError("followup job names no match")
-    times = [float(t) for t in (job.get("times") or [])]
+    # {t, teams} flags from the app; bare `times` from an app older than flags-with-teams
+    flags = job.get("flags") or [float(t) for t in (job.get("times") or [])]
     gaps = max(0, min(int(job.get("gaps") or 0), FOLLOWUP_MAX_FRAMES))
-    if not times and not gaps:
+    if not flags and not gaps:
         raise RuntimeError("followup job has no moments and no gap frames to ask about")
     report(f"follow-up {key}: choosing frames", 0, 2)
-    frames, why = _followup_frames(key, times, gaps)
+    frames, why, focus_boxes = _followup_frames(key, flags, gaps)
     if not frames:
         raise RuntimeError(f"none of the requested moments in {key} shows a tracked robot")
     from . import curate as CU
@@ -988,8 +1053,11 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
                           frame_w=800, frame_q=45, calib_stem=job.get("calibFrom") or event,
                           legible=False, guess_p=C.STAGE3_DIR / f"{key}_labeled.jsonl",
                           window=False)
+    # The flagged robot's box in each frame is highlighted and selected first in the
+    # curation screen, so the curator starts from the claim being tested.
+    doc["focus"] = _focus_tids(doc, focus_boxes)
     doc["followup"] = {"round": "followup", "reasons": why,
-                       "requestedAt": job.get("requestedAt"), "times": times, "gaps": gaps}
+                       "requestedAt": job.get("requestedAt"), "flags": flags, "gaps": gaps}
     out = C.STAGE3_DIR / f"{key}_followup_frames.json"
     out.write_text(json.dumps(doc), encoding="utf-8")
     rc, tail = _run_logged([PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(out)],
