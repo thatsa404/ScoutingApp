@@ -10307,6 +10307,17 @@ function renderRelayControl(hostId, relay, items) {
     };
 }
 
+let _tracksBySpeed = false;
+window.toggleTracksBySpeed = () => { _tracksBySpeed = !_tracksBySpeed; renderTracksTab(); };
+
+// Open the route inspector for a match straight from the Tracks table, at a given
+// moment (the Max speed cell passes its time) or from the start.
+window.inspectMatchAt = async (matchKey, t) => {
+    const doc = await loadMatchTracks(matchKey);
+    if (!doc) return;
+    window.openRouteInspector(doc, matchKey, { tNow: t });
+};
+
 async function renderTracksTab() {
     const host = document.getElementById('tools-tab-tracks');
     if (!host) return;
@@ -10411,7 +10422,10 @@ async function renderTracksTab() {
                 // commit rather than being masked by it.
                 exportedAt: Math.max(p?.exportedAt ? Date.parse(p.exportedAt) : 0,
                                      rt?.at || 0) || null,
-                custody: p?.meanCustody ?? null,
+                custody: p?.meanCustody ?? rt?.meanCustody ?? null,
+                // Fastest 1 s speed any route implies ({mps, team, t, acrossGap}), from
+                // the manifest or, for a live route, the relay index.
+                maxSpeed: p?.maxSpeed ?? rt?.maxSpeed ?? null,
                 bundle: onRelay.get(`bundle:${k}`) || null,
                 answer: onRelay.get(`answer:${k}`) || null,
                 calib: onRelay.get(`calib:${k}`) || null,
@@ -10420,6 +10434,9 @@ async function renderTracksTab() {
             };
         })
         .sort((a, b) => a.key.localeCompare(b.key, undefined, { numeric: true }));
+    // Rank by fastest implied speed on request: the matches most likely to hold a swap
+    // between robots far apart come first. Clicking the column header toggles it.
+    if (_tracksBySpeed) rows.sort((a, b) => (b.maxSpeed?.mps ?? -1) - (a.maxSpeed?.mps ?? -1));
 
     if (!rows.length) {
         body.innerHTML = `<p>No matches for ${eventKey || 'any event'} yet.
@@ -10514,8 +10531,10 @@ async function renderTracksTab() {
         <tr style="color:#64748b;text-align:left;">
           <th style="padding:6px 4px;">Match</th>
           <th style="padding:6px 4px;">State</th>
-          <th style="padding:6px 4px;">Same-color reviewed</th>
-          <th style="padding:6px 4px;">Custody</th>
+          <th style="padding:6px 4px;" title="Share of the match each robot was tracked, averaged">Custody</th>
+          <th style="padding:6px 4px;cursor:pointer;white-space:nowrap;" onclick="toggleTracksBySpeed()"
+              title="Fastest 1 s average speed any route implies. Above ${INSPECT_FAST} m/s no FRC robot sustains -- usually an identity swap between robots far apart. Click to rank matches by it.">
+            Max speed ${_tracksBySpeed ? '▼' : '⇅'}</th>
           <th style="padding:6px 4px;text-align:right;">Actions</th>
         </tr>
         ${(() => { const detectedSet = agentDetectedSet(eventKey); return rows.map(r => {
@@ -10573,21 +10592,24 @@ async function renderTracksTab() {
                 : ev === 'legacy-gallery'
                     ? `<span title="Solved with the per-event centroid gallery" style="color:#60a5fa;font-size:0.82em;">event gallery</span>`
                     : `<span title="No appearance evidence was available; identity came from curator anchors only. The route is usable but weaker than a gallery-backed solve." style="color:#fbbf24;font-size:0.82em;">anchors only</span>`;
-            const models = r.total
-                ? `<span title="Teams with reviewed gallery evidence from this alliance color" style="color:${r.sameAllianceReviewed === r.total ? '#22c55e' : r.sameAllianceReviewed ? '#f59e0b' : '#64748b'};">
-                     ${r.sameAllianceReviewed}/${r.total}</span>`
-                : '—';
+            const ms = r.maxSpeed;
+            const speed = ms && ms.mps != null
+                ? `<a href="#" onclick="inspectMatchAt('${r.key}', ${Number(ms.t) || 0});return false;"
+                      title="${galleryEsc(ms.team)} at ${ms.t} s${ms.acrossGap ? ', across a gap the tracker could not see' : ''} -- open the inspector there"
+                      style="text-decoration:none;color:${ms.mps >= INSPECT_FAST ? '#f87171' : ms.mps >= 3.5 ? '#fbbf24' : '#94a3b8'};font-weight:${ms.mps >= INSPECT_FAST ? 700 : 400};">
+                      ${ms.mps.toFixed(1)} m/s</a>
+                   <div style="font-size:0.78em;color:#64748b;">${galleryEsc(ms.team)} @ ${Number(ms.t).toFixed(0)}s${ms.acrossGap ? ' · gap' : ''}</div>`
+                : '<span style="color:#475569;">—</span>';
+            // Camera tools (Calibrate, Occluders) live in the Cameras section only: every
+            // id with a calib frame is listed there, and repeating them per match made
+            // every row twice as wide for a once-per-camera job.
+            const link = (txt, js) => `<a href="#" onclick="${js};return false;"
+                 style="display:inline-block;padding:4px 9px;border-radius:6px;font-size:0.78em;
+                 text-decoration:none;border:1px solid #334155;color:#94a3b8;">${txt}</a>`;
             const acts = [
                 r.bundle ? act('Curate', q('curate', 'match', r.key), outstanding) : '',
-                r.calib ? act('Calibrate', q('calibrate', 'video', r.key), !r.bundle) : '',
-                // OCCLUDERS, gated on the same calib frame Calibrate uses -- the page
-                // pulls that frame to draw on, so without one there is nothing to show.
-                // Never primary: occluders are drawn ONCE PER CAMERA, not per match, so
-                // a prominent button on every row would misrepresent the job as routine.
-                r.calib ? act('Occluders', q('occluders', 'video', r.key), false) : '',
-                r.published ? `<a href="#" onclick="viewMatchDetail('${r.key}');return false;"
-                     style="display:inline-block;padding:5px 10px;border-radius:6px;font-size:0.78em;
-                     text-decoration:none;border:1px solid #334155;color:#94a3b8;">Routes</a>` : '',
+                r.published ? link('Routes', `viewMatchDetail('${r.key}')`) : '',
+                r.published ? link('Inspect', `inspectMatchAt('${r.key}', null)`) : '',
             ].filter(Boolean).join(' ');
             // Show the event prefix whenever more than one event is on screen. Two
             // different matches can share a suffix -- 2026necmp_f1m2 and
@@ -10597,10 +10619,10 @@ async function renderTracksTab() {
             const label = multiEvent ? r.key : r.key.replace(/^[^_]+_/, '');
             return `<tr style="border-top:1px solid #1e293b;">
               <td style="padding:7px 4px;font-weight:600;">${label}</td>
-              <td style="padding:7px 4px;">${state}${evidence ? ' ' + evidence : ''}</td>
-              <td style="padding:7px 4px;">${models}</td>
+              <td style="padding:7px 4px;">${state}${evidence ? '<div style="margin-top:2px;">' + evidence + '</div>' : ''}</td>
               <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
-              <td style="padding:7px 4px;text-align:right;white-space:nowrap;">${acts || '<span style="color:#475569;">—</span>'}</td>
+              <td style="padding:7px 4px;">${speed}</td>
+              <td style="padding:7px 4px;text-align:right;"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">${acts || '<span style="color:#475569;">—</span>'}</div></td>
             </tr>`;
         }).join(''); })()}
       </table></details>
@@ -10621,9 +10643,11 @@ async function renderTracksTab() {
         then a device that never fetched them will not find them after the relay entry
         expires.
         <br><br>
-        <b>Same-color reviewed</b> is how many of the match's six teams have reviewed gallery evidence
-        from the same alliance color they occupy in this match. For example, 3/6 means
-        three teams have same-color reviewed evidence available.
+        <b>Max speed</b> is the fastest 1 s average speed any robot's route implies, with
+        gaps filled in straight lines. Above ${INSPECT_FAST} m/s is faster than FRC robots
+        move -- usually two robots' identities swapped while far apart. Click it to open the
+        route inspector at that moment; click the column header to rank matches by it. A
+        swap between robots side by side leaves no spike, so a low number is not a clean bill.
       </p>`;
     body.querySelectorAll('details[data-rtrack-section]').forEach(section => {
         const key = `rtrackSection:${section.dataset.rtrackSection}`;

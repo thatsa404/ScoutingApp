@@ -87,6 +87,49 @@ def _route_jump_gaps(samples: list[dict]) -> list[dict]:
     return gaps
 
 
+SPEED_WIN_S = 1.0     # the app's route inspector: speed = displacement over 1 s
+SPEED_STEP_S = 0.2
+SPEED_GAP_S = 0.45    # samples further apart than this bracket an unseen stretch
+
+
+def max_speed(robots: list[dict]) -> dict | None:
+    """The fastest 1 s average speed any robot's route implies, and whose and when.
+
+    Same method as the app's route inspector (main.js inspectSeries): positions filled
+    LINEARLY across gaps, so a route that vanishes at one spot and reappears at another
+    still has a speed -- the speed a swap there would have required. Shipped with the
+    route (and in the manifest and relay index) so the Tracks table can rank matches by
+    it without downloading every route.
+    """
+    import bisect
+    best = None
+    for r in robots:
+        S = sorted(r.get("samples") or [], key=lambda s: s["t"])
+        if len(S) < 2:
+            continue
+        T = [s["t"] for s in S]
+
+        def pos(t):
+            if t < T[0] or t > T[-1]:
+                return None
+            k = max(0, bisect.bisect_right(T, t) - 1)
+            a, b = S[k], S[min(k + 1, len(S) - 1)]
+            span = b["t"] - a["t"]
+            f = (t - a["t"]) / span if span > 0 else 0.0
+            return a["x"] + (b["x"] - a["x"]) * f, a["y"] + (b["y"] - a["y"]) * f, span > SPEED_GAP_S
+
+        t = T[0] + SPEED_WIN_S / 2
+        while t <= T[-1] - SPEED_WIN_S / 2:
+            p, q = pos(t - SPEED_WIN_S / 2), pos(t + SPEED_WIN_S / 2)
+            if p and q:
+                v = ((q[0] - p[0]) ** 2 + (q[1] - p[1]) ** 2) ** 0.5 / SPEED_WIN_S
+                if best is None or v > best["mps"]:
+                    best = {"mps": round(v, 2), "team": str(r["team"]), "t": round(t, 1),
+                            "acrossGap": bool(p[2] or q[2])}
+            t += SPEED_STEP_S
+    return best
+
+
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
           calib_stem: str | None = None, allow_stale: bool = False,
           allow_unsafe_calibration: bool = False,
@@ -424,6 +467,9 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "meanCustody": round(
                 sum(r["custody"] for r in out_robots) / max(len(out_robots), 1), 4),
             "custodyConflicts": len(robots_doc.get("custodyConflicts") or []),
+            # Highest 1 s average speed on any route: a cheap "look here" signal for
+            # identity swaps between robots far apart (see max_speed).
+            "maxSpeed": max_speed(out_robots),
             # What rtrack.route_clean changed, so a route is never silently different
             # from the solver's answer. {"applied": false} unless run with --clean.
             "cleaning": ({"applied": True, **clean_stats} if clean_routes
@@ -592,6 +638,8 @@ def write_manifest(tracks_dir: Path) -> int:
                 "identityEvidence": ((q.get("identity") or {}).get("evidence")
                                      or "anchors-only"),
                 "meanCustody": q.get("meanCustody"),
+                # computed here when the route predates it, so no re-export is needed
+                "maxSpeed": q.get("maxSpeed") or max_speed(d.get("robots") or []),
                 "bytes": p.stat().st_size,
                 # When this export was produced, so a consumer can tell a FINISHED
                 # match from one whose curator answers arrived after it was last built.

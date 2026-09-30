@@ -416,6 +416,11 @@ export default {
         matches: storedPayload.matches ?? null,
         count: storedPayload.count ?? null,
         cancelled: storedPayload.cancelled === true ? true : null,
+      } : kind === 'tracks' ? {
+        // So the Tracks table can rank live routes by their fastest implied speed (a
+        // swap between robots far apart) without downloading every route document.
+        maxSpeed: storedPayload.quality?.maxSpeed ?? null,
+        meanCustody: storedPayload.quality?.meanCustody ?? null,
       } : {};
       await touchIndex(env, kind, id, { bytes: storedBody.length, at,
                                         ...reviewMeta, ...agentMeta });
