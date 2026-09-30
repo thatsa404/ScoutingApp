@@ -2055,12 +2055,6 @@ async function renderMatchTracks(matchKey) {
         }
     };
 
-    // FOLLOW-UP CURATION. Measured on 2026necmp1, no automatic signal located the errors
-    // left after curation well, so the detector is a person watching this view: scrub to
-    // where a route looks wrong, flag it, and ask the home machine for a small bundle of
-    // those moments. Flags live in this browser until the request is sent.
-    if (relayUrl()) mountFollowupFlags(host, matchKey, () => (tNow >= tMax ? null : tNow), setT);
-
     // The img may already be cached (complete) or still loading — handle both, exactly
     // as initFieldTab does for the drawing canvas.
     if (img.complete && img.naturalWidth) resize();
@@ -11117,9 +11111,8 @@ window.openRoutesFull = function (doc, opts = {}) {
         b.onclick = () => {
             const t = b.dataset.team;
             if (shown.has(t)) shown.delete(t); else shown.add(t);
-            // Hiding everything leaves a blank field and reads as broken; treat the
-            // last deselection as "show all again", which is what the click meant.
-            if (!shown.size) shown = new Set(all);
+            // Hiding every team shows an empty field: that is a legitimate view (to
+            // then add robots back one at a time), not a mistake to undo.
             syncTeams(); paint();
         };
     });
@@ -11257,6 +11250,7 @@ let _inspect = null;
 
 function closeRouteInspector() {
     if (!_inspect) return;
+    _inspect.stop?.();
     try { _inspect.chart?.destroy(); } catch { /* already gone */ }
     window.removeEventListener('resize', _inspect.onResize);
     document.removeEventListener('keydown', _inspect.onKey);
@@ -11294,6 +11288,10 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
           <canvas id="riStrip" style="display:block;width:100%;margin-top:4px;"></canvas>
           <div style="font-size:11px;color:#64748b;margin-top:3px;">
             Coverage per robot: solid = tracked, faded = filled across a gap, red tick = route break. Click the chart or strip to move to that moment.
+          </div>
+          <div style="display:flex;gap:10px;align-items:center;margin-top:8px;">
+            <button id="riPlay" style="${btn}">▶</button>
+            <input type="range" id="riScrub" min="0" max="1000" value="0" style="flex:1;">
           </div>
         </div>
         <div style="flex:1 1 300px;min-width:260px;">
@@ -11396,13 +11394,35 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         if (!_trackSizeCanvas(img, fieldCv)) return;
         renderFieldRoutes(fieldCv, doc, { teams: shown, tNow, trailOnly: true, dots: true });
     };
+    const span = Math.max(series.tMax - series.tMin, 1e-6);
     function setT(t) {
         tNow = Math.max(series.tMin, Math.min(series.tMax, t));
         el.querySelector('#riClock').textContent = `${tNow.toFixed(1)} s`;
+        el.querySelector('#riScrub').value = String(Math.round((tNow - series.tMin) / span * 1000));
         chart.update('none'); drawStrip(); paintField();
     }
     el.querySelector('#riBack').onclick = () => setT(tNow - 1);
     el.querySelector('#riFwd').onclick = () => setT(tNow + 1);
+
+    // The slider and play, as in the match view: scrubbing is how a person watches a
+    // route unfold, and the chart click is for jumping, not for following.
+    let playing = false, raf = 0;
+    const playBtn = el.querySelector('#riPlay');
+    const stop = () => { playing = false; cancelAnimationFrame(raf); playBtn.textContent = '▶'; };
+    el.querySelector('#riScrub').oninput = (e) => { stop(); setT(series.tMin + (e.target.value / 1000) * span); };
+    const step = (last) => {
+        if (!playing) return;
+        const now = performance.now();
+        setT(tNow + (now - last) / 1000);
+        if (tNow >= series.tMax) { stop(); return; }
+        raf = requestAnimationFrame(() => step(now));
+    };
+    playBtn.onclick = () => {
+        if (playing) { stop(); return; }
+        playing = true; playBtn.textContent = '❚❚';
+        if (tNow >= series.tMax) setT(series.tMin);
+        raf = requestAnimationFrame(() => step(performance.now()));
+    };
 
     el.querySelector('#riTeams').innerHTML = series.robots.map(r =>
         `<button data-team="${r.team}" style="padding:4px 10px;font-size:12px;border-radius:999px;cursor:pointer;border:1px solid ${r.colour};background:transparent;color:${r.colour};">${r.team}</button>`).join('');
@@ -11414,8 +11434,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     el.querySelectorAll('#riTeams button').forEach(b => b.onclick = () => {
         const t = b.dataset.team;
         if (shown.has(t)) shown.delete(t); else shown.add(t);
-        if (!shown.size) shown = new Set(all);
-        syncTeams();
+        syncTeams();       // none shown is allowed: an empty field and the average line
     });
 
     const sus = inspectSuspects(series).slice(0, 15);
@@ -11430,7 +11449,10 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         e.preventDefault(); setT(sus[+a.dataset.i].tPeak);
     });
 
-    // Flag and request, the same list and job as the match view's controls.
+    // FOLLOW-UP CURATION lives here, where the evidence for a flag is on screen. Measured
+    // on 2026necmp1, no automatic signal located the errors left after curation well, so
+    // the detector is a person: find where a route looks wrong, flag it, and ask the home
+    // machine for a small bundle of those moments. Flags stay in this browser until sent.
     if (key && relayUrl()) mountFollowupFlags(el.querySelector('#riFollow'), key, () => tNow, setT);
 
     const onResize = () => { drawStrip(); paintField(); };
@@ -11441,7 +11463,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     };
     window.addEventListener('resize', onResize);
     document.addEventListener('keydown', onKey);
-    _inspect = { el, chart, onResize, onKey };
+    _inspect = { el, chart, onResize, onKey, stop };
     if (img.complete && img.naturalWidth) setT(tNow);
     else img.addEventListener('load', () => setT(tNow), { once: true });
     requestAnimationFrame(() => setT(tNow));
