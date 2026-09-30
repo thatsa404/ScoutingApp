@@ -918,7 +918,8 @@ FOLLOWUP_SNAP_S = 1.0        # a requested moment snaps to the busiest frame thi
 # which is rarely the exact moment it went wrong -- and a swap is fixed by labels on
 # BOTH sides of it: pin inheritance (rtrack.robots.inherit_sandwich_pins) then carries
 # the team across the pieces in between. So a flag asks about the start, middle and end
-# of the same +-5 s window the route inspector draws around its slider.
+# of +-5 s around it -- wider than the 5 s leading up to the slider that the route
+# inspector draws, because the labels must also land AFTER whatever went wrong.
 FOLLOWUP_SPAN_S = 10.0
 FOLLOWUP_PER_FLAG = 3
 

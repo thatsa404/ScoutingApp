@@ -11192,7 +11192,7 @@ const INSPECT_DT = 0.2;      // resample step (s): the export's 5 Hz
 const INSPECT_WIN = 1.0;     // speed = displacement over this window, the "average"
 const INSPECT_GAP = 0.45;    // samples further apart than this bracket an unseen stretch
 const INSPECT_FAST = 4.5;    // m/s: above what FRC drivetrains sustain; worth a look
-const INSPECT_FIELD_S = 5;   // the field shows the slider time +- this many seconds
+const INSPECT_FIELD_S = 5;   // the field shows this many seconds up to the slider time
 
 function _alpha(colour, a) {
     const m = /^#([0-9a-f]{6})$/i.exec(String(colour || ''));
@@ -11297,6 +11297,14 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
       <div id="riTeams" style="display:flex;gap:6px;flex-wrap:wrap;"></div>
       <div style="display:flex;gap:12px;flex-wrap:wrap;align-items:flex-start;">
         <div style="flex:2 1 520px;min-width:0;">
+          <div style="display:flex;gap:6px;align-items:center;margin-bottom:4px;flex-wrap:wrap;">
+            <span style="font-size:11px;color:#64748b;">Time zoom</span>
+            <button id="riZoomOut" style="${btn}" title="Show more of the match">−</button>
+            <button id="riZoomIn" style="${btn}" title="Show less of the match, around the slider">+</button>
+            <button id="riZoomAll" style="${btn}">Whole match</button>
+            <span id="riZoomLbl" style="font-size:11px;color:#94a3b8;"></span>
+            <span style="font-size:11px;color:#64748b;">· scroll on the chart or strip to zoom there</span>
+          </div>
           <div style="position:relative;height:280px;"><canvas id="riChart"></canvas></div>
           <canvas id="riStrip" style="display:block;width:100%;margin-top:4px;"></canvas>
           <div style="font-size:11px;color:#64748b;margin-top:3px;">
@@ -11382,41 +11390,80 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         const rows = series.robots.filter(r => shown.has(r.team));
         strip.width = W; strip.height = rows.length * rowH + 2;
         const g = strip.getContext('2d'); g.clearRect(0, 0, W, strip.height);
-        const px = (t) => a.left + (t - series.tMin) / Math.max(series.tMax - series.tMin, 1e-6) * (a.right - a.left);
-        const w = Math.max(1, (a.right - a.left) * INSPECT_DT / Math.max(series.tMax - series.tMin, 1e-6) + 0.5);
+        const px = (t) => a.left + (t - vLo) / Math.max(vHi - vLo, 1e-6) * (a.right - a.left);
+        const w = Math.max(1, (a.right - a.left) * INSPECT_DT / Math.max(vHi - vLo, 1e-6) + 0.5);
         rows.forEach((r, i) => {
             const y = i * rowH + 1;
             g.fillStyle = '#94a3b8'; g.font = '9px sans-serif'; g.textAlign = 'right';
             g.fillText(r.team, a.left - 4, y + 8);
             series.grid.forEach((t, k) => {
-                const s = r.seen[k]; if (!s) return;
+                const s = r.seen[k]; if (!s || t < vLo || t > vHi) return;
                 g.fillStyle = s === 'seen' ? r.colour : _alpha(r.colour, 0.25);
                 g.fillRect(px(t), y, w, rowH - 2);
             });
             g.fillStyle = '#f87171';
-            for (const b of r.breaks) g.fillRect(px(b.tStart) - 1, y - 1, 2, rowH);
+            for (const b of r.breaks) if (b.tStart >= vLo && b.tStart <= vHi) g.fillRect(px(b.tStart) - 1, y - 1, 2, rowH);
         });
         const x = px(tNow); g.fillStyle = '#fbbf24'; g.fillRect(x - 0.75, 0, 1.5, strip.height);
     };
-    strip.onclick = (e) => {
+    const stripTime = (e) => {
         const a = chart.chartArea, r = strip.getBoundingClientRect();
-        setT(series.tMin + ((e.clientX - r.left) - a.left) / (a.right - a.left) * (series.tMax - series.tMin));
+        return vLo + ((e.clientX - r.left) - a.left) / (a.right - a.left) * (vHi - vLo);
     };
+    strip.onclick = (e) => setT(stripTime(e));
 
-    // Only the moment in question: the slider time +- INSPECT_FIELD_S. The whole match
-    // up to now is spaghetti when the question is "what happened HERE"; ten seconds is
-    // enough to see where each robot came from and went, and matches what a flag asks
-    // a curator about (see the follow-up job).
+    // HORIZONTAL ZOOM, shared by the chart and the strip. The slider keeps the whole
+    // match; the plots show [vLo, vHi], following the slider when it leaves the view.
+    const ZOOM_MIN_S = 5;
+    let vLo = series.tMin, vHi = series.tMax;
+    const syncScrub = () => {
+        el.querySelector('#riScrub').value =
+            String(Math.round((tNow - vLo) / Math.max(vHi - vLo, 1e-6) * 1000));
+    };
+    const applyView = () => {
+        chart.options.scales.x.min = vLo; chart.options.scales.x.max = vHi;
+        syncScrub();
+        const whole = vLo <= series.tMin + 1e-6 && vHi >= series.tMax - 1e-6;
+        el.querySelector('#riZoomLbl').textContent = whole ? 'whole match'
+            : `${vLo.toFixed(0)}–${vHi.toFixed(0)} s (${(vHi - vLo).toFixed(0)} s shown)`;
+    };
+    const setView = (lo, hi) => {
+        const full = series.tMax - series.tMin, w = Math.min(Math.max(hi - lo, ZOOM_MIN_S), full);
+        lo = Math.max(series.tMin, Math.min(lo, series.tMax - w));
+        vLo = lo; vHi = lo + w; applyView(); chart.update('none'); drawStrip();
+    };
+    // zoom by k (<1 in, >1 out) keeping time tc at the same place on screen
+    const zoomAround = (tc, k) => {
+        const w = (vHi - vLo) * k, f = (tc - vLo) / Math.max(vHi - vLo, 1e-6);
+        setView(tc - f * w, tc - f * w + w);
+    };
+    el.querySelector('#riZoomIn').onclick = () => zoomAround(tNow, 0.5);
+    el.querySelector('#riZoomOut').onclick = () => zoomAround(tNow, 2);
+    el.querySelector('#riZoomAll').onclick = () => setView(series.tMin, series.tMax);
+    const wheel = (timeAt) => (e) => {
+        e.preventDefault();
+        zoomAround(timeAt(e), e.deltaY < 0 ? 0.8 : 1.25);
+    };
+    el.querySelector('#riChart').addEventListener('wheel',
+        wheel(e => chart.scales.x.getValueForPixel(e.offsetX)), { passive: false });
+    strip.addEventListener('wheel', wheel(stripTime), { passive: false });
+
+    // Only the moment in question: the INSPECT_FIELD_S leading up to the slider time,
+    // ending at the robots' dots. The whole match is spaghetti when the question is
+    // "what happened HERE", and where each robot came FROM is what shows a jump.
     const paintField = () => {
         if (!_trackSizeCanvas(img, fieldCv)) return;
-        renderFieldRoutes(fieldCv, doc, { teams: shown, tNow, trailOnly: false, dots: true,
-                                          tMin: tNow - INSPECT_FIELD_S, tMax: tNow + INSPECT_FIELD_S });
+        renderFieldRoutes(fieldCv, doc, { teams: shown, tNow, trailOnly: true, dots: true,
+                                          tMin: tNow - INSPECT_FIELD_S, tMax: tNow });
     };
-    const span = Math.max(series.tMax - series.tMin, 1e-6);
     function setT(t) {
         tNow = Math.max(series.tMin, Math.min(series.tMax, t));
         el.querySelector('#riClock').textContent = `${tNow.toFixed(1)} s`;
-        el.querySelector('#riScrub').value = String(Math.round((tNow - series.tMin) / span * 1000));
+        if (tNow < vLo || tNow > vHi) {                 // follow the slider out of a zoom
+            const w = vHi - vLo; vLo = Math.max(series.tMin, Math.min(tNow - w / 2, series.tMax - w)); vHi = vLo + w;
+            applyView();
+        }
+        syncScrub();
         chart.update('none'); drawStrip(); paintField();
     }
     el.querySelector('#riBack').onclick = () => setT(tNow - 1);
@@ -11427,7 +11474,9 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     let playing = false, raf = 0;
     const playBtn = el.querySelector('#riPlay');
     const stop = () => { playing = false; cancelAnimationFrame(raf); playBtn.textContent = '▶'; };
-    el.querySelector('#riScrub').oninput = (e) => { stop(); setT(series.tMin + (e.target.value / 1000) * span); };
+    // The slider spans the ZOOMED range, not the whole match: zooming in is how to get
+    // finer control of it. "Whole match" restores the full range.
+    el.querySelector('#riScrub').oninput = (e) => { stop(); setT(vLo + (e.target.value / 1000) * (vHi - vLo)); };
     const step = (last) => {
         if (!playing) return;
         const now = performance.now();
