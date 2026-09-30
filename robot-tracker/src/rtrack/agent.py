@@ -57,6 +57,7 @@ import os
 import platform
 import re
 from collections import defaultdict, deque
+import math
 import socket
 import subprocess
 import sys
@@ -922,6 +923,8 @@ FOLLOWUP_SNAP_S = 1.0        # a requested moment snaps to the busiest frame thi
 # inspector draws, because the labels must also land AFTER whatever went wrong.
 FOLLOWUP_SPAN_S = 10.0
 FOLLOWUP_PER_FLAG = 3
+JUMP_MIN_MS = 4.5            # the inspector's "fast" line; slower steps are not a jump
+JUMP_PAIR_S = 0.5            # ends closer than this are one moment: show one frame
 
 
 def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[str], dict]:
@@ -968,11 +971,61 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
         if all(abs(t - c[0]) > FOLLOWUP_SNAP_S for c in chosen):
             chosen.append((t, f, why))
 
+    # THE JUMP ITSELF, not just the span around it. 2026necmp1_qm6: 5813's route jumps
+    # 9.6 m at 135.4 s because ONE stray box (frame 5172) was pinned to it. The anchors
+    # each took 5813's largest box and so showed only its correct detections; the one
+    # wrong box was never asked about, and the re-curation changed nothing. So for each
+    # flagged team, the fastest step of its route within the span contributes the frames
+    # at both ends -- the frame holding the suspect box is the one a label can falsify.
+    pp = C.STAGE2_DIR / f"{key}_positions.json"
+    track_pos: dict[str, list] = defaultdict(list)
+    if pp.exists():
+        seen_f = set()
+        for s in json.loads(pp.read_text(encoding="utf-8")).get("samples") or []:
+            if s.get("team") and (s["team"], s["f"]) not in seen_f:
+                seen_f.add((s["team"], s["f"]))
+                track_pos[str(s["team"])].append((s["t"], s["f"], s["x"], s["y"], s["tid"]))
+        for v in track_pos.values():
+            v.sort()
+
+    def jump_frames(vt: float, team: str) -> list[tuple[float, int, float, float]]:
+        v = [p for p in track_pos.get(team, []) if abs(p[0] - vt) <= FOLLOWUP_SPAN_S / 2]
+        best = None
+        for a, b in zip(v, v[1:]):
+            dt = b[0] - a[0]
+            if dt <= 0 or dt > FOLLOWUP_SPAN_S / 2:
+                continue
+            d = math.hypot(b[2] - a[2], b[3] - a[3])
+            if d / max(dt, 0.2) >= JUMP_MIN_MS and (best is None or d / dt > best[0]):
+                best = (d / dt, d, a, b)
+        if best is None:
+            return []
+        _v, d, a, b = best
+        if b[0] - a[0] > JUMP_PAIR_S:
+            ends = [a, b]
+        else:
+            # Both ends in one moment: show the more ISOLATED end -- the one with the
+            # longer silence on its far side -- which is the likelier stray. (Not the
+            # shorter track: on qm6 the stray is the tail of a long piece, after a 3.4 s
+            # gap.) Its frame usually carries the other end's robot as well.
+            full = track_pos[team]
+            i = full.index(a)
+            before = a[0] - full[i - 1][0] if i > 0 else 0.0
+            after = full[i + 2][0] - b[0] if i + 2 < len(full) else 0.0
+            ends = [a if before >= after else b]
+        return [(p[0], p[1], d, b[0] - a[0]) for p in ends]
+
     for flag in times:
         # a flag is {t, teams} from the app, or a bare time from an older app
         t0 = float(flag["t"]) if isinstance(flag, dict) else float(flag)
         teams = ({str(x) for x in flag.get("teams") or []} if isinstance(flag, dict) else set())
         who = f" {'/'.join(sorted(teams))}" if teams else ""
+        for team in sorted(teams):
+            for t, f, d, dt in jump_frames(off + t0, team):
+                if all(c[1] != f for c in chosen):
+                    chosen.append((t, f, f"requested {team} jump {d:.1f} m in {dt:.1f}s "
+                                         f"at {t - off:.1f}s"))
+                    focus_boxes[f] = team_boxes(f, teams)
         for k in range(FOLLOWUP_PER_FLAG):
             # evenly across the span, ends inset by the snap radius so both stay inside it
             frac = k / max(FOLLOWUP_PER_FLAG - 1, 1)

@@ -1168,6 +1168,40 @@ def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12,
     return _apply_cuts(rows, cuts)
 
 
+LABEL_GAP_S = 2.0   # an unobserved stretch this long ends what a label can vouch for
+
+
+def label_gap_cuts(rows, resolved: list[dict], gap_s: float = LABEL_GAP_S
+                   ) -> dict[int, list[float]]:
+    """Cut points (mid-gap) in every curator-labelled piece that goes unobserved for
+    longer than `gap_s`.
+
+    A pin covers its whole piece, and a piece can run through seconds in which the
+    tracker saw nothing -- long enough to come back on a different robot.
+    2026necmp1_qm6: piece 92 is 5813 at 130.5 s, unobserved 132.0-135.4 s, then one box
+    on 3146 at 135.4 s. The 130.5 s label pinned that box too and drew a 9.6 m jump in
+    5813's route, and no label elsewhere could undo it. After the cut, a side with its
+    own label is pinned again and a side without one goes to the solver (and to pin
+    inheritance, which bridges it only when colour and kinematics allow).
+
+    Unlabelled pieces are left alone: the solver already prices their gaps, and cutting
+    them only spreads their votes thinner.
+    """
+    labelled = {r["tid"] for r in resolved if r["ok"]}
+    ts: dict[int, list[float]] = defaultdict(list)
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] in labelled:
+                ts[d["tid"]].append(r["t"])
+    cuts: dict[int, list[float]] = {}
+    for tid, v in ts.items():
+        v = sorted(set(v))
+        for a, b in zip(v, v[1:]):
+            if b - a > gap_s:
+                cuts.setdefault(tid, []).append((a + b) / 2.0)
+    return cuts
+
+
 def _apply_cuts(rows, cuts: dict[int, list[float]]):
     """Shared tail of every splitter: renumber later segments and report the mapping."""
     next_id = max((d["tid"] for r in rows for d in r["dets"]), default=0) + 1
@@ -2230,6 +2264,10 @@ def main(argv=None) -> int:
     #
     # Wall time varies with machine load (the same config measured 383 s and 513 s);
     # the quality column does not, because the solver is deterministic given a budget.
+    ap.add_argument("--label-gap", type=float, default=LABEL_GAP_S, metavar="S",
+                    help="cut a curator-labelled piece wherever it goes unobserved for "
+                         "longer than this, so a label cannot vouch for what came back "
+                         "after a blind spot (0 disables).")
     ap.add_argument("--time-limit", type=float, default=15.0, metavar="UNITS",
                     help="CP-SAT budget PER SOLVE, in DETERMINISTIC time units rather "
                          "than seconds -- it counts search work, so wall time varies "
@@ -2607,6 +2645,15 @@ def main(argv=None) -> int:
             rows, _n, orig_c2 = _apply_cuts(rows, cuts)
             ident = retally(ident, rows, orig_c2)
             resolved = CO.resolve(rows, doc["labels"])   # ids moved; re-resolve
+        # A label does not vouch across a blind spot: see label_gap_cuts.
+        if args.label_gap > 0:
+            gc = label_gap_cuts(rows, resolved, args.label_gap)
+            if gc:
+                rows, n_g, orig_g = _apply_cuts(rows, gc)
+                ident = retally(ident, rows, orig_g)
+                resolved = CO.resolve(rows, doc["labels"])
+                print(f"[corrections] {n_g} labelled piece(s) cut at an unobserved gap "
+                      f"over {args.label_gap:g}s")
         pinned, cflags = CO.pins_from(resolved)
         mixed = CO.dropped(cflags)
         CO.report(resolved, pinned, cflags, n_cuts)
