@@ -1030,7 +1030,13 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
             # EXACTLY THIS FRAME: the curator picked it in the route inspector, often to
             # re-review the very frame an old label sits on. No anchors, no jump search
             # -- the nearest processed frame, and nothing else for this flag.
-            t, f, _n = min(busy, key=lambda b: abs(b[0] - (off + t0)))
+            # A frame NUMBER (re-curating a labelled frame) is taken as given: snapping a
+            # time to the nearest frame picked f1922 for a label on f1920, two frames off
+            # the label it was meant to replace (2026necmp1_qm40).
+            if flag.get("f") is not None and int(flag["f"]) in by_f:
+                f = int(flag["f"]); t = by_f[f]["t"]
+            else:
+                t, f, _n = min(busy, key=lambda b: abs(b[0] - (off + t0)))
             if all(c[1] != f for c in chosen):
                 chosen.append((t, f, f"requested exact frame{who} at {t - off:.2f}s"))
                 if teams:
@@ -1100,6 +1106,23 @@ def _focus_tids(doc: dict, focus_boxes: dict) -> dict:
     return out
 
 
+def _waiting_followup(key: str) -> dict | None:
+    """The follow-up bundle for `key` still on the relay and not yet answered, as built
+    locally -- or None. Any doubt (relay unreachable, file unreadable) reads as none, so
+    a request is never blocked by this check, only at worst not merged."""
+    p = C.STAGE3_DIR / f"{key}_followup_frames.json"
+    if not p.exists():
+        return None
+    try:
+        bundles, answers = relay_bundle_state()
+        at = bundles.get(key)
+        if at is None or answers.get(key, 0.0) > at or not _is_followup(key, at):
+            return None
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:                                # noqa: BLE001
+        return None
+
+
 def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     """Build and push a follow-up bundle for one curated match."""
     key = job.get("match")
@@ -1114,6 +1137,24 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     frames, why, focus_boxes = _followup_frames(key, flags, gaps)
     if not frames:
         raise RuntimeError(f"none of the requested moments in {key} shows a tracked robot")
+    # ADD TO A WAITING FOLLOW-UP rather than replacing it. A match has one bundle slot on
+    # the relay, so a second request before the first was answered used to overwrite it:
+    # 2026necmp1_qm40 lost a 5-frame request to a 3-frame one sent three minutes later.
+    prev = _waiting_followup(key)
+    if prev:
+        old_f = [int(fr["f"]) for fr in prev.get("frames") or []]
+        old_why = (prev.get("followup") or {}).get("reasons") or [""] * len(old_f)
+        old_boxes = {int(k): v for k, v in
+                     ((prev.get("followup") or {}).get("focusBoxes") or {}).items()}
+        merged = {f: w for f, w in zip(old_f, old_why)}
+        for f, w in zip(frames, why):
+            merged.setdefault(f, w)
+        frames = sorted(merged)
+        why = [merged[f] for f in frames]
+        focus_boxes = {**old_boxes, **focus_boxes}
+        flags = list((prev.get("followup") or {}).get("flags") or []) + list(flags)
+        report(f"follow-up {key}: adding to the unanswered follow-up already waiting "
+               f"({len(old_f)} frame(s))", 0, 2)
     from . import curate as CU
     event = key.split("_")[0]
     st = C.STAGE1_DIR / f"{key}_tracks_stitched.jsonl"
@@ -1130,7 +1171,9 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     # curation screen, so the curator starts from the claim being tested.
     doc["focus"] = _focus_tids(doc, focus_boxes)
     doc["followup"] = {"round": "followup", "reasons": why,
-                       "requestedAt": job.get("requestedAt"), "flags": flags, "gaps": gaps}
+                       "requestedAt": job.get("requestedAt"), "flags": flags, "gaps": gaps,
+                       # solver-space boxes, so a later request can merge into this one
+                       "focusBoxes": {str(f): b for f, b in focus_boxes.items()}}
     out = C.STAGE3_DIR / f"{key}_followup_frames.json"
     out.write_text(json.dumps(doc), encoding="utf-8")
     rc, tail = _run_logged([PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(out)],

@@ -243,19 +243,33 @@ def merge_answer(existing: Path, new: dict) -> dict:
     # let a later reading of a robot retire an earlier, contradicting one nearby.
     merged = {key(l): ({**l, "round": 1} if l.get("round") is None else l)
               for l in old.get("labels") or []}
+    # A RE-REVIEWED FRAME IS REPLACED WHOLE. The curation page returns every box of a
+    # frame it showed -- the curator's answers plus the pre-filled guesses left standing,
+    # which are the solver's current answer and so the old label wherever one pinned it.
+    # Any older label on that frame that the new answer does not repeat is therefore one
+    # the curator was shown and did not keep. Retired, not deleted: `retired` keeps them
+    # with the round that retired them, so a re-review can be undone by hand.
+    new_round = len(rounds) + 1
+    reviewed = {int(l.get("f", -1)) for l in new.get("labels") or []}
+    new_keys = {key(l) for l in new.get("labels") or []}
+    retired = list(old.get("retired") or [])
+    for k in [k for k in merged if k[0] in reviewed and k not in new_keys]:
+        retired.append({**merged.pop(k), "retiredInRound": new_round})
     added = sum(1 for l in new.get("labels") or [] if key(l) not in merged)
     for l in new.get("labels") or []:
-        merged[key(l)] = {**l, "round": len(rounds) + 1}
+        merged[key(l)] = {**l, "round": new_round}
     from datetime import datetime as _dt
     bak = existing.with_name(f"{existing.name}.bak-{_dt.now().strftime('%Y%m%d-%H%M%S')}")
     bak.write_bytes(existing.read_bytes())
     rounds.append({"createdAt": new.get("createdAt"), "session": new.get("session"),
                    "labels": len(new.get("labels") or [])})
+    n_ret = sum(1 for r in retired if r.get("retiredInRound") == new_round)
     print(f"[relay] merged into existing corrections: {added} new label(s), "
-          f"{len(new.get('labels') or []) - added} updated; round {len(rounds)} "
+          f"{len(new.get('labels') or []) - added} updated, {n_ret} retired on "
+          f"{len(reviewed)} re-reviewed frame(s); round {len(rounds)} "
           f"(previous kept as {bak.name})")
     return {**old, **{k: v for k, v in new.items() if k != "labels"},
-            "labels": list(merged.values()), "rounds": rounds}
+            "labels": list(merged.values()), "rounds": rounds, "retired": retired}
 
 
 if __name__ == "__main__":

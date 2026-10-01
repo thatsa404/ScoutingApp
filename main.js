@@ -2104,7 +2104,7 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
         list.innerHTML = flags.length
             ? flags.map((fl, i) => `<span style="display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border-radius:12px;background:#1e293b;color:#fbbf24;font-size:12px;">
                  <a href="#" data-i="${i}" class="mtGo" style="color:inherit;text-decoration:none;"
-                    title="${fl.exact ? 'Exactly this frame' : fl.teams.length ? 'Frames will be chosen where the route of this robot claims a detection' : 'No robot singled out: the busiest frames nearby are used'}">${fl.exact ? '◎ ' + fl.t.toFixed(2) : '⚑ ' + fl.t.toFixed(1)}s${fl.teams.length ? ' · ' + galleryEsc(fl.teams.join('/')) : ''}</a>
+                    title="${fl.exact ? 'Exactly this frame' : fl.teams.length ? 'Frames will be chosen where the route of this robot claims a detection' : 'No robot singled out: the busiest frames nearby are used'}">${fl.exact ? '◎ ' + fl.t.toFixed(2) : '⚑ ' + fl.t.toFixed(1)}s${fl.f != null ? ' · f' + fl.f : ''}${fl.teams.length ? ' · ' + galleryEsc(fl.teams.join('/')) : ''}</a>
                  <a href="#" data-i="${i}" class="mtDel" title="Remove" style="color:#64748b;text-decoration:none;">×</a></span>`).join('')
             : '<span style="font-size:12px;color:#64748b;">No moments flagged.</span>';
         list.querySelectorAll('.mtGo').forEach(a => a.onclick = (e) => { e.preventDefault(); seekTo(flags[+a.dataset.i].t); });
@@ -2131,6 +2131,18 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
         flags.push({ t: Math.round(t * 1000) / 1000, teams, exact: true });
         flags.sort((a, b) => a.t - b.t); writeFlags(matchKey, flags); msg.textContent = ''; draw();
     };
+    // Exact frames by NUMBER (labelled frames picked from the inspector): the agent takes
+    // `f` as given instead of snapping a time to the nearest frame.
+    const addFrames = (list) => {
+        const flags = readFlags(matchKey);
+        let n = 0;
+        for (const it of list) {
+            if (flags.some(x => x.exact && x.f === it.f)) continue;
+            flags.push({ t: it.t, f: it.f, teams: it.teams || [], exact: true }); n++;
+        }
+        flags.sort((a, b) => a.t - b.t); writeFlags(matchKey, flags); draw();
+        msg.textContent = n ? `${n} frame(s) added -- press "Request follow-up curation" to send.` : 'Already added.';
+    };
     host.querySelector('#mtRequest').onclick = async () => {
         const flags = readFlags(matchKey);
         const gaps = host.querySelector('#mtGaps').checked
@@ -2146,12 +2158,13 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
             type: 'followup', event: matchKey.split('_')[0], match: matchKey, gaps,
             flags, times: flags.map(f => f.t),       // `times` for agents older than flags-with-teams
         }, msg);
-        if (ok) {
+        if (ok === true) {
             writeFlags(matchKey, []); draw();
-            msg.innerHTML = `<span style="color:#22c55e;">Requested. When the bundle is ready, ${galleryEsc(matchKey)} shows as awaiting curation in the Tracks tab; the answers are added to its existing curation and the routes re-solve.</span>`;
+            msg.innerHTML = `<span style="color:#22c55e;">Requested. When the bundle is ready, ${galleryEsc(matchKey)} shows as awaiting curation in the Tracks tab. Your answers replace every older label on the frames you review, and the routes re-solve.</span>`;
         }
     };
     draw();
+    return { addFrames };
 }
 
 window.openLightbox = function (url) {
@@ -9902,19 +9915,36 @@ async function postJob(relay, agentId, body, statusEl) {
     }
     const jobId = newNonce() + newNonce();
     statusEl.textContent = 'Queueing\u2026';
+    const payload = JSON.stringify({ schemaVersion: 1, jobId, agentId, requestedBy: 'app',
+                                     requestedAt: new Date().toISOString(), ...body });
+    // CONFIRMED IN THE INDEX, not just stored. The relay's index is one document that
+    // every write rewrites, so a write landing alongside another (heartbeats, route
+    // pushes) can drop this job from it -- stored, but invisible to the agent, which
+    // finds jobs only through the index (a 2026necmp1_qm40 request was lost exactly so).
+    // Re-posting the same job id restores the entry and is otherwise harmless.
+    let listed = false;
     try {
-        const r = await fetch(`${relay}/job/${jobId}`, {
-            method: 'POST',
-            headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok },
-            body: JSON.stringify({ schemaVersion: 1, jobId, agentId,
-                                   requestedBy: 'app',
-                                   requestedAt: new Date().toISOString(), ...body }),
-        });
-        const d = await r.json().catch(() => ({}));
-        if (!r.ok) throw new Error(d.error || `relay returned ${r.status}`);
+        for (let attempt = 0; attempt < 6 && !listed; attempt++) {
+            const r = await fetch(`${relay}/job/${jobId}`, {
+                method: 'POST',
+                headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok },
+                body: payload,
+            });
+            const d = await r.json().catch(() => ({}));
+            if (!r.ok) throw new Error(d.error || `relay returned ${r.status}`);
+            await new Promise(res => setTimeout(res, 800 + 700 * attempt));
+            const idx = await fetch(`${relay}/index`, { cache: 'no-store' }).then(x => x.json()).catch(() => null);
+            listed = !!idx?.items?.some(it => it.kind === 'job' && it.id === jobId);
+        }
     } catch (e) {
         statusEl.innerHTML = `<span style="color:#f87171;">${galleryEsc(e.message)}</span>`;
         return false;
+    }
+    if (!listed) {
+        // The relay's storage can take a while to show a write everywhere, so this is
+        // "not confirmed", not "failed". Callers keep their inputs so it can be resent.
+        statusEl.innerHTML = `<span style="color:#fbbf24;">Sent, but not yet confirmed in the relay's job list. If the home machine has not picked it up within a minute, press the button again -- your selection is kept.</span>`;
+        return 'unconfirmed';
     }
     // No receipt wait here, unlike arming. A job can sit behind another one for hours, so
     // "the agent has picked it up" is not a thing to block a button on -- the jobs line in
@@ -10305,7 +10335,7 @@ function renderRelayControl(hostId, relay, items) {
         const cam = document.getElementById('rcEvent').value.trim().toLowerCase();
         if (!cam) { statusEl.innerHTML = `<span style="color:#f87171;">An event key is required.</span>`; return; }
         const ok = await postJob(relay, agent.id, { type: 'calib', camera: cam, event: cam }, statusEl);
-        if (ok) statusEl.innerHTML = `<span style="color:#22c55e;">Requested. When the machine has
+        if (ok === true) statusEl.innerHTML = `<span style="color:#22c55e;">Requested. When the machine has
             posted it (usually under a minute), ${galleryEsc(cam)} appears under <b>Cameras</b>
             below with a <b>Calibrate</b> link. Your existing points load with it.</span>`;
     };
@@ -11391,6 +11421,8 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
             <button id="riFwd" style="${btn}">1s ▶</button>
           </div>
           <div id="riFollow"></div>
+          <div style="font-size:13px;font-weight:700;margin:10px 0 4px;">Labelled frames in view</div>
+          <div id="riLabelled" style="font-size:12px;max-height:220px;overflow:auto;"></div>
         </div>
       </div>
       <div>
@@ -11451,9 +11483,8 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
                      title: { display: true, text: 'speed, 1 s average (m/s)', color: '#94a3b8' },
                      ticks: { color: '#94a3b8' }, grid: { color: '#1e293b' } },
             },
-            plugins: { legend: { display: false },
-                       tooltip: { callbacks: { title: it => `${(+it[0].parsed.x).toFixed(1)} s`,
-                                               label: it => `${it.dataset.label}: ${it.parsed.y == null ? '—' : it.parsed.y.toFixed(2)} m/s` } } },
+            // No hover tooltip: with six robots it covered the very stretch being read.
+            plugins: { legend: { display: false }, tooltip: { enabled: false } },
             onClick: (e) => {
                 if (suppressClick) { suppressClick = false; return; }
                 setT(chart.scales.x.getValueForPixel(e.x));
@@ -11514,6 +11545,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     // match; the plots show [vLo, vHi], following the slider when it leaves the view.
     const ZOOM_MIN_S = 2;        // fine enough to pick single frames by eye
     let vLo = series.tMin, vHi = series.tMax;
+    let _drawLabelled = () => {};   // the labelled-frames list follows the view; set below
     const syncScrub = () => {
         el.querySelector('#riScrub').value =
             String(Math.round((tNow - vLo) / Math.max(vHi - vLo, 1e-6) * 1000));
@@ -11524,6 +11556,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         const whole = vLo <= series.tMin + 1e-6 && vHi >= series.tMax - 1e-6;
         el.querySelector('#riZoomLbl').textContent = whole ? 'whole match'
             : `${vLo.toFixed(0)}–${vHi.toFixed(0)} s (${(vHi - vLo).toFixed(0)} s shown)`;
+        _drawLabelled();
     };
     const setView = (lo, hi) => {
         const full = series.tMax - series.tMin, w = Math.min(Math.max(hi - lo, ZOOM_MIN_S), full);
@@ -11683,7 +11716,44 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         return series.robots.filter(r => r.speed.slice(Math.max(k0, 0), hi)
             .some(v => v != null && v >= INSPECT_FAST)).map(r => r.team);
     };
-    if (key && relayUrl()) mountFollowupFlags(el.querySelector('#riFollow'), key, () => tNow, setT, focusTeams);
+    const follow = (key && relayUrl())
+        ? mountFollowupFlags(el.querySelector('#riFollow'), key, () => tNow, setT, focusTeams) : null;
+
+    // LABELLED FRAMES IN VIEW. Zoom to a section (double-press and drag), and every frame
+    // the curator has labelled inside it is listed here -- what was said where -- with one
+    // button to re-curate them all. Re-reviewing a frame replaces every older label on it,
+    // so a contradiction is cleared without having to hit the exact frame that holds it.
+    const labelledInView = () => {
+        const by = new Map();
+        for (const m of doc.curatorLabels || []) {
+            if (m.t < vLo || m.t > vHi || m.f == null) continue;
+            const e = by.get(m.f) || { f: m.f, t: m.t, items: [] };
+            e.items.push(m); by.set(m.f, e);
+        }
+        return [...by.values()].sort((a, b) => a.t - b.t);
+    };
+    const drawLabelled = () => {
+        const box = el.querySelector('#riLabelled'); if (!box) return;
+        const list = labelledInView();
+        const whole = vLo <= series.tMin + 1e-6 && vHi >= series.tMax - 1e-6;
+        box.innerHTML = !list.length
+            ? '<span style="color:#64748b;">No curator labels in this view.</span>'
+            : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:4px;">
+                 <span style="color:#94a3b8;">${list.length} labelled frame(s) ${whole ? 'in the match' : `between ${vLo.toFixed(1)} and ${vHi.toFixed(1)} s`}</span>
+                 ${follow ? `<button id="riRecurate" style="${btn}color:#fbbf24;" title="Add every frame listed here for review. Your answers on them replace all older labels on those frames.">Re-curate these ${list.length}</button>` : ''}
+               </div>`
+              + list.map((e, i) => {
+                    const rounds = [...new Set(e.items.map(m => m.round).filter(r => r != null))];
+                    const what = e.items.map(m => m.team ? galleryEsc(m.team) : `<i>${galleryEsc(m.flag || '?')}</i>`).join(', ');
+                    return `<a href="#" data-i="${i}" class="riLab" style="display:block;color:#cbd5e1;text-decoration:none;padding:2px 6px;border-radius:4px;background:#111827;margin-top:2px;">
+                              ${e.t.toFixed(2)} s · f${e.f}${rounds.length ? ` · round ${rounds.join('/')}` : ''} — ${what}</a>`;
+                }).join('');
+        box.querySelectorAll('.riLab').forEach(a => a.onclick = (ev) => { ev.preventDefault(); setT(list[+a.dataset.i].t); });
+        const b = box.querySelector('#riRecurate');
+        if (b) b.onclick = () => follow.addFrames(list.map(e => ({ t: e.t, f: e.f, teams: [] })));
+    };
+    _drawLabelled = drawLabelled;
+    drawLabelled();
 
     const onResize = () => { drawStrip(); paintField(); };
     const onKey = (e) => {
