@@ -420,6 +420,8 @@ export default {
         // So the Tracks table can rank live routes by their fastest implied speed (a
         // swap between robots far apart) without downloading every route document.
         maxSpeed: storedPayload.quality?.maxSpeed ?? null,
+        // curator labels that contradict each other: {n, t}
+        labelConflicts: storedPayload.quality?.labelConflicts ?? null,
         meanCustody: storedPayload.quality?.meanCustody ?? null,
       } : {};
       await touchIndex(env, kind, id, { bytes: storedBody.length, at,

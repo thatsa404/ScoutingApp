@@ -10466,6 +10466,8 @@ async function renderTracksTab() {
                 // Fastest 1 s speed any route implies ({mps, team, t, acrossGap}), from
                 // the manifest or, for a live route, the relay index.
                 maxSpeed: p?.maxSpeed ?? rt?.maxSpeed ?? null,
+                // curator labels that contradict each other: {n, t of the first}
+                labelConflicts: rt?.labelConflicts ?? p?.labelConflicts ?? null,
                 bundle: onRelay.get(`bundle:${k}`) || null,
                 answer: onRelay.get(`answer:${k}`) || null,
                 calib: onRelay.get(`calib:${k}`) || null,
@@ -10640,6 +10642,12 @@ async function renderTracksTab() {
                       ${ms.mps.toFixed(1)} m/s</a>
                    <div style="font-size:0.78em;color:#64748b;">${galleryEsc(ms.team)} @ ${Number(ms.t).toFixed(0)}s${ms.acrossGap ? ' · gap' : ''}</div>`
                 : '<span style="color:#475569;">—</span>';
+            const lc = r.labelConflicts;
+            const conflictsCell = lc && lc.n
+                ? `<div><a href="#" onclick="inspectMatchAt('${r.key}', ${Number(lc.t) || 0});return false;"
+                      title="Curator labels in this match that cannot all be right -- open the inspector at the first"
+                      style="text-decoration:none;color:#f87171;font-size:0.82em;font-weight:700;">⚠ ${lc.n} label conflict${lc.n === 1 ? '' : 's'}</a></div>`
+                : '';
             // Camera tools (Calibrate, Occluders) live in the Cameras section only: every
             // id with a calib frame is listed there, and repeating them per match made
             // every row twice as wide for a once-per-camera job.
@@ -10661,7 +10669,7 @@ async function renderTracksTab() {
               <td style="padding:7px 4px;font-weight:600;">${label}</td>
               <td style="padding:7px 4px;">${state}${evidence ? '<div style="margin-top:2px;">' + evidence + '</div>' : ''}</td>
               <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
-              <td style="padding:7px 4px;">${speed}</td>
+              <td style="padding:7px 4px;">${speed}${conflictsCell}</td>
               <td style="padding:7px 4px;text-align:right;"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">${acts || '<span style="color:#475569;">—</span>'}</div></td>
             </tr>`;
         }).join(''); })()}
@@ -11427,6 +11435,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
       </div>
       <div>
         <div style="font-size:13px;font-weight:700;margin:6px 0 4px;">Where to look</div>
+        <div id="riConflicts" style="display:flex;flex-direction:column;gap:3px;font-size:12px;margin-bottom:6px;"></div>
         <div id="riSuspects" style="display:flex;flex-direction:column;gap:3px;font-size:12px;"></div>
       </div>`;
     document.body.appendChild(el);
@@ -11436,6 +11445,23 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     applyFieldOrientation(el.querySelector('#riInner'), doc);
     const strip = el.querySelector('#riStrip');
 
+    // Curator labels that cannot all be right (rtrack.robots.label_conflicts, exported).
+    const allConflicts = doc.labelConflicts || [];
+    const seriousConflicts = allConflicts.filter(c => c.kind === 'impossible' || c.kind === 'same-moment');
+    const conflictFrames = new Set(seriousConflicts.flatMap(c => [c.a.f, c.b.f]));
+    // A labelled frame from an OLDER round than the labelled frames either side of it --
+    // how qm44's f1108 (round 1, between rounds 13-15) hid. Not wrong by itself, but it
+    // has not been looked at since, and the newer answers around it may disagree.
+    const staleFrames = (() => {
+        const fr = new Map();
+        for (const m of doc.curatorLabels || [])
+            if (m.f != null && m.round != null)
+                fr.set(m.f, { t: m.t, r: Math.max(fr.get(m.f)?.r ?? 0, m.round) });
+        const s = [...fr.entries()].sort((a, b) => a[1].t - b[1].t), out = new Set();
+        for (let k = 1; k + 1 < s.length; k++)
+            if (s[k][1].r < s[k - 1][1].r && s[k][1].r < s[k + 1][1].r) out.add(s[k][0]);
+        return out;
+    })();
     let sel = null;              // {t0, t1} while a double-press drag is selecting a span
     let suppressClick = false;   // a pan or a selection ends in a click event; ignore it
     const cursor = {
@@ -11514,6 +11540,12 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
             for (const b of r.breaks) if (b.tStart >= vLo && b.tStart <= vHi) g.fillRect(px(b.tStart) - 1, y - 1, 2, rowH);
             g.fillStyle = '#fb923c';      // impossible single steps
             for (const j of r.jumps) if (j.t0 >= vLo && j.t0 <= vHi) g.fillRect(px(j.t0) - 1.5, y - 1, 3, rowH);
+            // labels of this team that contradict each other: a band joining the two
+            g.fillStyle = 'rgba(239,68,68,0.55)';
+            for (const c of seriousConflicts) if (String(c.team) === r.team) {
+                const lo = Math.max(c.a.t, vLo), hi = Math.min(c.b.t, vHi);
+                if (hi >= lo) g.fillRect(px(lo) - 2, y + rowH - 4, Math.max(px(hi) - px(lo), 0) + 4, 3);
+            }
             g.fillStyle = '#f8fafc';      // where the curator labelled this team
             for (const m of r.labels) if (m.t >= vLo && m.t <= vHi) {
                 const x = px(m.t);
@@ -11745,8 +11777,13 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
               + list.map((e, i) => {
                     const rounds = [...new Set(e.items.map(m => m.round).filter(r => r != null))];
                     const what = e.items.map(m => m.team ? galleryEsc(m.team) : `<i>${galleryEsc(m.flag || '?')}</i>`).join(', ');
-                    return `<a href="#" data-i="${i}" class="riLab" style="display:block;color:#cbd5e1;text-decoration:none;padding:2px 6px;border-radius:4px;background:#111827;margin-top:2px;">
-                              ${e.t.toFixed(2)} s · f${e.f}${rounds.length ? ` · round ${rounds.join('/')}` : ''} — ${what}</a>`;
+                    const bad = conflictFrames.has(e.f), stale = staleFrames.has(e.f);
+                    const tag = bad ? ' <b style="color:#f87171;">⚠ conflicts with another label</b>'
+                              : stale ? ' <span style="color:#fbbf24;">older than the frames either side</span>' : '';
+                    return `<a href="#" data-i="${i}" class="riLab" title="${bad ? 'Part of a label conflict -- see Where to look' : stale ? 'Labelled in an earlier round than the labelled frames before and after it: not re-reviewed since' : ''}"
+                              style="display:block;color:#cbd5e1;text-decoration:none;padding:2px 6px;border-radius:4px;background:#111827;margin-top:2px;
+                                     border-left:3px solid ${bad ? '#ef4444' : stale ? '#f59e0b' : 'transparent'};">
+                              ${e.t.toFixed(2)} s · f${e.f}${rounds.length ? ` · round ${rounds.join('/')}` : ''} — ${what}${tag}</a>`;
                 }).join('');
         box.querySelectorAll('.riLab').forEach(a => a.onclick = (ev) => { ev.preventDefault(); setT(list[+a.dataset.i].t); });
         const b = box.querySelector('#riRecurate');
@@ -11754,6 +11791,39 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     };
     _drawLabelled = drawLabelled;
     drawLabelled();
+
+    // CONFLICTS FIRST in "Where to look": a pair of labels that cannot both be right is a
+    // known error, where a fast stretch is only a suspected one. Each names both frames
+    // and their rounds, and re-curating both settles which label was wrong.
+    const confEl = el.querySelector('#riConflicts');
+    const conflictText = (c) => {
+        const at = (m) => `f${m.f} (${m.t.toFixed(2)} s${m.round != null ? `, round ${m.round}` : ''})`;
+        return c.kind === 'impossible'
+            ? `<b>${galleryEsc(c.team)}</b> labelled at ${at(c.a)} and ${at(c.b)} — no robot can get between those places in that time; one label is wrong`
+            : c.kind === 'same-moment'
+            ? `<b>${galleryEsc(c.team)}</b> labelled on two boxes at once, ${c.a.f === c.b.f ? `in f${c.a.f}` : `${at(c.a)} and ${at(c.b)}`} — one is wrong, or one robot was boxed twice`
+            : `one tracker track labelled <b>${galleryEsc(c.a.reading)}</b> at ${at(c.a)} and <b>${galleryEsc(c.b.reading)}</b> at ${at(c.b)}`;
+    };
+    const informational = allConflicts.filter(c => c.kind === 'disagree');
+    confEl.innerHTML = seriousConflicts.map((c, i) => `
+        <div style="display:flex;gap:6px;align-items:center;padding:3px 6px;border-radius:4px;background:#2a1215;border-left:3px solid #ef4444;">
+          <a href="#" data-i="${i}" class="riConfGo" style="color:#fecaca;text-decoration:none;flex:1;">⚠ ${conflictText(c)}</a>
+          ${follow ? `<button data-i="${i}" class="riConfRe" style="${btn}color:#fbbf24;white-space:nowrap;" title="Add both frames for review; your answers replace all older labels on them">Re-curate both</button>` : ''}
+        </div>`).join('')
+        + (informational.length ? `<details style="color:#94a3b8;"><summary style="cursor:pointer;">${informational.length} place(s) where one tracker track carries two different answers (usually a real tracker swap, which the solver cuts)</summary>
+            ${informational.map((c, i) => `<a href="#" data-j="${i}" class="riConfInfo" style="display:block;color:#94a3b8;text-decoration:none;padding:2px 6px;">${conflictText(c)}</a>`).join('')}</details>` : '');
+    confEl.querySelectorAll('.riConfGo').forEach(a => a.onclick = (ev) => {
+        ev.preventDefault(); const c = seriousConflicts[+a.dataset.i];
+        setView(Math.min(c.a.t, c.b.t) - 2, Math.max(c.a.t, c.b.t) + 2); setT(c.a.t);
+    });
+    confEl.querySelectorAll('.riConfInfo').forEach(a => a.onclick = (ev) => {
+        ev.preventDefault(); setT(informational[+a.dataset.j].a.t);
+    });
+    confEl.querySelectorAll('.riConfRe').forEach(b => b.onclick = () => {
+        const c = seriousConflicts[+b.dataset.i];
+        follow.addFrames([{ t: c.a.t, f: c.a.f, teams: [String(c.team)] },
+                          { t: c.b.t, f: c.b.f, teams: [String(c.team)] }]);
+    });
 
     const onResize = () => { drawStrip(); paintField(); };
     const onKey = (e) => {

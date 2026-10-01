@@ -1168,6 +1168,96 @@ def split_on_appearance(rows, npz_path: Path, thresh: float, win: int = 12,
     return _apply_cuts(rows, cuts)
 
 
+def label_conflicts(rows, positions, pos_at, labels, kin_hard: float) -> list[dict]:
+    """Pairs of curator labels that cannot both be right, on the FINAL segmentation.
+
+    The solver already meets these and settles them quietly -- "the human wins" lets a
+    route teleport between two pinned tracks; a clash demotes one pin. On
+    2026necmp1_qm44 that hid a round-1 frame (f1108) saying the opposite of six newer
+    frames around it, and the route swapped 1512/2876 twice in half a second. Listing
+    the pairs lets the route inspector show WHERE labels contradict each other, so the
+    curator can decide which to re-review instead of hunting for the frame.
+
+    Kinds, none needing a new threshold:
+      impossible   -- one team labelled on two tracks no robot could travel between
+                      (the solver's own kinematic bound, `kin_hard`)
+      same-moment  -- one team labelled on two boxes visible at the same time
+      disagree     -- labels on one TRACKER track name different teams (or a team and
+                      "not a robot") with no other label between them. Often a real
+                      tracker swap the cut already handles -- shown as information.
+    Each pair carries the two labels closest in time, with frame, time and round.
+    """
+    from . import corrections as CO
+    from .solve import pair_forbidden, paths_forbidden
+    resolved = [r for r in CO.resolve(rows, labels) if r["ok"]]
+    info = track_info(rows, positions, pos_at=pos_at)
+    con = conflicts(rows)
+    orig = {}
+    for r in rows:
+        for d in r["dets"]:
+            if d["tid"] >= 0:
+                orig.setdefault(d["tid"], d.get("orig_tid", d["tid"]))
+
+    def reading(l):
+        f = CO.flag_of(l)
+        return None if f == "unknown" else (f or (str(l["team"]) if l.get("team") else None))
+
+    def mark(l):
+        return {"f": int(l["f"]), "t": round(float(l["t"]), 3), "reading": reading(l),
+                **({"round": int(l["round"])} if l.get("round") is not None else {})}
+
+    by_tid: dict[int, list] = defaultdict(list)
+    for l in resolved:
+        if reading(l):
+            by_tid[l["tid"]].append(l)
+    out, seen = [], set()
+
+    def add(kind, team, la, lb):
+        a, b = sorted((mark(la), mark(lb)), key=lambda m: m["t"])
+        k = (kind, a["f"], b["f"], team)
+        if k not in seen:
+            seen.add(k)
+            out.append({"kind": kind, "team": team, "a": a, "b": b})
+
+    team_tracks: dict[str, list[int]] = defaultdict(list)
+    for tid, ls in by_tid.items():
+        for tm in {reading(l) for l in ls if l.get("team") and not CO.flag_of(l)}:
+            team_tracks[tm].append(tid)
+    for tm, tids in team_tracks.items():
+        for i, a in enumerate(tids):
+            for b in tids[i + 1:]:
+                if a not in info or b not in info:
+                    continue
+                if b in con.get(a, ()):
+                    kind = "same-moment"
+                else:
+                    ia, ib = info[a], info[b]
+                    if ia["t1"] <= ib["t0"]:
+                        bad = pair_forbidden(ia, ib, kin_hard)
+                    elif ib["t1"] <= ia["t0"]:
+                        bad = pair_forbidden(ib, ia, kin_hard)
+                    else:
+                        bad = paths_forbidden(ia, ib, kin_hard)
+                    if not bad:
+                        continue
+                    kind = "impossible"
+                la, lb = min(((x, y) for x in by_tid[a] for y in by_tid[b]
+                              if reading(x) == tm and reading(y) == tm),
+                             key=lambda p: abs(p[0]["t"] - p[1]["t"]))
+                add(kind, tm, la, lb)
+
+    per_track: dict[int, list] = defaultdict(list)
+    for tid, ls in by_tid.items():
+        per_track[orig.get(tid, tid)].extend(ls)
+    for ls in per_track.values():
+        ls.sort(key=lambda l: l["t"])
+        for x, y in zip(ls, ls[1:]):
+            if reading(x) != reading(y) and x["f"] != y["f"]:
+                add("disagree", None, x, y)
+    out.sort(key=lambda c: c["a"]["t"])
+    return out
+
+
 LABEL_GAP_S = 2.0   # an unobserved stretch this long ends what a label can vouch for
 
 
@@ -3160,7 +3250,11 @@ def main(argv=None) -> int:
                      "inherited": {str(k): v for k, v in inherited.items()},
                      "preferred": {str(k): v for k, v in preferred.items()},
                      "flags": {str(k): v for k, v in cflags.items()},
-                     "clashes": clashes},
+                     "clashes": clashes,
+                     # curator labels that contradict each other (label_conflicts)
+                     "conflicts": (label_conflicts(rows, positions, pos_at, doc["labels"],
+                                                   args.kin_hard)
+                                   if args.corrections else [])},
          "custodyWindow": list(win or []),
          "custodyWindowSource": ("raw-motion" if rows is not None and win
                                  else ("positions" if (C.STAGE2_DIR / f"{stem}_positions.json").exists()

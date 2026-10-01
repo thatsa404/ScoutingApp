@@ -354,6 +354,12 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
     cur = robots_doc.get("curator") or {}
     n_labels = len(cur.get("pinned") or {}) + len(cur.get("flags") or {})
     label_marks = curator_label_marks(match_key, positions, t0)
+    # Curator labels that contradict each other (rtrack.robots.label_conflicts), in match
+    # time. `serious` are the ones where at least one label must be wrong.
+    conflicts = [{**c, "a": {**c["a"], "t": round(c["a"]["t"] - t0, 3)},
+                  "b": {**c["b"], "t": round(c["b"]["t"] - t0, 3)}}
+                 for c in (cur.get("conflicts") or [])]
+    serious = [c for c in conflicts if c["kind"] in ("impossible", "same-moment")]
     # Visibility depends only on the camera pose, so it is a property of the
     # CALIBRATION and identical for every match sharing one. Computed here rather than
     # stored in calib/ so an older calibration file gains it without being re-fitted.
@@ -453,6 +459,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         # which moments are already answered, so a re-review can target the exact frame
         # an old label sits on. [] when uncurated.
         "curatorLabels": label_marks,
+        # Pairs of those labels that cannot both be right: impossible (one team on two
+        # tracks no robot could travel between), same-moment (one team on two boxes at
+        # once), disagree (one tracker track, two different answers -- informational).
+        "labelConflicts": conflicts,
         "quality": {
             "samplesIn": q.get("samples"),
             "samplesOut": sum(len(r["samples"]) for r in out_robots),
@@ -475,6 +485,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             # Highest 1 s average speed on any route: a cheap "look here" signal for
             # identity swaps between robots far apart (see max_speed).
             "maxSpeed": max_speed(out_robots),
+            # Labels that contradict each other -- a re-curation target the speeds may
+            # not show. {n, t: first one} over impossible + same-moment pairs.
+            "labelConflicts": {"n": len(serious),
+                               "t": serious[0]["a"]["t"] if serious else None},
             # What rtrack.route_clean changed, so a route is never silently different
             # from the solver's answer. {"applied": false} unless run with --clean.
             "cleaning": ({"applied": True, **clean_stats} if clean_routes
@@ -670,6 +684,7 @@ def write_manifest(tracks_dir: Path) -> int:
                 "meanCustody": q.get("meanCustody"),
                 # computed here when the route predates it, so no re-export is needed
                 "maxSpeed": q.get("maxSpeed") or max_speed(d.get("robots") or []),
+                "labelConflicts": q.get("labelConflicts"),
                 "bytes": p.stat().st_size,
                 # When this export was produced, so a consumer can tell a FINISHED
                 # match from one whose curator answers arrived after it was last built.
