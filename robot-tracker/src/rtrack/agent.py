@@ -1068,9 +1068,12 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
                 break
             take(mid, f"gap {team} {length:.0f}s")
 
-    # requested frames first when trimming to the cap, then in time order for the curator
-    chosen.sort(key=lambda c: (not c[2].startswith("requested"), c[0]))
-    chosen = sorted(chosen[:FOLLOWUP_MAX_FRAMES])
+    # Exact frames are never trimmed -- the curator chose each one. Everything else fills
+    # the cap behind them, requested before gap frames, then in time order for the curator.
+    exact = [c for c in chosen if c[2].startswith("requested exact")]
+    rest = [c for c in chosen if not c[2].startswith("requested exact")]
+    rest.sort(key=lambda c: (not c[2].startswith("requested"), c[0]))
+    chosen = sorted(exact + rest[:max(FOLLOWUP_MAX_FRAMES - len(exact), 0)])
     keep = {f for _t, f, _w in chosen}
     return ([f for _t, f, _w in chosen], [w for _t, _f, w in chosen],
             {f: b for f, b in focus_boxes.items() if f in keep})

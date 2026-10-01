@@ -2064,7 +2064,6 @@ async function renderMatchTracks(matchKey) {
 }
 
 const FLAG_KEY = (matchKey) => `rtrackFlags:${matchKey}`;
-const FOLLOWUP_EXACT_MAX = 3;   // exact frames per request: a targeted look, not a bundle
 
 // A flag is {t, teams}: the moment, and the robot(s) whose route it questions -- the
 // follow-up job then picks frames where THAT robot's route claims a detection, since a
@@ -2087,7 +2086,7 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
     host.insertAdjacentHTML('beforeend', `
         <div id="mtFollow" style="margin-top:12px;padding:10px;border:1px solid #1e293b;border-radius:8px;">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <button id="mtExact" style="${btn}color:#fbbf24;" title="Review exactly this frame -- step with the frame buttons or Shift+arrows, or click a white label marker to land on a frame you labelled before. Up to ${FOLLOWUP_EXACT_MAX} per request. Your new answers replace your older labels on the same boxes of that frame.">◎ Review this exact frame</button>
+            <button id="mtExact" style="${btn}color:#fbbf24;" title="Review exactly this frame -- step with the frame buttons or Shift+arrows, or click a white label marker to land on a frame you labelled before. Your new answers replace your older labels on the same boxes of that frame.">◎ Review this exact frame</button>
             <button id="mtFlag" style="${btn}" title="Not sure exactly where? Each flag asks about 3 frames spread across +-5 s of it, plus the frame at the biggest jump of the selected robot's route nearby.">⚑ Flag around here (±5 s)</button>
             <label style="font-size:12px;color:#94a3b8;display:inline-flex;gap:5px;align-items:center;"
                    title="Also ask about the middle of the longest stretches of each route since that team was last labelled">
@@ -2127,9 +2126,6 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
         const t = currentT();
         if (t == null) { msg.textContent = 'Move to the frame first.'; return; }
         const flags = readFlags(matchKey);
-        if (flags.filter(x => x.exact).length >= FOLLOWUP_EXACT_MAX) {
-            msg.textContent = `Up to ${FOLLOWUP_EXACT_MAX} exact frames per request -- send these first, or remove one.`; return;
-        }
         if (flags.some(x => x.exact && Math.abs(x.t - t) < INSPECT_FRAME_S / 2)) return;
         const teams = (focusTeams() || []).map(String);
         flags.push({ t: Math.round(t * 1000) / 1000, teams, exact: true });
