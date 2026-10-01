@@ -11366,7 +11366,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
             <button id="riZoomIn" style="${btn}" title="Show less of the match, around the slider">+</button>
             <button id="riZoomAll" style="${btn}">Whole match</button>
             <span id="riZoomLbl" style="font-size:11px;color:#94a3b8;"></span>
-            <span style="font-size:11px;color:#64748b;">· scroll on the chart or strip to zoom there</span>
+            <span style="font-size:11px;color:#64748b;">· double-press and drag to zoom to a span, drag sideways to move along the match, or scroll to zoom</span>
           </div>
           <div style="position:relative;height:280px;"><canvas id="riChart"></canvas></div>
           <canvas id="riStrip" style="display:block;width:100%;margin-top:4px;"></canvas>
@@ -11404,10 +11404,20 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     applyFieldOrientation(el.querySelector('#riInner'), doc);
     const strip = el.querySelector('#riStrip');
 
+    let sel = null;              // {t0, t1} while a double-press drag is selecting a span
+    let suppressClick = false;   // a pan or a selection ends in a click event; ignore it
     const cursor = {
         id: 'riCursor',
         afterDatasetsDraw(c) {
-            const x = c.scales.x.getPixelForValue(tNow), a = c.chartArea;
+            const a = c.chartArea;
+            if (sel) {                                   // drag-to-zoom selection
+                const x0 = c.scales.x.getPixelForValue(Math.min(sel.t0, sel.t1));
+                const x1 = c.scales.x.getPixelForValue(Math.max(sel.t0, sel.t1));
+                const g = c.ctx; g.save(); g.fillStyle = 'rgba(147,197,253,0.18)';
+                g.fillRect(Math.max(x0, a.left), a.top, Math.min(x1, a.right) - Math.max(x0, a.left), a.bottom - a.top);
+                g.restore();
+            }
+            const x = c.scales.x.getPixelForValue(tNow);
             if (x < a.left || x > a.right) return;
             const g = c.ctx; g.save(); g.strokeStyle = '#fbbf24'; g.lineWidth = 1.5;
             g.beginPath(); g.moveTo(x, a.top); g.lineTo(x, a.bottom); g.stroke(); g.restore();
@@ -11444,7 +11454,10 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
             plugins: { legend: { display: false },
                        tooltip: { callbacks: { title: it => `${(+it[0].parsed.x).toFixed(1)} s`,
                                                label: it => `${it.dataset.label}: ${it.parsed.y == null ? '—' : it.parsed.y.toFixed(2)} m/s` } } },
-            onClick: (e) => setT(chart.scales.x.getValueForPixel(e.x)),
+            onClick: (e) => {
+                if (suppressClick) { suppressClick = false; return; }
+                setT(chart.scales.x.getValueForPixel(e.x));
+            },
         },
         plugins: [cursor],
     });
@@ -11476,6 +11489,10 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
                 g.beginPath(); g.moveTo(x - 3, y); g.lineTo(x + 3, y); g.lineTo(x, y + 4); g.fill();
             }
         });
+        if (sel) {
+            const x0 = px(Math.min(sel.t0, sel.t1)), x1 = px(Math.max(sel.t0, sel.t1));
+            g.fillStyle = 'rgba(147,197,253,0.18)'; g.fillRect(x0, 0, x1 - x0, strip.height);
+        }
         const x = px(tNow); g.fillStyle = '#fbbf24'; g.fillRect(x - 0.75, 0, 1.5, strip.height);
     };
     const stripTime = (e) => {
@@ -11485,6 +11502,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     // A click near a label marker lands EXACTLY on that label's frame, so it can be
     // picked for re-review; anywhere else moves to the clicked time.
     strip.onclick = (e) => {
+        if (suppressClick) { suppressClick = false; return; }
         const t = stripTime(e), a = chart.chartArea;
         const tol = 4 * (vHi - vLo) / Math.max(a.right - a.left, 1);
         const near = (doc.curatorLabels || []).filter(m => Math.abs(m.t - t) <= tol)
@@ -11494,7 +11512,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
 
     // HORIZONTAL ZOOM, shared by the chart and the strip. The slider keeps the whole
     // match; the plots show [vLo, vHi], following the slider when it leaves the view.
-    const ZOOM_MIN_S = 5;
+    const ZOOM_MIN_S = 2;        // fine enough to pick single frames by eye
     let vLo = series.tMin, vHi = series.tMax;
     const syncScrub = () => {
         el.querySelector('#riScrub').value =
@@ -11527,6 +11545,58 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     el.querySelector('#riChart').addEventListener('wheel',
         wheel(e => chart.scales.x.getValueForPixel(e.offsetX)), { passive: false });
     strip.addEventListener('wheel', wheel(stripTime), { passive: false });
+
+    // POINTER GESTURES on the chart and the strip, mouse and touch alike:
+    //   double-press and drag  -> zoom to the dragged span
+    //   drag sideways          -> pan the zoomed window through the match
+    //   tap / click            -> move to that moment (the click handlers above)
+    // touch-action pan-y leaves vertical page scrolling to the browser.
+    const DOUBLE_MS = 350, DOUBLE_PX = 24, DRAG_PX = 6;
+    const redrawSel = () => { chart.update('none'); drawStrip(); };
+    const gestures = (target, timeAt) => {
+        let down = null, lastTap = { at: -1e9, x: 0 };
+        target.style.touchAction = 'pan-y';
+        target.addEventListener('pointerdown', (e) => {
+            if (e.button !== 0 || down) return;
+            const dbl = performance.now() - lastTap.at < DOUBLE_MS && Math.abs(e.clientX - lastTap.x) < DOUBLE_PX;
+            down = { id: e.pointerId, x: e.clientX, lo: vLo, hi: vHi, mode: dbl ? 'select' : 'pending' };
+            try { target.setPointerCapture(e.pointerId); } catch { /* not capturable */ }
+            if (dbl) { stop(); const t = timeAt(e); sel = { t0: t, t1: t }; redrawSel(); }
+        });
+        target.addEventListener('pointermove', (e) => {
+            if (!down || e.pointerId !== down.id) return;
+            const dx = e.clientX - down.x;
+            if (down.mode === 'select') { sel.t1 = timeAt(e); redrawSel(); return; }
+            if (down.mode === 'pending' && Math.abs(dx) > DRAG_PX) { down.mode = 'pan'; stop(); }
+            if (down.mode === 'pan') {
+                const a = chart.chartArea;
+                const dt = -dx * (down.hi - down.lo) / Math.max(a.right - a.left, 1);
+                setView(down.lo + dt, down.hi + dt);
+            }
+        });
+        const end = (e) => {
+            if (!down || e.pointerId !== down.id) return;
+            if (down.mode === 'select') {
+                const t0 = Math.min(sel.t0, sel.t1), t1 = Math.max(sel.t0, sel.t1);
+                sel = null;
+                if (t1 - t0 > 0.2) setView(t0, t1); else redrawSel();
+                suppressClick = true;
+            } else if (down.mode === 'pan') {
+                suppressClick = true;
+            } else {
+                lastTap = { at: performance.now(), x: e.clientX };
+            }
+            down = null;
+        };
+        target.addEventListener('pointerup', end);
+        target.addEventListener('pointercancel', (e) => {
+            if (down && e.pointerId === down.id && down.mode === 'select') { sel = null; redrawSel(); }
+            down = null;
+        });
+    };
+    const chartCanvas = el.querySelector('#riChart');
+    gestures(chartCanvas, (e) => chart.scales.x.getValueForPixel(e.clientX - chartCanvas.getBoundingClientRect().left));
+    gestures(strip, stripTime);
 
     // Only the moment in question: the INSPECT_FIELD_S leading up to the slider time,
     // ending at the robots' dots. The whole match is spaghetti when the question is
