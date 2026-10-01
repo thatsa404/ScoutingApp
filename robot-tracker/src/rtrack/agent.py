@@ -925,6 +925,7 @@ FOLLOWUP_SPAN_S = 10.0
 FOLLOWUP_PER_FLAG = 3
 JUMP_MIN_MS = 4.5            # the inspector's "fast" line; slower steps are not a jump
 JUMP_PAIR_S = 0.5            # ends closer than this are one moment: show one frame
+JUMP_RUN_GAP_S = 0.5         # a pause this long ends the run of samples at a jump end
 
 
 def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[str], dict]:
@@ -1004,15 +1005,20 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
         if b[0] - a[0] > JUMP_PAIR_S:
             ends = [a, b]
         else:
-            # Both ends in one moment: show the more ISOLATED end -- the one with the
-            # longer silence on its far side -- which is the likelier stray. (Not the
-            # shorter track: on qm6 the stray is the tail of a long piece, after a 3.4 s
-            # gap.) Its frame usually carries the other end's robot as well.
+            # Both ends in one moment: show the end on the SHORTER RUN -- the stretch of
+            # samples reaching it with no pause over JUMP_RUN_GAP_S -- which is the
+            # likelier stray. Not the shorter track: on qm6 the stray is the tail of a
+            # long piece, after a 3.4 s gap; on qm10 it is two samples at the head of
+            # one. Its frame usually carries the other end's robot as well.
             full = track_pos[team]
             i = full.index(a)
-            before = a[0] - full[i - 1][0] if i > 0 else 0.0
-            after = full[i + 2][0] - b[0] if i + 2 < len(full) else 0.0
-            ends = [a if before >= after else b]
+            ra = i
+            while ra > 0 and full[ra][0] - full[ra - 1][0] <= JUMP_RUN_GAP_S:
+                ra -= 1
+            rb = i + 1
+            while rb + 1 < len(full) and full[rb + 1][0] - full[rb][0] <= JUMP_RUN_GAP_S:
+                rb += 1
+            ends = [b if (rb - i) < (i + 1 - ra) else a]
         return [(p[0], p[1], d, b[0] - a[0]) for p in ends]
 
     for flag in times:
