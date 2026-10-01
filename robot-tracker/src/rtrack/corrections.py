@@ -111,6 +111,63 @@ def resolve(rows, labels, max_px: float = MATCH_PX) -> list[dict]:
     return out
 
 
+def supersede(rows, labels) -> tuple[list, list]:
+    """Where rounds disagree about ONE BOX ON ONE FRAME, the newest round wins.
+    Returns (kept, superseded).
+
+    Follow-up answers merge by (frame, click position), and two clicks on the same box
+    rarely land on the same pixel -- so re-reviewing a frame used to ADD a second,
+    contradicting label to the box instead of replacing the first, and the solver then
+    honoured both. Here labels are keyed by the detection they resolve to (nearest box
+    centre within MATCH_PX, as resolve() does); on each such box only the highest round
+    stands. Same round, several labels: all kept (pins_from already refuses a box the
+    curator labelled two ways at once). Labels without a `round` are never superseded.
+
+    Deliberately NO time window or distance threshold: a newer reading of a NEARBY frame
+    does not retire an old one -- the curator re-reviews the exact frame for that, and
+    the route inspector marks where labels sit so the frame can be found.
+    """
+    boxes = defaultdict(list)
+    for r in rows:
+        for k, d in enumerate(r["dets"]):
+            if d["tid"] >= 0:
+                x1, y1, x2, y2 = d["xyxy"]
+                boxes[r["f"]].append(((x1 + x2) / 2.0, (y1 + y2) / 2.0, k))
+
+    def box_of(lab):
+        lx, ly = float(lab["xy"][0]), float(lab["xy"][1])
+        best = None
+        for cx, cy, k in boxes.get(int(lab["f"]), ()):
+            d2 = (cx - lx) ** 2 + (cy - ly) ** 2
+            if best is None or d2 < best[0]:
+                best = (d2, k)
+        return (int(lab["f"]), best[1]) if best and best[0] ** 0.5 <= MATCH_PX else None
+
+    on_box = defaultdict(list)
+    for i, lab in enumerate(labels):
+        if lab.get("round") is not None:
+            b = box_of(lab)
+            if b is not None:
+                on_box[b].append(i)
+    drop = {}
+    for idx in on_box.values():
+        # "unknown" is not a reading, so it never retires one
+        readings = [i for i in idx if flag_of(labels[i]) != "unknown"]
+        if not readings:
+            continue
+        top = max(int(labels[i]["round"]) for i in readings)
+        idx = [i for i in idx if i in readings or int(labels[i]["round"]) < top]
+        winner = next(i for i in idx if int(labels[i]["round"]) == top)
+        for i in idx:
+            if int(labels[i]["round"]) < top:
+                drop[i] = winner
+    kept = [l for i, l in enumerate(labels) if i not in drop]
+    gone = [{**labels[i], "supersededBy": {k: labels[j].get(k) for k in
+                                           ("f", "xy", "team", "round")}}
+            for i, j in sorted(drop.items())]
+    return kept, gone
+
+
 FLAGS = ("mixed", "notrobot", "unknown")
 
 

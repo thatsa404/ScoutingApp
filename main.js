@@ -2064,6 +2064,7 @@ async function renderMatchTracks(matchKey) {
 }
 
 const FLAG_KEY = (matchKey) => `rtrackFlags:${matchKey}`;
+const FOLLOWUP_EXACT_MAX = 3;   // exact frames per request: a targeted look, not a bundle
 
 // A flag is {t, teams}: the moment, and the robot(s) whose route it questions -- the
 // follow-up job then picks frames where THAT robot's route claims a detection, since a
@@ -2086,10 +2087,11 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
     host.insertAdjacentHTML('beforeend', `
         <div id="mtFollow" style="margin-top:12px;padding:10px;border:1px solid #1e293b;border-radius:8px;">
           <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;">
-            <button id="mtFlag" style="${btn}" title="Move to where a route looks wrong and flag it. Each flag asks the curator about 3 frames spread across +-5 s of it, so labels land on both sides of whatever went wrong.">⚑ Flag this moment</button>
+            <button id="mtExact" style="${btn}color:#fbbf24;" title="Review exactly this frame -- step with the frame buttons or Shift+arrows, or click a white label marker to land on a frame you labelled before. Up to ${FOLLOWUP_EXACT_MAX} per request. Your new answers replace your older labels on the same boxes of that frame.">◎ Review this exact frame</button>
+            <button id="mtFlag" style="${btn}" title="Not sure exactly where? Each flag asks about 3 frames spread across +-5 s of it, plus the frame at the biggest jump of the selected robot's route nearby.">⚑ Flag around here (±5 s)</button>
             <label style="font-size:12px;color:#94a3b8;display:inline-flex;gap:5px;align-items:center;"
                    title="Also ask about the middle of the longest stretches of each route since that team was last labelled">
-              <input type="checkbox" id="mtGaps" checked> + longest unlabelled stretches
+              <input type="checkbox" id="mtGaps"> + longest unlabelled stretches
               <input type="number" id="mtGapN" min="1" max="8" value="3" style="width:42px;background:#0f172a;color:#cbd5e1;border:1px solid #334155;border-radius:4px;">
             </label>
             <button id="mtRequest" style="${btn}color:#93c5fd;">Request follow-up curation</button>
@@ -2103,7 +2105,7 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
         list.innerHTML = flags.length
             ? flags.map((fl, i) => `<span style="display:inline-flex;gap:4px;align-items:center;padding:2px 8px;border-radius:12px;background:#1e293b;color:#fbbf24;font-size:12px;">
                  <a href="#" data-i="${i}" class="mtGo" style="color:inherit;text-decoration:none;"
-                    title="${fl.teams.length ? 'Frames will be chosen where the route of this robot claims a detection' : 'No robot singled out: the busiest frames nearby are used'}">⚑ ${fl.t.toFixed(1)}s${fl.teams.length ? ' · ' + galleryEsc(fl.teams.join('/')) : ''}</a>
+                    title="${fl.exact ? 'Exactly this frame' : fl.teams.length ? 'Frames will be chosen where the route of this robot claims a detection' : 'No robot singled out: the busiest frames nearby are used'}">${fl.exact ? '◎ ' + fl.t.toFixed(2) : '⚑ ' + fl.t.toFixed(1)}s${fl.teams.length ? ' · ' + galleryEsc(fl.teams.join('/')) : ''}</a>
                  <a href="#" data-i="${i}" class="mtDel" title="Remove" style="color:#64748b;text-decoration:none;">×</a></span>`).join('')
             : '<span style="font-size:12px;color:#64748b;">No moments flagged.</span>';
         list.querySelectorAll('.mtGo').forEach(a => a.onclick = (e) => { e.preventDefault(); seekTo(flags[+a.dataset.i].t); });
@@ -2116,9 +2118,21 @@ function mountFollowupFlags(host, matchKey, currentT, seekTo, focusTeams = () =>
         if (t == null) { msg.textContent = 'Scrub or play to the moment first -- the slider is showing the whole match.'; return; }
         const flags = readFlags(matchKey);
         const teams = (focusTeams() || []).map(String);
-        const same = flags.find(x => Math.abs(x.t - t) < 1);
+        const same = flags.find(x => !x.exact && Math.abs(x.t - t) < 1);
         if (same) same.teams = [...new Set([...same.teams, ...teams])];
         else flags.push({ t: Math.round(t * 10) / 10, teams });
+        flags.sort((a, b) => a.t - b.t); writeFlags(matchKey, flags); msg.textContent = ''; draw();
+    };
+    host.querySelector('#mtExact').onclick = () => {
+        const t = currentT();
+        if (t == null) { msg.textContent = 'Move to the frame first.'; return; }
+        const flags = readFlags(matchKey);
+        if (flags.filter(x => x.exact).length >= FOLLOWUP_EXACT_MAX) {
+            msg.textContent = `Up to ${FOLLOWUP_EXACT_MAX} exact frames per request -- send these first, or remove one.`; return;
+        }
+        if (flags.some(x => x.exact && Math.abs(x.t - t) < INSPECT_FRAME_S / 2)) return;
+        const teams = (focusTeams() || []).map(String);
+        flags.push({ t: Math.round(t * 1000) / 1000, teams, exact: true });
         flags.sort((a, b) => a.t - b.t); writeFlags(matchKey, flags); msg.textContent = ''; draw();
     };
     host.querySelector('#mtRequest').onclick = async () => {
@@ -11217,6 +11231,22 @@ const INSPECT_WIN = 1.0;     // speed = displacement over this window, the "aver
 const INSPECT_GAP = 0.45;    // samples further apart than this bracket an unseen stretch
 const INSPECT_FAST = 4.5;    // m/s: above what FRC drivetrains sustain; worth a look
 const INSPECT_FIELD_S = 5;   // the field shows this many seconds up to the slider time
+const INSPECT_FRAME_S = 2 / 29.97;   // one processed frame (every 2nd video frame)
+const INSPECT_JUMP_MULT = 1.5;       // a step beyond this x the budget is a jump...
+const INSPECT_JUMP_MAX_DT = 1.0;     // ...between samples at most this far apart
+// Metres a robot can plausibly cover in dt seconds -- the measured envelope the solver
+// uses (rtrack.solve.EMPIRICAL_P999_M), so the inspector and the solver agree on what
+// "impossible" means.
+const INSPECT_BUDGET = [[0.15, 0.96], [0.27, 1.20], [0.41, 1.76], [0.62, 2.63], [0.88, 3.33],
+                        [1.25, 4.58], [1.75, 5.69], [2.50, 7.32], [3.50, 8.86], [5.00, 10.79]];
+function inspectBudget(dt) {
+    const B = INSPECT_BUDGET;
+    if (dt <= B[0][0]) return B[0][1];
+    for (let k = 1; k < B.length; k++)
+        if (dt <= B[k][0]) return B[k - 1][1] + (B[k][1] - B[k - 1][1]) * (dt - B[k - 1][0]) / (B[k][0] - B[k - 1][0]);
+    const [a, b] = [B[B.length - 2], B[B.length - 1]];
+    return b[1] + (b[1] - a[1]) / (b[0] - a[0]) * (dt - b[0]);
+}
 
 function _alpha(colour, a) {
     const m = /^#([0-9a-f]{6})$/i.exec(String(colour || ''));
@@ -11253,8 +11283,19 @@ function inspectSeries(doc) {
             speed.push(Math.hypot(q.x - p.x, q.y - p.y) / INSPECT_WIN);
             interp.push(!!(p.interp || q.interp || (c && c.interp)));
         }
+        // Single steps no robot can make, judged sample to sample rather than through the
+        // 1 s average: a swap between robots 3 m apart moves each route 3 m in 0.2 s, which
+        // averages to ~3 m/s and never crosses INSPECT_FAST (2026necmp1_qm23, 571/3654).
+        const jumps = [];
+        for (let k = 1; k < S.length; k++) {
+            const a = S[k - 1], b = S[k], dt = b.t - a.t, d = Math.hypot(b.x - a.x, b.y - a.y);
+            if (dt > 0 && dt <= INSPECT_JUMP_MAX_DT && d > INSPECT_JUMP_MULT * inspectBudget(dt))
+                jumps.push({ t0: a.t, t1: b.t, d, mps: d / dt });
+        }
+        const labels = (doc.curatorLabels || []).filter(m => String(m.team) === String(r.team));
         return { team: String(r.team), colour: window.trackColourFor(r, i), speed, interp, seen,
-                 breaks: (r.gaps || []).filter(g => g.reason && g.reason !== 'unobserved') };
+                 breaks: (r.gaps || []).filter(g => g.reason && g.reason !== 'unobserved'),
+                 jumps, labels };
     });
     const avg = grid.map((_t, k) => {
         const v = robots.map(r => r.speed[k]).filter(x => x != null);
@@ -11277,6 +11318,8 @@ function inspectSuspects(series) {
             } else if (run) { out.push(run); run = null; }
         });
         if (run) out.push(run);
+        for (const j of r.jumps)
+            out.push({ team: r.team, t0: j.t0, t1: j.t1, tPeak: j.t0, peak: j.mps, jump: j });
         for (const g of r.breaks)
             out.push({ team: r.team, t0: g.tStart, t1: g.tEnd, tPeak: g.tStart, peak: null, reason: g.reason });
     }
@@ -11332,7 +11375,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
           <div style="position:relative;height:280px;"><canvas id="riChart"></canvas></div>
           <canvas id="riStrip" style="display:block;width:100%;margin-top:4px;"></canvas>
           <div style="font-size:11px;color:#64748b;margin-top:3px;">
-            Coverage per robot: solid = tracked, faded = filled across a gap, red tick = route break. Click the chart or strip to move to that moment.
+            Coverage per robot: solid = tracked, faded = filled across a gap, red tick = route break, orange tick = a step no robot can make, white ▾ = curator label for that team. Click the chart or strip to move there (a click on a ▾ lands on that label's exact frame). Shift+←/→ steps one frame.
           </div>
           <div style="display:flex;gap:10px;align-items:center;margin-top:8px;">
             <button id="riPlay" style="${btn}">▶</button>
@@ -11346,7 +11389,9 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
           </div>
           <div style="display:flex;gap:8px;align-items:center;margin-top:6px;">
             <button id="riBack" style="${btn}">◀ 1s</button>
+            <button id="riFBack" style="${btn}" title="One frame back (Shift+←)">◀ frame</button>
             <span id="riClock" style="font-variant-numeric:tabular-nums;font-size:13px;color:#e2e8f0;min-width:70px;text-align:center;"></span>
+            <button id="riFFwd" style="${btn}" title="One frame forward (Shift+→)">frame ▶</button>
             <button id="riFwd" style="${btn}">1s ▶</button>
           </div>
           <div id="riFollow"></div>
@@ -11427,6 +11472,13 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
             });
             g.fillStyle = '#f87171';
             for (const b of r.breaks) if (b.tStart >= vLo && b.tStart <= vHi) g.fillRect(px(b.tStart) - 1, y - 1, 2, rowH);
+            g.fillStyle = '#fb923c';      // impossible single steps
+            for (const j of r.jumps) if (j.t0 >= vLo && j.t0 <= vHi) g.fillRect(px(j.t0) - 1.5, y - 1, 3, rowH);
+            g.fillStyle = '#f8fafc';      // where the curator labelled this team
+            for (const m of r.labels) if (m.t >= vLo && m.t <= vHi) {
+                const x = px(m.t);
+                g.beginPath(); g.moveTo(x - 3, y); g.lineTo(x + 3, y); g.lineTo(x, y + 4); g.fill();
+            }
         });
         const x = px(tNow); g.fillStyle = '#fbbf24'; g.fillRect(x - 0.75, 0, 1.5, strip.height);
     };
@@ -11434,7 +11486,15 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
         const a = chart.chartArea, r = strip.getBoundingClientRect();
         return vLo + ((e.clientX - r.left) - a.left) / (a.right - a.left) * (vHi - vLo);
     };
-    strip.onclick = (e) => setT(stripTime(e));
+    // A click near a label marker lands EXACTLY on that label's frame, so it can be
+    // picked for re-review; anywhere else moves to the clicked time.
+    strip.onclick = (e) => {
+        const t = stripTime(e), a = chart.chartArea;
+        const tol = 4 * (vHi - vLo) / Math.max(a.right - a.left, 1);
+        const near = (doc.curatorLabels || []).filter(m => Math.abs(m.t - t) <= tol)
+            .sort((p, q) => Math.abs(p.t - t) - Math.abs(q.t - t))[0];
+        setT(near ? near.t : t);
+    };
 
     // HORIZONTAL ZOOM, shared by the chart and the strip. The slider keeps the whole
     // match; the plots show [vLo, vHi], following the slider when it leaves the view.
@@ -11482,7 +11542,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     };
     function setT(t) {
         tNow = Math.max(series.tMin, Math.min(series.tMax, t));
-        el.querySelector('#riClock').textContent = `${tNow.toFixed(1)} s`;
+        el.querySelector('#riClock').textContent = `${tNow.toFixed(2)} s`;
         if (tNow < vLo || tNow > vHi) {                 // follow the slider out of a zoom
             const w = vHi - vLo; vLo = Math.max(series.tMin, Math.min(tNow - w / 2, series.tMax - w)); vHi = vLo + w;
             applyView();
@@ -11492,6 +11552,8 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     }
     el.querySelector('#riBack').onclick = () => setT(tNow - 1);
     el.querySelector('#riFwd').onclick = () => setT(tNow + 1);
+    el.querySelector('#riFBack').onclick = () => setT(tNow - INSPECT_FRAME_S);
+    el.querySelector('#riFFwd').onclick = () => setT(tNow + INSPECT_FRAME_S);
 
     // The slider and play, as in the match view: scrubbing is how a person watches a
     // route unfold, and the chart click is for jumping, not for following.
@@ -11532,7 +11594,9 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     el.querySelector('#riSuspects').innerHTML = sus.length
         ? sus.map((s, i) => `<a href="#" data-i="${i}" style="color:#cbd5e1;text-decoration:none;padding:3px 6px;border-radius:4px;background:#111827;">
             <b style="color:${series.robots.find(r => r.team === s.team)?.colour || '#e2e8f0'};">${galleryEsc(s.team)}</b>
-            ${s.peak != null
+            ${s.jump
+              ? `jumps ${s.jump.d.toFixed(1)} m in ${(s.t1 - s.t0).toFixed(2)} s at ${s.t0.toFixed(2)} s (a robot covers at most ~${inspectBudget(s.t1 - s.t0).toFixed(1)} m in that time)`
+              : s.peak != null
               ? `${s.peak.toFixed(1)} m/s at ${s.tPeak.toFixed(1)} s (${(s.t1 - s.t0 + INSPECT_DT).toFixed(1)} s above ${INSPECT_FAST})${s.interp ? ' — across a gap' : ''}`
               : `route break (${galleryEsc(s.reason)}) ${s.t0.toFixed(1)}–${s.t1.toFixed(1)} s`}</a>`).join('')
         : '<span style="color:#64748b;">Nothing implausible: no robot exceeds ' + INSPECT_FAST + ' m/s and the routes have no breaks.</span>';
@@ -11558,8 +11622,8 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     const onResize = () => { drawStrip(); paintField(); };
     const onKey = (e) => {
         if (e.key === 'Escape') closeRouteInspector();
-        else if (e.key === 'ArrowLeft') setT(tNow - INSPECT_DT);
-        else if (e.key === 'ArrowRight') setT(tNow + INSPECT_DT);
+        else if (e.key === 'ArrowLeft') setT(tNow - (e.shiftKey ? INSPECT_FRAME_S : INSPECT_DT));
+        else if (e.key === 'ArrowRight') setT(tNow + (e.shiftKey ? INSPECT_FRAME_S : INSPECT_DT));
     };
     window.addEventListener('resize', onResize);
     document.addEventListener('keydown', onKey);

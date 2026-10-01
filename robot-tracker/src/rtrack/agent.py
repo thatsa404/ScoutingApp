@@ -1026,6 +1026,16 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
         t0 = float(flag["t"]) if isinstance(flag, dict) else float(flag)
         teams = ({str(x) for x in flag.get("teams") or []} if isinstance(flag, dict) else set())
         who = f" {'/'.join(sorted(teams))}" if teams else ""
+        if isinstance(flag, dict) and flag.get("exact"):
+            # EXACTLY THIS FRAME: the curator picked it in the route inspector, often to
+            # re-review the very frame an old label sits on. No anchors, no jump search
+            # -- the nearest processed frame, and nothing else for this flag.
+            t, f, _n = min(busy, key=lambda b: abs(b[0] - (off + t0)))
+            if all(c[1] != f for c in chosen):
+                chosen.append((t, f, f"requested exact frame{who} at {t - off:.2f}s"))
+                if teams:
+                    focus_boxes[f] = team_boxes(f, teams)
+            continue
         for team in sorted(teams):
             for t, f, d, dt in jump_frames(off + t0, team):
                 if all(c[1] != f for c in chosen):

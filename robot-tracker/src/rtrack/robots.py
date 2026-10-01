@@ -2638,6 +2638,15 @@ def main(argv=None) -> int:
     if args.corrections:
         from . import corrections as CO
         doc = CO.load(args.corrections)
+        doc["labels"], superseded = CO.supersede(rows, doc["labels"])
+        if superseded:
+            print(f"[corrections] {len(superseded)} older-round label(s) superseded -- a "
+                  f"later round labelled the same box on the same frame:")
+            for s_ in superseded:
+                nb = s_["supersededBy"]
+                print(f"[corrections]   f{s_['f']} {s_.get('team') or CO.flag_of(s_)} "
+                      f"(round {s_['round']}) -> f{nb['f']} {nb.get('team')} "
+                      f"(round {nb.get('round')})")
         resolved = CO.resolve(rows, doc["labels"])
         cuts = CO.cuts_from(resolved)
         n_cuts = sum(len(v) for v in cuts.values())

@@ -236,16 +236,19 @@ def merge_answer(existing: Path, new: dict) -> dict:
     except (OSError, json.JSONDecodeError):
         return new
     key = lambda l: (int(l.get("f", -1)), tuple(int(v) for v in (l.get("xy") or ())))
-    merged = {key(l): l for l in old.get("labels") or []}
-    added = sum(1 for l in new.get("labels") or [] if key(l) not in merged)
-    for l in new.get("labels") or []:
-        merged[key(l)] = l
-    from datetime import datetime as _dt
-    bak = existing.with_name(f"{existing.name}.bak-{_dt.now().strftime('%Y%m%d-%H%M%S')}")
-    bak.write_bytes(existing.read_bytes())
     rounds = list(old.get("rounds") or [{"createdAt": old.get("createdAt"),
                                           "session": old.get("session"),
                                           "labels": len(old.get("labels") or [])}])
+    # Every label carries the round it came from, so rtrack.corrections.supersede can
+    # let a later reading of a robot retire an earlier, contradicting one nearby.
+    merged = {key(l): ({**l, "round": 1} if l.get("round") is None else l)
+              for l in old.get("labels") or []}
+    added = sum(1 for l in new.get("labels") or [] if key(l) not in merged)
+    for l in new.get("labels") or []:
+        merged[key(l)] = {**l, "round": len(rounds) + 1}
+    from datetime import datetime as _dt
+    bak = existing.with_name(f"{existing.name}.bak-{_dt.now().strftime('%Y%m%d-%H%M%S')}")
+    bak.write_bytes(existing.read_bytes())
     rounds.append({"createdAt": new.get("createdAt"), "session": new.get("session"),
                    "labels": len(new.get("labels") or [])})
     print(f"[relay] merged into existing corrections: {added} new label(s), "

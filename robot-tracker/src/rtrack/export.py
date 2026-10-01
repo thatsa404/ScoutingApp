@@ -353,6 +353,7 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
     q = positions.get("quality") or {}
     cur = robots_doc.get("curator") or {}
     n_labels = len(cur.get("pinned") or {}) + len(cur.get("flags") or {})
+    label_marks = curator_label_marks(match_key, positions, t0)
     # Visibility depends only on the camera pose, so it is a property of the
     # CALIBRATION and identical for every match sharing one. Computed here rather than
     # stored in calib/ so an older calibration file gains it without being re-fitted.
@@ -448,6 +449,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         # not draw a phase split rather than guess one.
         "phases": {"autoEndT": auto_end},
         "robots": out_robots,
+        # Where the curator labelled what, in match time: lets the route inspector show
+        # which moments are already answered, so a re-review can target the exact frame
+        # an old label sits on. [] when uncurated.
+        "curatorLabels": label_marks,
         "quality": {
             "samplesIn": q.get("samples"),
             "samplesOut": sum(len(r["samples"]) for r in out_robots),
@@ -483,6 +488,31 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         },
     }
     return doc
+
+
+def curator_label_marks(match_key: str, positions: dict, t0: float) -> list[dict]:
+    """[{t, f, team | flag, round}] for every curator label, t in match time. Frame
+    times come from the projected samples, which cover every frame with a detection --
+    and a label always sits on one."""
+    p = C.TRACKER_ROOT / "corrections" / f"{match_key}_corrections.json"
+    if not p.exists():
+        return []
+    try:
+        labels = json.loads(p.read_text(encoding="utf-8")).get("labels") or []
+    except (OSError, json.JSONDecodeError):
+        return []
+    t_of = {int(s["f"]): float(s["t"]) for s in positions.get("samples") or []}
+    out = []
+    for l in labels:
+        f = int(l.get("f", -1))
+        if f not in t_of:
+            continue
+        flag = next((k for k in ("notrobot", "mixed", "unknown") if l.get(k)), None)
+        out.append({"t": round(t_of[f] - t0, 3), "f": f,
+                    **({"flag": flag} if flag else {"team": str(l.get("team") or "")}),
+                    **({"round": int(l["round"])} if l.get("round") is not None else {})})
+    out.sort(key=lambda m: m["t"])
+    return out
 
 
 def validate(doc: dict) -> list[str]:
