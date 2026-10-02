@@ -474,12 +474,17 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
             a += ["--calib-from", job["calibFrom"]]
         # No --relay: that mode blocks for its whole --wait on ONE curator finishing, which
         # is the opposite of a batch. Build locally, push, move on.
+        t_start = time.time()
         rc, btail = _run_logged(a, cwd=C.TRACKER_ROOT)
         if rc == 3:
             report("event busy (lock held); will retry", i, len(todo))
             break
         bundle = _bundle_path(key)
-        if rc != 0 or not bundle.exists():
+        # Curated meanwhile: the pipeline published, and the file on disk is an OLD
+        # bundle the curator already answered (see run_process). Never push it.
+        if rc == 0 and _corrections_exist(key):
+            continue
+        if rc != 0 or not bundle.exists() or bundle.stat().st_mtime < t_start - 5:
             print(f"[agent] {key} bundle failed: "
                   + (failure_reason(btail, rc) if rc != 0
                      else "pipeline succeeded but produced no curation bundle"), flush=True)
@@ -520,7 +525,8 @@ def process_plan(keys: list[str], event: str, bundles: dict, answers: dict,
             continue
         if _curated(key):
             plan["curated"].append(suf)
-        elif _corrections_exist(key):
+        elif _corrections_exist(key) or answers.get(key, 0.0) > bundles.get(key, 0.0) > 0.0:
+            # answered on the relay but not yet pulled down: the watcher's to publish
             plan["awaitingPublish"].append(suf)
         elif bundles.get(key, 0.0) > answers.get(key, 0.0):
             plan["awaitingCuration"].append(suf)
@@ -748,6 +754,13 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         # curator's 24-hour window and churn the relay for no gain.
         if bundles.get(key, 0.0) > answers.get(key, 0.0):
             continue
+        # AN ANSWER ON THE RELAY means the match is curated and the watcher owns it, even
+        # when no corrections file exists yet (the watcher may be waiting on the event
+        # lock). Bundling it anyway re-pushed qm49's and qm50's already-answered bundles
+        # a minute after the curator sent them, so both read "bundle waiting · re-curate".
+        if answers.get(key, 0.0) > 0.0:
+            continue
+        t_start = time.time()
         if out >= cap or attempts >= attempt_budget:
             continue
         attempts += 1
@@ -765,9 +778,13 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             report("event busy (lock held); will retry", len(curated), len(keys))
             break
         bundle = _bundle_path(key)
-        if rc != 0 or not bundle.exists():
+        # Curated while this ran: the pipeline published instead of bundling, and the
+        # bundle file on disk is the OLD one. Never push it.
+        if rc == 0 and _corrections_exist(key):
+            continue
+        if rc != 0 or not bundle.exists() or bundle.stat().st_mtime < t_start - 5:
             fail(key, "bundle", failure_reason(btail, rc) if rc != 0
-                 else "pipeline succeeded but wrote no curation bundle")
+                 else "pipeline succeeded but wrote no new curation bundle")
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
         prc, ptail = _run_logged(push, cwd=C.TRACKER_ROOT)
