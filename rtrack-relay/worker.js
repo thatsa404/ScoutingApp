@@ -208,24 +208,85 @@ function mergeGalleryAnswer(existing, incoming) {
 // day at most, to rebuild it if it is ever missing.
 const INDEX_KEY = 'idx:manifest';
 
-// Read-modify-write, so two POSTs landing in the same instant can lose one entry. That is
-// accepted rather than overlooked: the loser is only missing from the LISTING, its actual
-// value is stored correctly and still fetchable by key, and the next write to that key
-// restores it. Making this correct needs a Durable Object, which is a lot of machinery for
-// a listing that one person reads between matches.
+// THE INDEX LIVES IN A DURABLE OBJECT (RelayIndex, below), not in that KV key.
+//
+// The KV manifest was read-modify-write: every POST read idx:manifest, added its entry
+// and wrote the whole thing back. KV reads are eventually consistent -- an edge can serve
+// a copy up to ~60 s old -- and the agent heartbeats every few seconds, so a heartbeat
+// regularly rewrote the manifest from a stale copy and dropped whatever had been added
+// just before. The value was always stored; only its LISTING vanished. Measured on
+// 2026necmp1: a follow-up request never reached the agent (it finds jobs only through
+// the index), and two re-solved routes kept yesterday's timestamps, so the app showed
+// them as "awaiting rerun" for hours.
+//
+// A Durable Object is one instance with strongly consistent storage, and each entry is
+// its own record, so no write can overwrite another's. It also halves KV writes: a POST
+// is now one KV put (the value) instead of two.
+const indexStub = (env) => env.RTRACK_INDEX.get(env.RTRACK_INDEX.idFromName('index'));
+
 async function touchIndex(env, kind, id, meta) {
-  let m = {};
-  try { m = (await env.RTRACK_KV.get(INDEX_KEY, 'json')) || {}; } catch { m = {}; }
-  m[`${kind}:${id}`] = { kind, id, ...meta,
-                         expires: Math.floor(Date.now() / 1000) + ttlFor(kind) };
-  // Best effort, and deliberately AFTER the value is stored. If the manifest write is the
-  // one that trips the daily limit, the value is already safe and the caller must not be
-  // told the whole request failed -- a missing listing entry is restored by the next write
-  // to that key, whereas a false failure makes a client resend a payload that landed.
+  const key = `${kind}:${id}`;
+  const entry = { kind, id, ...meta, expires: Math.floor(Date.now() / 1000) + ttlFor(kind) };
+  // Best effort, and AFTER the value is stored: a missing listing entry is restored by
+  // the next write to that key, whereas reporting failure makes a client resend a
+  // payload that landed.
   try {
-    await env.RTRACK_KV.put(INDEX_KEY, JSON.stringify(m));
+    const r = await indexStub(env).fetch('https://index/touch', {
+      method: 'POST', body: JSON.stringify({ key, entry }) });
+    if (!r.ok) console.log(`[index] not updated for ${key}: ${r.status}`);
   } catch (e) {
-    console.log(`[index] not updated for ${kind}:${id}: ${e && e.message || e}`);
+    console.log(`[index] not updated for ${key}: ${e && e.message || e}`);
+  }
+}
+
+const SEEDED = '__seeded';
+
+export class RelayIndex {
+  constructor(ctx, env) {
+    this.ctx = ctx;
+    this.env = env;
+    // ONE-TIME IMPORT of the old KV manifest, so switching over loses no listing. Inside
+    // blockConcurrencyWhile, so no request sees a half-seeded index.
+    ctx.blockConcurrencyWhile(async () => {
+      if (await ctx.storage.get(SEEDED)) return;
+      let m = {};
+      try { m = (await env.RTRACK_KV.get(INDEX_KEY, 'json')) || {}; } catch { m = {}; }
+      const entries = Object.entries(m);
+      for (let i = 0; i < entries.length; i += 100) {
+        await ctx.storage.put(Object.fromEntries(entries.slice(i, i + 100)));
+      }
+      await ctx.storage.put(SEEDED, { at: Date.now(), imported: entries.length });
+    });
+  }
+
+  async fetch(request) {
+    const path = new URL(request.url).pathname;
+    const st = this.ctx.storage;
+    if (path === '/touch' && request.method === 'POST') {
+      const { key, entry } = await request.json();
+      if (!key || key === SEEDED) return new Response('bad key', { status: 400 });
+      await st.put(key, entry);
+      return new Response('ok');
+    }
+    if (path === '/remove' && request.method === 'POST') {
+      const { key } = await request.json();
+      if (key && key !== SEEDED) await st.delete(key);
+      return new Response('ok');
+    }
+    if (path === '/list') {
+      const now = Math.floor(Date.now() / 1000);
+      const all = await st.list();
+      const items = [], expired = [];
+      for (const [key, v] of all) {
+        if (key === SEEDED) continue;
+        if (v && v.expires && v.expires <= now) { expired.push(key); continue; }
+        items.push({ key, ...v });
+      }
+      // The values behind these have expired out of KV already; drop their listings.
+      for (let i = 0; i < expired.length; i += 100) await st.delete(expired.slice(i, i + 100));
+      return new Response(JSON.stringify(items), { headers: { 'Content-Type': 'application/json' } });
+    }
+    return new Response('not found', { status: 404 });
   }
 }
 
@@ -246,36 +307,23 @@ export default {
     });
 
     if (parts[0] === 'index' && request.method === 'GET') {
-      const now = Math.floor(Date.now() / 1000);
-      let m = await env.RTRACK_KV.get(INDEX_KEY, 'json');
-      let rebuilt = false;
-      if (!m) {
-        // Bootstrap: the only list() left in the worker, and it runs once per manifest
-        // lifetime rather than once per poll. If the daily quota is already spent this
-        // still throws, so it is caught -- a degraded empty listing beats a 500 that
-        // takes the whole Tracks tab down.
-        try {
-          const list = await env.RTRACK_KV.list({ limit: 1000 });
-          m = {};
-          for (const k of list.keys) {
-            if (k.name === INDEX_KEY) continue;
-            m[k.name] = {
-              kind: k.name.split(':')[0],
-              id: k.name.split(':').slice(1).join(':'),
-              expires: k.expiration ?? null,
-              ...(k.metadata || {}),
-            };
-          }
-          await env.RTRACK_KV.put(INDEX_KEY, JSON.stringify(m));
-          rebuilt = true;
-        } catch (e) {
-          return json({ ok: true, count: 0, items: [], degraded: String(e.message || e) });
-        }
+      try {
+        const r = await indexStub(env).fetch('https://index/list');
+        if (!r.ok) throw new Error(`index object returned ${r.status}`);
+        const items = await r.json();
+        return json({ ok: true, count: items.length, items });
+      } catch (e) {
+        // A frozen copy beats a 500 that takes the Tracks tab down -- but say so.
+        const now = Math.floor(Date.now() / 1000);
+        let m = null;
+        try { m = await env.RTRACK_KV.get(INDEX_KEY, 'json'); } catch { m = null; }
+        const items = Object.entries(m || {})
+          .filter(([, v]) => !v.expires || v.expires > now)
+          .map(([key, v]) => ({ key, ...v }));
+        return json({ ok: true, count: items.length, items,
+                      degraded: `index object unavailable (${String(e.message || e)}); `
+                                + 'showing the last KV manifest, which is no longer updated' });
       }
-      const items = Object.entries(m)
-        .filter(([, v]) => !v.expires || v.expires > now)
-        .map(([key, v]) => ({ key, ...v }));
-      return json({ ok: true, count: items.length, items, ...(rebuilt && { rebuilt: true }) });
     }
 
     if (parts.length !== 2 || !KINDS.has(parts[0])) {
@@ -442,8 +490,8 @@ export default {
       if (level() !== 'full') return json({ ok: false, error: 'unauthorized' }, 401);
       await env.RTRACK_KV.delete(kvKey);
       try {
-        const m = (await env.RTRACK_KV.get(INDEX_KEY, 'json')) || {};
-        if (kvKey in m) { delete m[kvKey]; await env.RTRACK_KV.put(INDEX_KEY, JSON.stringify(m)); }
+        await indexStub(env).fetch('https://index/remove', {
+          method: 'POST', body: JSON.stringify({ key: kvKey }) });
       } catch { /* the value is gone either way; a stale listing entry expires on its own */ }
       return json({ ok: true, deleted: kvKey });
     }
