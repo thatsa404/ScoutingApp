@@ -7781,8 +7781,54 @@ function pushNavState(overlay) {
     history.pushState({ overlay }, '');
 }
 
+// LAYERED OVERLAYS (the route inspector, full-screen routes, the gallery review panel):
+// the phone's Back must do what the on-screen Close does, and Close must not leave a dead
+// Back press behind. pushNavState above leaves its history entry in place when an overlay
+// is closed by its own button, so the next Back appears to do nothing; layers keep their
+// entry honest instead --
+//   open   push one entry (once per layer; replacing an open layer reuses it)
+//   Back   the popstate handler closes the topmost layer, which is already one step back
+//   Close  the layer's own close calls navLayerClosed, which steps history back over its
+//          entry so Back is not wasted
+const _navLayers = [];       // [{ id, close, isOpen, viaBack }], oldest first
+let _navExpectPop = false;   // the next popstate is OUR history.back(), not the user's
+
+function navLayerOpen(id, close, isOpen = () => true) {
+    const have = _navLayers.find(l => l.id === id);
+    if (have) { have.close = close; have.isOpen = isOpen; return; }
+    history.pushState({ overlay: id }, '');
+    _navLayers.push({ id, close, isOpen, viaBack: false });
+}
+
+function navLayerClosed(id) {
+    const i = _navLayers.findIndex(l => l.id === id);
+    if (i < 0) return;
+    const [layer] = _navLayers.splice(i, 1);
+    if (layer.viaBack || history.state?.overlay !== id) return;   // Back already consumed it
+    _navExpectPop = true;
+    history.back();
+    // if the browser never reports the pop, do not swallow the user's next Back
+    setTimeout(() => { _navExpectPop = false; }, 800);
+}
+
+// Returns true when a layer took the Back press.
+function navLayerBack() {
+    if (_navExpectPop) { _navExpectPop = false; return true; }
+    while (_navLayers.length) {
+        const layer = _navLayers[_navLayers.length - 1];
+        if (!layer.isOpen()) { _navLayers.pop(); continue; }   // closed some other way
+        layer.viaBack = true;
+        layer.close();
+        const k = _navLayers.indexOf(layer);
+        if (k >= 0) _navLayers.splice(k, 1);
+        return true;
+    }
+    return false;
+}
+
 // Native back gesture/button: close the topmost visible overlay
 window.addEventListener('popstate', () => {
+    if (navLayerBack()) return;
     if (document.getElementById('scoutingBreakdownModal').style.display !== 'none') {
         window.closeScoutingBreakdown();
     } else if (document.getElementById('photoLightbox').style.display !== 'none') {
@@ -9050,6 +9096,7 @@ window.sortPickListBy = function (col) {
 
 window.switchToolsTab = function (tab) {
     currentToolsTab = tab;
+    if (tab !== 'tracks') navLayerClosed('galleryReview');
     // Order must match the buttons in #toolsTabs — the .active toggle below is by index.
     const allTabs = ['field', 'picklist', 'draft', 'alliances', 'tracks', 'dev'];
     allTabs.forEach(t => {
@@ -9539,6 +9586,9 @@ function galleryImageCard(image, selected, onChange, readOnly = false) {
 }
 
 function renderGalleryReviewPanelV2(host, relay, bundle, selectedTeam) {
+    // Back closes the panel like its Close button (renderTracksTab re-renders over it)
+    navLayerOpen('galleryReview', () => { _galleryReviewBundle = null; renderTracksTab(); },
+                 () => { const b = document.getElementById('galleryReviewClose'); return !!b && b.offsetParent !== null; });
     const draft = readGalleryDraftV2(bundle);
     const group = bundle.teams.find(item => String(item.team) === String(selectedTeam)) || bundle.teams[0];
     if (!group) return;
@@ -9683,13 +9733,13 @@ async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedR
     const block = document.createElement('details');
     block.open = localStorage.getItem('rtrackSection:gallery') !== 'closed';
     block.ontoggle = () => localStorage.setItem('rtrackSection:gallery', block.open ? 'open' : 'closed');
-    block.style.cssText = 'border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;';
+    block.className = 'trk-box';
     block.innerHTML = `<summary style="cursor:pointer;color:#e2e8f0;font-size:.9em;font-weight:700;">Gallery review by team</summary><p style="margin:8px 0;font-size:.76em;color:#64748b;">Compare reviewed examples with larger, context-padded track detections. Reviewed-match counts are split by the alliance color providing the appearance evidence.</p>`;
     if (replayItems.length) {
         const counts = {}; for (const item of replayItems) counts[item.state || 'unknown'] = (counts[item.state || 'unknown'] || 0) + 1;
         block.innerHTML += `<p style="margin:5px 0 8px;color:#94a3b8;font-size:.78em;">Replay: ${Object.entries(counts).map(([state, count]) => `${galleryEsc(state)} ${count}`).join(' · ')}</p>`;
     }
-    if (!relay) { block.innerHTML += '<p style="margin:0;color:#f59e0b;font-size:.82em;">Configure the relay above to review gallery candidates.</p>'; host.prepend(block); return; }
+    if (!relay) { block.innerHTML += '<p style="margin:0;color:#f59e0b;font-size:.82em;">Configure the relay above to review gallery candidates.</p>'; host.append(block); return; }
     const rowsByTeam = new Map();
     const outdatedRows = [];
     for (const review of reviews) {
@@ -9733,7 +9783,7 @@ async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedR
         reviewId: item.review.id,
         team: row.team,
     })));
-    if (!rows.length) { block.innerHTML += '<p style="margin:0;color:#64748b;font-size:.82em;">No team gallery bundles waiting.</p>'; host.prepend(block); return; }
+    if (!rows.length) { block.innerHTML += '<p style="margin:0;color:#64748b;font-size:.82em;">No team gallery bundles waiting.</p>'; host.append(block); return; }
     const table = document.createElement('table'); table.style.cssText = 'width:100%;border-collapse:collapse;font-size:.84em;';
     table.innerHTML = '<tr style="color:#64748b;text-align:left;"><th style="padding:6px 4px;">Team</th><th style="padding:6px 4px;">Reviewed matches</th><th style="padding:6px 4px;">Current</th><th style="padding:6px 4px;">Candidates</th><th style="padding:6px 4px;">State</th><th style="padding:6px 4px;text-align:right;">Action</th></tr>';
     rows.forEach(row => {
@@ -9748,7 +9798,8 @@ async function renderGalleryReviewQueueV2(host, relay, items, matches, hydratedR
         tr.querySelector('.galleryOpen').onclick = async () => { const loaded = await loadGalleryReviewBundleV2(relay, row.review.id); if (loaded) renderGalleryReviewPanelV2(host, relay, loaded, row.team); };
         table.appendChild(tr);
     });
-    block.appendChild(table); host.prepend(block);
+    const scroll = document.createElement('div'); scroll.className = 'trk-scroll';
+    scroll.appendChild(table); block.appendChild(scroll); host.append(block);
 }
 
 // ── RELAY CONTROL: arming the home machine from the app ──────────────────────
@@ -10183,7 +10234,7 @@ function renderRelayControl(hostId, relay, items) {
 
     if (!agent) {
         el.innerHTML = `
-          <div style="border:1px solid #334155;border-radius:8px;padding:10px 12px;margin-bottom:12px;">
+          <div class="trk-box trk-strong">
             <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
               <span style="color:#94a3b8;font-size:0.75em;font-weight:700;letter-spacing:0.06em;
                            text-transform:uppercase;">Relay Control</span>
@@ -10204,8 +10255,7 @@ function renderRelayControl(hostId, relay, items) {
     const stream = eventKey ? resolveEventStream(eventKey) : null;
 
     el.innerHTML = `
-      <div id="rcBox" style="border:1px solid ${h.stale ? '#7f1d1d' : '#334155'};border-radius:8px;
-                  padding:10px 12px;margin-bottom:12px;">
+      <div id="rcBox" class="trk-box trk-strong" style="border-color:${h.stale ? '#7f1d1d' : '#334155'};">
         <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;">
           <span style="color:#94a3b8;font-size:0.75em;font-weight:700;letter-spacing:0.06em;
                        text-transform:uppercase;">Relay Control</span>
@@ -10347,6 +10397,36 @@ function renderRelayControl(hostId, relay, items) {
     };
 }
 
+// RESET A MATCH'S CURATION. Asks the home machine to put the match's ORIGINAL bundle back
+// on the relay and retire every answer given since (rtrack.agent run_reset). Nothing is
+// deleted there -- the corrections are kept under a .reset-<time> name -- and the
+// published route stays until the match is curated again.
+window.resetCuration = async (matchKey) => {
+    const msg = document.getElementById('trkMsg');
+    if (!confirm(`Reset curation for ${matchKey}?
+
+`
+        + `• The original bundle goes back on the relay, for a fresh pass.
+`
+        + `• Every answer given since -- the first round and all follow-ups -- is retired. `
+        + `The files are kept on the home machine, not deleted.
+`
+        + `• The published route stays as it is until the match is curated again.`)) return;
+    const relay = relayUrl();
+    const agents = relayAgents(await _relayIndex(relay) || []);
+    if (!agents.length) {
+        msg.innerHTML = '<span style="color:#f87171;">No home machine has reported to the relay.</span>'; return;
+    }
+    if (!controlToken()) {
+        msg.innerHTML = '<span style="color:#f87171;">Enter the control token in Relay Control (Relay tab) first.</span>'; return;
+    }
+    const savedId = localStorage.getItem(AGENT_ID_KEY) || '';
+    const agent = agents.find(a => a.id === savedId) || agents[0];
+    const ok = await postJob(relay, agent.id, { type: 'reset', event: matchKey.split('_')[0], match: matchKey }, msg);
+    if (ok === true) msg.innerHTML = `<span style="color:#22c55e;">Reset requested for ${galleryEsc(matchKey)}. `
+        + `Press Refresh in a minute: it should read "bundle waiting · re-curate".</span>`;
+};
+
 let _tracksBySpeed = false;
 window.toggleTracksBySpeed = () => { _tracksBySpeed = !_tracksBySpeed; renderTracksTab(); };
 
@@ -10358,24 +10438,72 @@ window.inspectMatchAt = async (matchKey, t) => {
     window.openRouteInspector(doc, matchKey, { tNow: t });
 };
 
+// Match-table filters live at module scope: Refresh, Save and the speed ranking all
+// re-render the whole tab, and a filter that reset each time would be a filter nobody uses.
+let _trkFilter = { state: 'all', team: '' };
+const TRK_SUBTAB_KEY = 'rtrackSubtab';
+const TRK_STATES = [
+    ['attention', 'Needs attention'],
+    ['needs', 'Needs curation'],
+    ['bundle', 'Bundle waiting · re-curate'],
+    ['rerun', 'Curated · awaiting rerun'],
+    ['curated', 'Published · curated'],
+    ['auto', 'Published · auto'],
+    ['live', 'Published · live, uncommitted'],
+    ['detected', 'Detected · awaiting bundle'],
+    ['none', 'No tracks'],
+];
+// "Needs attention" is the union a curator is usually asking for: work a person has to do.
+const trkStateMatches = (sk, want) => want === 'all' || want === sk
+    || (want === 'attention' && (sk === 'needs' || sk === 'bundle' || sk === 'rerun'));
+
 async function renderTracksTab() {
     const host = document.getElementById('tools-tab-tracks');
     if (!host) return;
+    navLayerClosed('galleryReview');     // re-rendering the tab dismisses an open review panel
     const relay = relayUrl();
     const eventKey = (document.getElementById('eventKeyInput')?.value || '').trim().toLowerCase();
 
+    // TWO SUB-TABS. Relay holds everything that drives the home machine (the relay URL, the
+    // control panel, cameras); Curation holds the work a person does (match bundles, the
+    // gallery review queue). The status line and Refresh stay above both.
     host.innerHTML = `
-      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
-        <input id="trkRelay" value="${relay}" placeholder="https://rtrack-relay.<you>.workers.dev"
-               style="flex:1;min-width:240px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
-                      border-radius:6px;padding:8px 10px;font-size:0.85em;">
-        <button id="trkSave" style="padding:8px 12px;border-radius:6px;border:1px solid #334155;
-                background:transparent;color:#94a3b8;cursor:pointer;">Save</button>
+      <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        <div class="trk-subtabs" id="trkSubtabs">
+          <button class="trk-subtab-btn" data-sub="relay">Relay</button>
+          <button class="trk-subtab-btn" data-sub="curation">Curation</button>
+        </div>
+        <span id="trkRelayNote" style="font-size:0.8em;flex:1;min-width:160px;"></span>
         <button id="trkRefresh" style="padding:8px 12px;border-radius:6px;border:1px solid #2563eb;
                 background:#2563eb;color:#fff;cursor:pointer;font-weight:600;">Refresh</button>
       </div>
-      <div id="trkControl"></div>
-      <div id="trkBody" style="color:#94a3b8;">Loading…</div>`;
+      <div id="trkPaneRelay">
+        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+          <input id="trkRelay" value="${relay}" placeholder="https://rtrack-relay.<you>.workers.dev"
+                 style="flex:1;min-width:240px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
+                        border-radius:6px;padding:8px 10px;font-size:0.85em;">
+          <button id="trkSave" style="padding:8px 12px;border-radius:6px;border:1px solid #334155;
+                  background:transparent;color:#94a3b8;cursor:pointer;">Save</button>
+        </div>
+        <div id="trkControl"></div>
+        <div id="trkCameras"></div>
+        <p id="trkRelayHelp" style="font-size:0.76em;color:#64748b;margin-top:12px;"></p>
+      </div>
+      <div id="trkPaneCuration">
+        <div id="trkBody" style="color:#94a3b8;">Loading…</div>
+      </div>`;
+
+    const setSub = (name) => {
+        try { localStorage.setItem(TRK_SUBTAB_KEY, name); } catch { /* private window */ }
+        document.getElementById('trkPaneRelay').style.display = name === 'relay' ? 'block' : 'none';
+        document.getElementById('trkPaneCuration').style.display = name === 'curation' ? 'block' : 'none';
+        host.querySelectorAll('#trkSubtabs button').forEach(b =>
+            b.classList.toggle('active', b.dataset.sub === name));
+    };
+    host.querySelectorAll('#trkSubtabs button').forEach(b => b.onclick = () => setSub(b.dataset.sub));
+    let remembered = null;
+    try { remembered = localStorage.getItem(TRK_SUBTAB_KEY); } catch { /* ignore */ }
+    setSub(remembered === 'curation' ? 'curation' : 'relay');
 
     document.getElementById('trkSave').onclick = () => {
         localStorage.setItem(RELAY_KEY, document.getElementById('trkRelay').value.trim());
@@ -10480,16 +10608,13 @@ async function renderTracksTab() {
     // between robots far apart come first. Clicking the column header toggles it.
     if (_tracksBySpeed) rows.sort((a, b) => (b.maxSpeed?.mps ?? -1) - (a.maxSpeed?.mps ?? -1));
 
-    if (!rows.length) {
-        body.innerHTML = `<p>No matches for ${eventKey || 'any event'} yet.
-          Set an event key on the Home tab, or publish tracks to <code>public/tracks/</code>.</p>`;
-        return;
-    }
+    const noRows = !rows.length;
 
     const relayNote = relay
         ? (items ? `<span style="color:#22c55e;">relay reachable · ${items.length} item(s)</span>`
                  : `<span style="color:#f59e0b;">relay not reachable — in-flight work will not show</span>`)
         : `<span style="color:#f59e0b;">no relay configured — showing published tracks only</span>`;
+    document.getElementById('trkRelayNote').innerHTML = relayNote;
 
     const multiEvent = new Set(rows.map(r => r.key.split('_')[0])).size > 1;
 
@@ -10539,12 +10664,12 @@ async function renderTracksTab() {
                                               : '<span style="color:#64748b;">—</span>';
     };
     const occlOn = new Set((items || []).filter(it => it.kind === 'occl').map(it => it.id));
-    const cameraBlock = cams.length ? `
-      <details data-rtrack-section="cameras" style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
+    document.getElementById('trkCameras').innerHTML = cams.length ? `
+      <details data-rtrack-section="cameras" class="trk-box">
       <summary style="cursor:pointer;font-size:0.9em;font-weight:700;color:#e2e8f0;">Cameras</summary>
       <p style="margin:8px 0;font-size:0.76em;color:#64748b;">
         Done once per camera, then reused by every match shot on it.</p>
-      <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
+      <div class="trk-scroll"><table style="width:100%;border-collapse:collapse;font-size:0.86em;">
         <tr style="color:#64748b;text-align:left;">
           <th style="padding:6px 4px;">Camera</th>
           <th style="padding:6px 4px;">Calibration</th>
@@ -10562,119 +10687,8 @@ async function renderTracksTab() {
             ${act('Occluders', q('occluders', 'video', id), false)}
           </td>
         </tr>`).join('')}
-      </table></details>` : '';
-
-    body.innerHTML = `
-      <p style="font-size:0.82em;margin:0 0 10px;">${relayNote}</p>
-      ${cameraBlock}
-      <details data-rtrack-section="matches" style="border:1px solid #1e293b;border-radius:8px;padding:10px 12px;margin-bottom:14px;">
-      <summary style="cursor:pointer;font-size:0.9em;font-weight:700;color:#e2e8f0;">Matches</summary>
-      <table style="width:100%;border-collapse:collapse;font-size:0.86em;">
-        <tr style="color:#64748b;text-align:left;">
-          <th style="padding:6px 4px;">Match</th>
-          <th style="padding:6px 4px;">State</th>
-          <th style="padding:6px 4px;" title="Share of the match each robot was tracked, averaged">Custody</th>
-          <th style="padding:6px 4px;cursor:pointer;white-space:nowrap;" onclick="toggleTracksBySpeed()"
-              title="Fastest 1 s average speed any route implies. Above ${INSPECT_FAST} m/s no FRC robot sustains -- usually an identity swap between robots far apart. Click to rank matches by it.">
-            Max speed ${_tracksBySpeed ? '▼' : '⇅'}</th>
-          <th style="padding:6px 4px;text-align:right;">Actions</th>
-        </tr>
-        ${(() => { const detectedSet = agentDetectedSet(eventKey); return rows.map(r => {
-            // PUBLISHED IS TERMINAL unless an answer arrived after it was built.
-            // Answers are not deleted from the relay when consumed, so testing
-            // "an answer exists" first left finished matches reading "awaiting rerun"
-            // permanently. Compare timestamps instead: only a newer answer means work
-            // is outstanding. Missing timestamps fall back to trusting the publish,
-            // because a stale "pending" is more misleading than a stale "done" here.
-            const answerNewer = r.answer?.at && r.exportedAt
-                ? r.answer.at > r.exportedAt
-                : (!!r.answer && !r.published);
-            // A bundle only means WORK WAITING if it is newer than the last publish
-            // AND has not already been answered. Bundles outlive their own usefulness:
-            // they sit on the relay for the full 24 h TTL, so after a curator answers
-            // one and the watcher republishes, the bundle is still there -- and a
-            // naive "bundle exists" test then shows every finished match as needing
-            // re-curation, which it did for all eleven 2026mawor matches at once.
-            //
-            // Two clocks settle it. A bundle pushed AFTER the last publish is a
-            // genuine new pass (that is exactly how these were rebuilt). An answer
-            // arriving after that bundle means the pass is done, whatever the bundle's
-            // continued presence suggests.
-            const bundleIsNew = r.bundle?.at && r.exportedAt
-                ? r.bundle.at > r.exportedAt
-                : !!r.bundle && !r.published;
-            const answeredIt = r.answer?.at && r.bundle?.at
-                ? r.answer.at > r.bundle.at
-                : !!r.answer;
-            const outstanding = bundleIsNew && !answeredIt;
-            const state = answerNewer ? pill('curated · awaiting rerun', '#a78bfa')
-                        : outstanding ? (r.published ? pill('bundle waiting · re-curate', '#f59e0b')
-                                                     : pill('NEEDS CURATION', '#f59e0b'))
-                        : r.live ? pill('published · live, uncommitted', '#2dd4bf')
-                        : r.published ? (r.curated ? pill('published · curated', '#22c55e')
-                                                   : pill('published · auto', '#60a5fa'))
-                        // Below published, above nothing: detection is real progress but it
-                        // is not a route, and conflating the two would overstate it.
-                        : detectedSet.has(String(r.key).split('_').slice(1).join('_'))
-                            ? pill('detected · awaiting bundle', '#818cf8')
-                        : pill('no tracks', '#475569');
-            // WHAT THE ROUTE'S IDENTITY RESTS ON. A published route solved against a
-            // full gallery and one solved from the curator's anchors alone are different
-            // claims, and until now they rendered identically. Appearance is an
-            // enhancement rather than a gate, so anchors-only is a normal state -- it just
-            // must not be mistaken for the stronger one.
-            const ev = r.identityEvidence;
-            const evidence = !r.published || !ev ? ''
-                : ev === 'curated+reviewed-gallery'
-                    ? `<span title="Solved with prototypes from curated matches plus reviewed gallery crops" style="color:#22c55e;font-size:0.82em;">gallery + review</span>`
-                : ev === 'curated-gallery'
-                    ? `<span title="Solved with prototypes from this event's curated matches (no reviewed crops for these teams yet)" style="color:#22c55e;font-size:0.82em;">curated gallery</span>`
-                : ev === 'reviewed-gallery'
-                    ? `<span title="Solved with reviewed gallery prototypes" style="color:#22c55e;font-size:0.82em;">gallery</span>`
-                : ev === 'legacy-gallery'
-                    ? `<span title="Solved with the per-event centroid gallery" style="color:#60a5fa;font-size:0.82em;">event gallery</span>`
-                    : `<span title="No appearance evidence was available; identity came from curator anchors only. The route is usable but weaker than a gallery-backed solve." style="color:#fbbf24;font-size:0.82em;">anchors only</span>`;
-            const ms = r.maxSpeed;
-            const speed = ms && ms.mps != null
-                ? `<a href="#" onclick="inspectMatchAt('${r.key}', ${Number(ms.t) || 0});return false;"
-                      title="${galleryEsc(ms.team)} at ${ms.t} s${ms.acrossGap ? ', across a gap the tracker could not see' : ''} -- open the inspector there"
-                      style="text-decoration:none;color:${ms.mps >= INSPECT_FAST ? '#f87171' : ms.mps >= 3.5 ? '#fbbf24' : '#94a3b8'};font-weight:${ms.mps >= INSPECT_FAST ? 700 : 400};">
-                      ${ms.mps.toFixed(1)} m/s</a>
-                   <div style="font-size:0.78em;color:#64748b;">${galleryEsc(ms.team)} @ ${Number(ms.t).toFixed(0)}s${ms.acrossGap ? ' · gap' : ''}</div>`
-                : '<span style="color:#475569;">—</span>';
-            const lc = r.labelConflicts;
-            const conflictsCell = lc && lc.n
-                ? `<div><a href="#" onclick="inspectMatchAt('${r.key}', ${Number(lc.t) || 0});return false;"
-                      title="Curator labels in this match that cannot all be right -- open the inspector at the first"
-                      style="text-decoration:none;color:#f87171;font-size:0.82em;font-weight:700;">⚠ ${lc.n} label conflict${lc.n === 1 ? '' : 's'}</a></div>`
-                : '';
-            // Camera tools (Calibrate, Occluders) live in the Cameras section only: every
-            // id with a calib frame is listed there, and repeating them per match made
-            // every row twice as wide for a once-per-camera job.
-            const link = (txt, js) => `<a href="#" onclick="${js};return false;"
-                 style="display:inline-block;padding:4px 9px;border-radius:6px;font-size:0.78em;
-                 text-decoration:none;border:1px solid #334155;color:#94a3b8;">${txt}</a>`;
-            const acts = [
-                r.bundle ? act('Curate', q('curate', 'match', r.key), outstanding) : '',
-                r.published ? link('Routes', `viewMatchDetail('${r.key}')`) : '',
-                r.published ? link('Inspect', `inspectMatchAt('${r.key}', null)`) : '',
-            ].filter(Boolean).join(' ');
-            // Show the event prefix whenever more than one event is on screen. Two
-            // different matches can share a suffix -- 2026necmp_f1m2 and
-            // 2026mawor_f1m2 both render as "f1m2" -- and two identical-looking rows
-            // with different numbers reads as a bug in the data rather than a bug in
-            // the label.
-            const label = multiEvent ? r.key : r.key.replace(/^[^_]+_/, '');
-            return `<tr style="border-top:1px solid #1e293b;">
-              <td style="padding:7px 4px;font-weight:600;">${label}</td>
-              <td style="padding:7px 4px;">${state}${evidence ? '<div style="margin-top:2px;">' + evidence + '</div>' : ''}</td>
-              <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
-              <td style="padding:7px 4px;">${speed}${conflictsCell}</td>
-              <td style="padding:7px 4px;text-align:right;"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">${acts || '<span style="color:#475569;">—</span>'}</div></td>
-            </tr>`;
-        }).join(''); })()}
-      </table></details>
-      <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
+      </table></div></details>` : '';
+    document.getElementById('trkRelayHelp').innerHTML = `
         <b>Cameras</b> lists every camera the relay holds a frame for, pushed with
         <code>rtrack.relay push-calib &lt;camera&gt;</code>. Both tools describe the
         CAMERA, not the match, so they are done once and reused across every match shot
@@ -10683,8 +10697,162 @@ async function renderTracksTab() {
         <code>rtrack.relay wait-occl &lt;camera&gt;</code>, which writes
         <code>calib/&lt;camera&gt;_occluders.json</code> -- the name the solver looks for
         on its own. Keep the camera id in the tool EXACTLY as listed here, or the file
-        lands under a name nothing reads.
-        <br><br>
+        lands under a name nothing reads.`;
+
+    // Sections remember open/closed across renders, in whichever sub-tab they sit.
+    const restoreSections = () => host.querySelectorAll('details[data-rtrack-section]').forEach(section => {
+        const key = `rtrackSection:${section.dataset.rtrackSection}`;
+        section.open = localStorage.getItem(key) !== 'closed';
+        section.ontoggle = () => localStorage.setItem(key, section.open ? 'open' : 'closed');
+    });
+
+    if (noRows) {
+        body.innerHTML = `<p>No matches for ${eventKey || 'any event'} yet.
+          Set an event key on the Home tab, or publish tracks to <code>public/tracks/</code>.</p>`;
+        restoreSections();
+        return;
+    }
+
+    // Every row's state, worked out ONCE: the table draws from this list, and the state
+    // filter needs the same answer the pill shows.
+    const detectedSet = agentDetectedSet(eventKey);
+    const decorated = rows.map(r => {
+        // PUBLISHED IS TERMINAL unless an answer arrived after it was built.
+        // Answers are not deleted from the relay when consumed, so testing
+        // "an answer exists" first left finished matches reading "awaiting rerun"
+        // permanently. Compare timestamps instead: only a newer answer means work
+        // is outstanding. Missing timestamps fall back to trusting the publish,
+        // because a stale "pending" is more misleading than a stale "done" here.
+        const answerNewer = r.answer?.at && r.exportedAt
+            ? r.answer.at > r.exportedAt
+            : (!!r.answer && !r.published);
+        // A bundle only means WORK WAITING if it is newer than the last publish
+        // AND has not already been answered. Bundles outlive their own usefulness:
+        // they sit on the relay for the full 24 h TTL, so after a curator answers
+        // one and the watcher republishes, the bundle is still there -- and a
+        // naive "bundle exists" test then shows every finished match as needing
+        // re-curation, which it did for all eleven 2026mawor matches at once.
+        //
+        // Two clocks settle it. A bundle pushed AFTER the last publish is a
+        // genuine new pass (that is exactly how these were rebuilt). An answer
+        // arriving after that bundle means the pass is done, whatever the bundle's
+        // continued presence suggests.
+        const bundleIsNew = r.bundle?.at && r.exportedAt
+            ? r.bundle.at > r.exportedAt
+            : !!r.bundle && !r.published;
+        const answeredIt = r.answer?.at && r.bundle?.at
+            ? r.answer.at > r.bundle.at
+            : !!r.answer;
+        const outstanding = bundleIsNew && !answeredIt;
+        const [sk, stateHtml] = answerNewer ? ['rerun', pill('curated · awaiting rerun', '#a78bfa')]
+            : outstanding ? (r.published ? ['bundle', pill('bundle waiting · re-curate', '#f59e0b')]
+                                         : ['needs', pill('NEEDS CURATION', '#f59e0b')])
+            : r.live ? ['live', pill('published · live, uncommitted', '#2dd4bf')]
+            : r.published ? (r.curated ? ['curated', pill('published · curated', '#22c55e')]
+                                       : ['auto', pill('published · auto', '#60a5fa')])
+            // Below published, above nothing: detection is real progress but it
+            // is not a route, and conflating the two would overstate it.
+            : detectedSet.has(String(r.key).split('_').slice(1).join('_'))
+                ? ['detected', pill('detected · awaiting bundle', '#818cf8')]
+            : ['none', pill('no tracks', '#475569')];
+        return { r, outstanding, sk, stateHtml };
+    });
+    const counts = {};
+    decorated.forEach(d => { counts[d.sk] = (counts[d.sk] || 0) + 1; });
+    counts.attention = (counts.needs || 0) + (counts.bundle || 0) + (counts.rerun || 0);
+
+    const rowHtml = ({ r, outstanding, stateHtml }) => {
+        // WHAT THE ROUTE'S IDENTITY RESTS ON. A published route solved against a
+        // full gallery and one solved from the curator's anchors alone are different
+        // claims, and until now they rendered identically. Appearance is an
+        // enhancement rather than a gate, so anchors-only is a normal state -- it just
+        // must not be mistaken for the stronger one.
+        const ev = r.identityEvidence;
+        const evidence = !r.published || !ev ? ''
+            : ev === 'curated+reviewed-gallery'
+                ? `<span title="Solved with prototypes from curated matches plus reviewed gallery crops" style="color:#22c55e;font-size:0.82em;">gallery + review</span>`
+            : ev === 'curated-gallery'
+                ? `<span title="Solved with prototypes from this event's curated matches (no reviewed crops for these teams yet)" style="color:#22c55e;font-size:0.82em;">curated gallery</span>`
+            : ev === 'reviewed-gallery'
+                ? `<span title="Solved with reviewed gallery prototypes" style="color:#22c55e;font-size:0.82em;">gallery</span>`
+            : ev === 'legacy-gallery'
+                ? `<span title="Solved with the per-event centroid gallery" style="color:#60a5fa;font-size:0.82em;">event gallery</span>`
+                : `<span title="No appearance evidence was available; identity came from curator anchors only. The route is usable but weaker than a gallery-backed solve." style="color:#fbbf24;font-size:0.82em;">anchors only</span>`;
+        const ms = r.maxSpeed;
+        const speed = ms && ms.mps != null
+            ? `<a href="#" onclick="inspectMatchAt('${r.key}', ${Number(ms.t) || 0});return false;"
+                  title="${galleryEsc(ms.team)} at ${ms.t} s${ms.acrossGap ? ', across a gap the tracker could not see' : ''} -- open the inspector there"
+                  style="text-decoration:none;color:${ms.mps >= INSPECT_FAST ? '#f87171' : ms.mps >= 3.5 ? '#fbbf24' : '#94a3b8'};font-weight:${ms.mps >= INSPECT_FAST ? 700 : 400};">
+                  ${ms.mps.toFixed(1)} m/s</a>
+               <div style="font-size:0.78em;color:#64748b;">${galleryEsc(ms.team)} @ ${Number(ms.t).toFixed(0)}s${ms.acrossGap ? ' · gap' : ''}</div>`
+            : '<span style="color:#475569;">—</span>';
+        const lc = r.labelConflicts;
+        const conflictsCell = lc && lc.n
+            ? `<div><a href="#" onclick="inspectMatchAt('${r.key}', ${Number(lc.t) || 0});return false;"
+                  title="Curator labels in this match that cannot all be right -- open the inspector at the first"
+                  style="text-decoration:none;color:#f87171;font-size:0.82em;font-weight:700;">⚠ ${lc.n} label conflict${lc.n === 1 ? '' : 's'}</a></div>`
+            : '';
+        // Camera tools (Calibrate, Occluders) live in the Cameras section only: every
+        // id with a calib frame is listed there, and repeating them per match made
+        // every row twice as wide for a once-per-camera job.
+        const link = (txt, js) => `<a href="#" onclick="${js};return false;"
+             style="display:inline-block;padding:4px 9px;border-radius:6px;font-size:0.78em;
+             text-decoration:none;border:1px solid #334155;color:#94a3b8;">${txt}</a>`;
+        const acts = [
+            r.bundle ? act('Curate', q('curate', 'match', r.key), outstanding) : '',
+            r.published ? link('Routes', `viewMatchDetail('${r.key}')`) : '',
+            r.published ? link('Inspect', `inspectMatchAt('${r.key}', null)`) : '',
+            // Only where there is curation to undo: an answer was given, or the route says so.
+            (r.curated || r.answer) ? `<a href="#" onclick="resetCuration('${r.key}');return false;"
+                 title="Put the original bundle back on the relay and retire every answer given since"
+                 style="display:inline-block;padding:4px 9px;border-radius:6px;font-size:0.78em;
+                 text-decoration:none;border:1px solid #7f1d1d;color:#f87171;">Reset</a>` : '',
+        ].filter(Boolean).join(' ');
+        // Show the event prefix whenever more than one event is on screen. Two
+        // different matches can share a suffix -- 2026necmp_f1m2 and
+        // 2026mawor_f1m2 both render as "f1m2" -- and two identical-looking rows
+        // with different numbers reads as a bug in the data rather than a bug in
+        // the label.
+        const label = multiEvent ? r.key : r.key.replace(/^[^_]+_/, '');
+        return `<tr style="border-top:1px solid #1e293b;">
+          <td style="padding:7px 4px;font-weight:600;" title="${galleryEsc(r.teams.join(', '))}">${label}</td>
+          <td style="padding:7px 4px;">${stateHtml}${evidence ? '<div style="margin-top:2px;">' + evidence + '</div>' : ''}</td>
+          <td style="padding:7px 4px;">${r.custody != null ? Math.round(100 * r.custody) + '%' : '—'}</td>
+          <td style="padding:7px 4px;">${speed}${conflictsCell}</td>
+          <td style="padding:7px 4px;text-align:right;"><div style="display:flex;gap:4px;flex-wrap:wrap;justify-content:flex-end;">${acts || '<span style="color:#475569;">—</span>'}</div></td>
+        </tr>`;
+    };
+
+    body.innerHTML = `
+      <details data-rtrack-section="matches" class="trk-box">
+      <summary style="cursor:pointer;font-size:0.9em;font-weight:700;color:#e2e8f0;">Matches</summary>
+      <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:10px 0 8px;">
+        <select id="trkFState" class="trk-filter" title="Filter by match state. Needs attention = needs curation, bundle waiting, or awaiting rerun.">
+          <option value="all">All states (${decorated.length})</option>
+          ${TRK_STATES.filter(([k]) => counts[k] || _trkFilter.state === k).map(([k, label]) =>
+              `<option value="${k}">${label} (${counts[k] || 0})</option>`).join('')}
+        </select>
+        <input id="trkFTeam" class="trk-filter" inputmode="numeric" autocomplete="off"
+               placeholder="team # (e.g. 1768)" value="${galleryEsc(_trkFilter.team)}"
+               title="Only matches this team plays in. Several numbers separated by spaces or commas show matches with any of them; a partial number matches teams starting with it."
+               style="width:150px;">
+        <button id="trkFClear" class="trk-filter" style="cursor:pointer;">Clear</button>
+        <span id="trkFCount" style="font-size:0.78em;color:#64748b;"></span>
+      </div>
+      <div id="trkMsg" style="font-size:0.8em;color:#94a3b8;margin:0 0 8px;"></div>
+      <div class="trk-scroll"><table style="width:100%;border-collapse:collapse;font-size:0.86em;">
+        <thead><tr style="color:#64748b;text-align:left;">
+          <th style="padding:6px 4px;">Match</th>
+          <th style="padding:6px 4px;">State</th>
+          <th style="padding:6px 4px;" title="Share of the match each robot was tracked, averaged">Custody</th>
+          <th style="padding:6px 4px;cursor:pointer;white-space:nowrap;" onclick="toggleTracksBySpeed()"
+              title="Fastest 1 s average speed any route implies. Above ${INSPECT_FAST} m/s no FRC robot sustains -- usually an identity swap between robots far apart. Click to rank matches by it.">
+            Max speed ${_tracksBySpeed ? '▼' : '⇅'}</th>
+          <th style="padding:6px 4px;text-align:right;">Actions</th>
+        </tr></thead>
+        <tbody id="trkMatchRows"></tbody>
+      </table></div></details>
+      <p style="font-size:0.76em;color:#64748b;margin-top:12px;">
         <b>published · live, uncommitted</b> means the watcher finished the match and
         pushed its routes to the relay, where they are viewable now and for seven days.
         They become permanent when <code>public/tracks/</code> is committed &mdash; until
@@ -10697,11 +10865,30 @@ async function renderTracksTab() {
         route inspector at that moment; click the column header to rank matches by it. A
         swap between robots side by side leaves no spike, so a low number is not a clean bill.
       </p>`;
-    body.querySelectorAll('details[data-rtrack-section]').forEach(section => {
-        const key = `rtrackSection:${section.dataset.rtrackSection}`;
-        section.open = localStorage.getItem(key) !== 'closed';
-        section.ontoggle = () => localStorage.setItem(key, section.open ? 'open' : 'closed');
-    });
+
+    // FILTERS redraw only the rows, never the tab: this tab's render re-fetches the relay,
+    // and doing that per keystroke would drop focus from the box being typed in.
+    const stateSel = body.querySelector('#trkFState'), teamIn = body.querySelector('#trkFTeam');
+    const rowsEl = body.querySelector('#trkMatchRows'), countEl = body.querySelector('#trkFCount');
+    stateSel.value = _trkFilter.state;
+    if (stateSel.value !== _trkFilter.state) { _trkFilter.state = 'all'; stateSel.value = 'all'; }
+    const drawRows = () => {
+        const terms = _trkFilter.team.split(/[\s,]+/).filter(Boolean);
+        const shown = decorated.filter(d => trkStateMatches(d.sk, _trkFilter.state)
+            && (!terms.length || d.r.teams.some(t => terms.some(x => String(t).startsWith(x)))));
+        rowsEl.innerHTML = shown.length ? shown.map(rowHtml).join('')
+            : `<tr><td colspan="5" style="padding:14px 4px;color:#64748b;">No matches fit these filters.</td></tr>`;
+        countEl.textContent = `${shown.length} of ${decorated.length} matches`;
+    };
+    stateSel.onchange = () => { _trkFilter.state = stateSel.value; drawRows(); };
+    teamIn.oninput = () => { _trkFilter.team = teamIn.value.trim(); drawRows(); };
+    body.querySelector('#trkFClear').onclick = () => {
+        _trkFilter = { state: 'all', team: '' };
+        stateSel.value = 'all'; teamIn.value = ''; drawRows();
+    };
+    drawRows();
+
+    restoreSections();
     await renderGalleryReviewQueueV2(body, relay, items || [], matches, galleryReviews,
                                      galleryScopeEvent(eventKey));
 }
@@ -11088,18 +11275,22 @@ window.loadMatchTracks = loadMatchTracks;
 // so every fix (visibility shading, camera orientation, auto clipping) applies to both.
 let _fsRoutes = null;
 
-function closeRoutesFull() {
+function _closeRoutesFullDom() {
     const el = document.getElementById('routesFull');
     if (el) el.remove();
     window.removeEventListener('resize', _fsRoutes || (() => {}));
     _fsRoutes = null;
     document.body.style.overflow = '';
 }
+function closeRoutesFull() {
+    _closeRoutesFullDom();
+    navLayerClosed('routesFull');
+}
 window.closeRoutesFull = closeRoutesFull;
 
 window.openRoutesFull = function (doc, opts = {}) {
     if (!doc) return;
-    closeRoutesFull();
+    _closeRoutesFullDom();      // replacing an open one keeps its history entry
     const title = doc.match?.key || doc.key || 'routes';
 
     // STATE IS SEEDED FROM THE CALLER, then owned here. Full screen is not a bigger
@@ -11246,6 +11437,7 @@ window.openRoutesFull = function (doc, opts = {}) {
         }
     };
     document.addEventListener('keydown', onKey);
+    navLayerOpen('routesFull', closeRoutesFull, () => !!document.getElementById('routesFull'));
 };
 
 // ── ROUTE INSPECTION ─────────────────────────────────────────────────────────
@@ -11362,7 +11554,7 @@ function inspectSuspects(series) {
 
 let _inspect = null;
 
-function closeRouteInspector() {
+function _closeInspectorDom() {
     if (!_inspect) return;
     _inspect.stop?.();
     try { _inspect.chart?.destroy(); } catch { /* already gone */ }
@@ -11372,10 +11564,14 @@ function closeRouteInspector() {
     document.body.style.overflow = '';
     _inspect = null;
 }
+function closeRouteInspector() {
+    _closeInspectorDom();
+    navLayerClosed('routeInspector');
+}
 window.closeRouteInspector = closeRouteInspector;
 
 window.openRouteInspector = function (doc, matchKey, opts = {}) {
-    closeRouteInspector();
+    _closeInspectorDom();       // replacing an open one keeps its history entry
     const series = inspectSeries(doc);
     if (!series) return;
     const key = matchKey || doc.match?.key || doc.key;
@@ -11834,6 +12030,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     window.addEventListener('resize', onResize);
     document.addEventListener('keydown', onKey);
     _inspect = { el, chart, onResize, onKey, stop };
+    navLayerOpen('routeInspector', closeRouteInspector, () => !!_inspect);
     if (img.complete && img.naturalWidth) setT(tNow);
     else img.addEventListener('load', () => setT(tNow), { once: true });
     requestAnimationFrame(() => setT(tNow));
@@ -14302,6 +14499,500 @@ async function loadTracksManifest(force = false) {
 window.loadTracksManifest = loadTracksManifest;
 
 // Small-multiples: this team's route in every tracked match.
+// ── AUTO ROUTINES ────────────────────────────────────────────────────────────
+//
+// Teams pre-code a handful of autos (~5) and pick one per match. This groups every auto a
+// team has been tracked running into the routines they appear to have, so a scout can see
+// what a team has shown before. Measured and tuned on 2026necmp1 (48 matches); see the
+// notes on each constant.
+//
+// THE AUTO WINDOW comes from the match itself, not the export's clock: the published t=0 is
+// 1-3.5 s off from the real start, varying by match. Auto starts when two robots first move
+// at once; the 20 s auto is followed by a 3 s pause, so the window is checked by requiring
+// first-motion + 20.5..23 s to be still. That check holds in 48 of 50 necmp1 matches; the
+// two that fail (a camera that changes view, a pause cut short) are skipped, not guessed.
+//
+// RED AND BLUE are put in one frame by rotating blue 180 degrees: a routine is defined by
+// how the drive team sees the field from behind their own driver station, and that view
+// rotates between the two alliances.
+const AR_DT = 0.2;            // resample step (s): the export's 5 Hz
+const AR_AUTO_S = 20.5;       // auto length measured from first motion (motion lags the start)
+const AR_PAUSE = [20.5, 23];  // must be still: the pause between auto and teleop
+const AR_PAUSE_MAX = 0.8;     // mean robots moving allowed in that pause
+const AR_MOVE_MS = 0.5;       // a robot is "moving" above this speed
+const AR_MAX_FILL = 0.45;     // interpolate only across gaps this short
+const AR_MIN_OBS_S = 4;       // an auto tracked for less than this is not compared
+const AR_MIN_COMMON_S = 3;    // two autos need this much commonly tracked time to compare
+const AR_BAND_S = 2;          // time warping may pair moments this far apart
+const AR_STILL_M = 1;         // never more than this from where it started: "did not move"
+// Merge threshold (median matched distance, m). 0.8 split identical loops driven through
+// fuel; 1.3 started joining different sides of the field. Same-routine pairs measured
+// 0.1-0.8 m, different routines 1.5-5 m.
+const AR_TAU = 1.0;
+
+function _arMovingCount(doc) {
+    const t0 = -3, step = 0.1, n = Math.round(43 / step), cnt = new Float32Array(n);
+    for (const r of doc.robots || []) {
+        const S = [...(r.samples || [])].sort((a, b) => a.t - b.t);
+        const mv = new Uint8Array(n);
+        for (let k = 1; k < S.length; k++) {
+            const a = S[k - 1], b = S[k], dt = b.t - a.t;
+            if (dt > 0 && dt <= 0.45 && Math.hypot(b.x - a.x, b.y - a.y) / dt > AR_MOVE_MS) {
+                const i0 = Math.max(0, Math.ceil((a.t - t0) / step - 1e-9));
+                const i1 = Math.min(n, Math.ceil((b.t - t0) / step - 1e-9));
+                for (let i = i0; i < i1; i++) mv[i] = 1;
+            }
+        }
+        for (let i = 0; i < n; i++) cnt[i] += mv[i];
+    }
+    return { cnt, t0, step };
+}
+
+// Auto onset in the doc's own time, or { why } when the window cannot be trusted.
+function autoWindowOf(doc) {
+    const { cnt, t0, step } = _arMovingCount(doc);
+    const i = cnt.findIndex(c => c >= 2);
+    if (i < 0) return { why: 'no robots seen moving' };
+    const on = t0 + i * step;
+    let s = 0, n = 0;
+    for (let k = 0; k < cnt.length; k++) {
+        const t = t0 + k * step;
+        if (t >= on + AR_PAUSE[0] && t < on + AR_PAUSE[1]) { s += cnt[k]; n++; }
+    }
+    if (n && s / n > AR_PAUSE_MAX) return { why: 'no clear pause after auto' };
+    return { on };
+}
+
+// Positions on a 0.2 s grid from auto onset, in red's frame; null where untracked.
+function _arResample(robot, on, doc) {
+    const [FL, FW] = doc.field?.sizeM || [16.541, 8.069];
+    const S = [...(robot.samples || [])].sort((a, b) => a.t - b.t);
+    const n = Math.round(AR_AUTO_S / AR_DT) + 1, out = new Array(n).fill(null);
+    let j = 0;
+    for (let k = 0; k < n; k++) {
+        const g = on + k * AR_DT;
+        while (j < S.length && S[j].t < g - 1e-9) j++;
+        let p = null;
+        if (j < S.length && Math.abs(S[j].t - g) < 1e-6) p = [S[j].x, S[j].y];
+        else if (j > 0 && j < S.length && S[j].t - S[j - 1].t <= AR_MAX_FILL) {
+            const a = S[j - 1], b = S[j], f = (g - a.t) / (b.t - a.t);
+            p = [a.x + f * (b.x - a.x), a.y + f * (b.y - a.y)];
+        }
+        if (p && robot.alliance === 'blue') p = [FL - p[0], FW - p[1]];
+        out[k] = p;
+    }
+    return out;
+}
+
+const _arObs = (R) => R.filter(Boolean).length * AR_DT;
+// How far the robot ever got from where it was first seen. NOT the distance travelled:
+// summed over 20 s, tracking jitter alone adds up to more than a metre on a robot that
+// never moved (2026necmp1 58, qm13 and qm48).
+function _arReach(R) {
+    const first = R.find(Boolean); let d = 0;
+    for (const p of R) if (p) d = Math.max(d, Math.hypot(p[0] - first[0], p[1] - first[1]));
+    return d;
+}
+
+// Time-warped distance between two autos over the moments BOTH were tracked: a gap in
+// either is a gap in both, so partial tracking never counts as a difference. Open ends
+// (either may skip up to the band at the start or finish), and scored by the MEDIAN
+// matched distance so a routine cut short or bumped late still matches its twin.
+// Returns Infinity when the two cannot be compared.
+function _arDist(A, B) {
+    const common = [];
+    for (let k = 0; k < A.length; k++) if (A[k] && B[k]) common.push(k);
+    if (common.length * AR_DT < AR_MIN_COMMON_S) return Infinity;
+    const n = common.length, band = Math.round(AR_BAND_S / AR_DT);
+    const P = common.map(k => A[k]), Q = common.map(k => B[k]);
+    const acc = Array.from({ length: n + 1 }, () => new Float64Array(n + 1).fill(Infinity));
+    const len = Array.from({ length: n + 1 }, () => new Float64Array(n + 1));
+    acc[0][0] = 0;
+    for (let i = 1; i <= n; i++) if (common[i - 1] - common[0] <= band) acc[i][0] = 0;
+    for (let j = 1; j <= n; j++) if (common[j - 1] - common[0] <= band) acc[0][j] = 0;
+    const cost = (i, j) => Math.hypot(P[i][0] - Q[j][0], P[i][1] - Q[j][1]);
+    for (let i = 1; i <= n; i++) {
+        for (let j = 1; j <= n; j++) {
+            if (Math.abs(common[i - 1] - common[j - 1]) > band) continue;
+            const a0 = acc[i - 1][j - 1], a1 = acc[i - 1][j], a2 = acc[i][j - 1];
+            let b, l;
+            if (a0 <= a1 && a0 <= a2) { b = a0; l = len[i - 1][j - 1]; }
+            else if (a1 <= a2) { b = a1; l = len[i - 1][j]; }
+            else { b = a2; l = len[i][j - 1]; }
+            if (b < Infinity) { acc[i][j] = b + cost(i - 1, j - 1); len[i][j] = l + 1; }
+        }
+    }
+    let best = null;
+    const consider = (i, j) => {
+        if (acc[i][j] < Infinity && len[i][j] * AR_DT >= AR_MIN_COMMON_S) {
+            const v = acc[i][j] / len[i][j];
+            if (!best || v < best.v) best = { v, i, j };
+        }
+    };
+    for (let j = 1; j <= n; j++) if (common[n - 1] - common[j - 1] <= band) consider(n, j);
+    for (let i = 1; i <= n; i++) if (common[n - 1] - common[i - 1] <= band) consider(i, n);
+    if (!best) return Infinity;
+    const path = [];
+    let i = best.i, j = best.j;
+    while (i > 0 && j > 0) {
+        path.push(cost(i - 1, j - 1));
+        const c = [[acc[i - 1][j - 1], i - 1, j - 1], [acc[i - 1][j], i - 1, j], [acc[i][j - 1], i, j - 1]]
+            .reduce((m, x) => (x[0] < m[0] ? x : m));
+        i = c[1]; j = c[2];
+        if (acc[i][j] === 0) break;
+    }
+    path.sort((a, b) => a - b);
+    return path[Math.floor(path.length / 2)];
+}
+
+// Group one team's autos into routines. docs: match track documents that include the team.
+function autoRoutines(docs, team) {
+    team = String(team);
+    const autos = [], skipped = [], tooLittle = [], still = [];
+    for (const doc of docs) {
+        const key = doc.match?.key || doc.key;
+        const r = (doc.robots || []).find(x => String(x.team) === team);
+        if (!r) continue;
+        const w = autoWindowOf(doc);
+        if (w.why) { skipped.push({ key, why: w.why }); continue; }
+        const R = _arResample(r, w.on, doc);
+        const item = { key, alliance: r.alliance, on: w.on, R, obs: _arObs(R), doc };
+        if (item.obs < AR_MIN_OBS_S) { tooLittle.push(item); continue; }
+        if (_arReach(R) < AR_STILL_M) { still.push(item); continue; }
+        autos.push(item);
+    }
+    const n = autos.length;
+    const D = Array.from({ length: n }, () => new Array(n).fill(Infinity));
+    for (let a = 0; a < n; a++) for (let b = a + 1; b < n; b++) D[a][b] = D[b][a] = _arDist(autos[a].R, autos[b].R);
+    // Average linkage over COMPARABLE pairs only (an incomparable pair -- too little
+    // common tracking -- neither joins nor blocks), and no single pair may exceed 2x.
+    let groups = autos.map((_, i) => [i]);
+    for (;;) {
+        let best = null;
+        for (let a = 0; a < groups.length; a++) for (let b = a + 1; b < groups.length; b++) {
+            const v = [];
+            for (const i of groups[a]) for (const j of groups[b]) if (Number.isFinite(D[i][j])) v.push(D[i][j]);
+            if (!v.length) continue;
+            const m = v.reduce((s, x) => s + x, 0) / v.length, mx = Math.max(...v);
+            if (m < AR_TAU && mx < 2 * AR_TAU && (!best || m < best.m)) best = { m, a, b };
+        }
+        if (!best) break;
+        groups[best.a] = groups[best.a].concat(groups[best.b]);
+        groups.splice(best.b, 1);
+    }
+    // A lone auto comparable with nothing else is "not comparable", not a new routine.
+    const alone = groups.filter(g => g.length === 1
+        && autos.every((_, j) => j === g[0] || !Number.isFinite(D[g[0]][j])));
+    groups = groups.filter(g => !alone.includes(g));
+    const routines = groups.map(g => {
+        // medoid: the member closest on average to the rest -- drawn boldest
+        let med = g[0], bestS = Infinity;
+        for (const i of g) {
+            const s = g.reduce((t, j) => t + (i === j ? 0 : (Number.isFinite(D[i][j]) ? D[i][j] : 3)), 0);
+            if (s < bestS) { bestS = s; med = i; }
+        }
+        return { members: g.map(i => autos[i]), medoid: autos[med] };
+    }).sort((a, b) => b.members.length - a.members.length);
+    return { routines, still, tooLittle, notComparable: alone.map(g => autos[g[0]]), skipped };
+}
+
+// The routine cards at the top of a team's Routes tab.
+function renderAutoRoutines(host, docs, team, paints = []) {
+    const res = autoRoutines(docs, team);
+    const total = res.routines.reduce((s, r) => s + r.members.length, 0);
+    const colours = ['#60a5fa', '#f59e0b', '#34d399', '#f472b6', '#a78bfa', '#f87171', '#22d3ee', '#facc15'];
+    const short = (k) => galleryEsc(String(k).replace(/^[^_]+_/, ''));
+    const chip = (it) => `<span title="${it.alliance} alliance" style="display:inline-block;padding:1px 6px;border-radius:9px;font-size:11px;margin:2px 3px 0 0;
+        border:1px solid ${it.alliance === 'blue' ? '#3b82f6' : '#ef4444'};color:#cbd5e1;">${short(it.key)}</span>`;
+    const extra = [
+        res.still.length ? `<b>${res.still.length}</b> did not move ${res.still.map(chip).join('')}` : '',
+        res.notComparable.length ? `<b>${res.notComparable.length}</b> not comparable — tracked at different moments from every other auto ${res.notComparable.map(chip).join('')}` : '',
+        res.tooLittle.length ? `<b>${res.tooLittle.length}</b> tracked for under ${AR_MIN_OBS_S} s ${res.tooLittle.map(chip).join('')}` : '',
+        res.skipped.length ? `<b>${res.skipped.length}</b> match${res.skipped.length === 1 ? '' : 'es'} skipped: ${res.skipped.map(s => `${short(s.key)} (${galleryEsc(s.why)})`).join(', ')}` : '',
+    ].filter(Boolean);
+    host.innerHTML = `
+      <div class="trk-box" style="margin-top:16px;">
+        <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">
+          <b style="font-size:14px;">Auto routines</b>
+          <span style="font-size:12px;color:#94a3b8;">${res.routines.length
+              ? `${res.routines.length} distinct routine${res.routines.length === 1 ? '' : 's'} seen across ${total} auto${total === 1 ? '' : 's'}`
+              : 'No moving autos tracked well enough to group yet'}</span>
+        </div>
+        <div style="font-size:11px;color:#64748b;margin:4px 0 8px;line-height:1.5;">
+          Each auto is the 20 s from the first robot motion, checked against the pause that follows.
+          Blue matches are rotated 180° so every auto reads as the drive team saw it from behind its own
+          driver station; the cards are drawn with that driver station on the <b>left</b> (the match maps
+          below follow the camera instead). Chips are matches, outlined in the team's alliance colour.
+          The boldest line is the most typical run; a dot marks a start that was tracked.
+          A routine seen once may be a real routine or a tracking mix-up.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;">
+          ${res.routines.map((rt, i) => `
+            <div>
+              <div style="font-size:12px;margin-bottom:3px;">
+                <b style="color:${colours[i % colours.length]};">Routine ${String.fromCharCode(65 + i)}</b>
+                <span style="color:#94a3b8;"> · seen ${rt.members.length}×</span></div>
+              <div class="arBox" data-i="${i}" title="Open the most typical run full screen"
+                   style="position:relative;width:100%;border-radius:6px;overflow:hidden;cursor:zoom-in;">
+                <img class="arImg" data-i="${i}" src="${import.meta.env.BASE_URL}${rt.medoid.doc.field.imageRef}" alt="field"
+                     style="display:block;width:100%;height:auto;">
+                <canvas class="arCv" data-i="${i}" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
+              </div>
+              <div>${rt.members.map(chip).join('')}</div>
+            </div>`).join('')}
+        </div>
+        ${extra.length ? `<div style="font-size:11px;color:#94a3b8;margin-top:10px;line-height:1.8;">${extra.join('<br>')}</div>` : ''}
+      </div>`;
+    host.querySelectorAll('.arCv').forEach(cv => {
+        const i = Number(cv.dataset.i), rt = res.routines[i];
+        const img = host.querySelector(`.arImg[data-i="${i}"]`);
+        const colour = colours[i % colours.length];
+        const paint = () => {
+            if (!_trackSizeCanvas(img, cv)) return;
+            const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, N = _trackNorm(rt.medoid.doc);
+            ctx.clearRect(0, 0, W, H);
+            for (const m of rt.members) {
+                const isMed = m === rt.medoid;
+                ctx.strokeStyle = colour; ctx.globalAlpha = isMed ? 1 : 0.45; ctx.lineWidth = isMed ? 2.5 : 1.5;
+                ctx.beginPath(); let pen = false;
+                for (const p of m.R) {
+                    if (!p) { pen = false; continue; }
+                    const [nx, ny] = N(p[0], p[1]);
+                    if (pen) ctx.lineTo(nx * W, ny * H); else ctx.moveTo(nx * W, ny * H);
+                    pen = true;
+                }
+                ctx.stroke();
+                const first = m.R.findIndex(Boolean);
+                if (first >= 0 && first * AR_DT <= 1) {
+                    const [nx, ny] = N(m.R[first][0], m.R[first][1]);
+                    ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(nx * W, ny * H, isMed ? 4 : 3, 0, 2 * Math.PI); ctx.fill();
+                }
+            }
+            ctx.globalAlpha = 1;
+        };
+        if (img.complete && img.naturalWidth) paint(); else img.addEventListener('load', paint, { once: true });
+        paints.push(paint);
+        host.querySelector(`.arBox[data-i="${i}"]`).onclick = () => window.openRoutesFull(rt.medoid.doc, {
+            teams: new Set([String(team)]), tNow: null, dots: false, tMax: autoEndOf(rt.medoid.doc) });
+    });
+    return res;
+}
+
+// ── ZONE PRESENCE ────────────────────────────────────────────────────────────
+//
+// How long a team spends in its own alliance zone, the neutral zone and the opposing
+// alliance zone. The zones are split by the two hub lines (hub, bumps and trenches form
+// one barrier across the field), x = 4.626 and 11.915 m in the 2026 AprilTag layout.
+// Which end is "own" is read from each match: the side the alliance's robots start on.
+//
+// OCCLUSION AND FRAME LIMITS. A robot is seen ~72% of the match on necmp1; ~26% falls
+// between two sightings and ~2% lies before the first or after the last. Counting only
+// what is seen is BIASED, not just thinner: robots vanish behind the hubs and into the
+// far corners, both inside alliance zones, so seen-only time under-counts those zones
+// (necmp1: alliance zones 63% of gap time vs 55% of seen time). So gaps are filled with
+// the straight line between the sightings either side -- measured by hiding stretches of
+// real track: right zone 99% of the time for gaps up to 3 s, 96% to 12 s, 85% at 20 s --
+// and filled time is shown apart from seen time, so a reader can tell the difference.
+const ZN_HUB_LO = 4.626, ZN_HUB_HI = 11.915;
+const ZN_DT = 0.2;
+const ZN_SEEN_GAP = 0.45;     // samples closer than this: continuously seen
+const ZN_LONG_GAP = 20;       // fills across longer gaps are shown as less certain
+const ZN_MATCH_S = 160;       // auto (20) + pause (3) + teleop, from first motion
+const ZN_TELEOP_FROM = 23;    // teleop starts after the auto pause
+const ZN_BIN_M = 0.5;         // heatmap cell
+const ZN_NAMES = ['Own zone', 'Neutral', 'Opposing zone'];
+const ZN_COLOURS = ['#22c55e', '#eab308', '#ef4444'];
+
+// Which end each alliance starts at, from its robots in the first second of auto.
+function _znOwnLow(doc, on) {
+    const by = {};
+    for (const r of doc.robots || []) {
+        const xs = (r.samples || []).filter(s => s.t >= on - 0.5 && s.t <= on + 1).map(s => s.x).sort((a, b) => a - b);
+        if (xs.length) (by[r.alliance] ||= []).push(xs[Math.floor(xs.length / 2)]);
+    }
+    const L = doc.field?.sizeM?.[0] || 16.541, out = {};
+    for (const [a, v] of Object.entries(by)) out[a] = v.reduce((s, x) => s + x, 0) / v.length < L / 2;
+    if (out.red === undefined && out.blue !== undefined) out.red = !out.blue;
+    if (out.blue === undefined && out.red !== undefined) out.blue = !out.red;
+    if (out.red === undefined) { out.red = true; out.blue = false; }   // necmp1: 48/48
+    return out;
+}
+
+const _znZone = (x, ownLow) => x < ZN_HUB_LO ? (ownLow ? 0 : 2) : x > ZN_HUB_HI ? (ownLow ? 2 : 0) : 1;
+
+// One team in one match: seconds per zone, split by how they are known, per phase.
+// kinds: seen | gap (filled, <= ZN_LONG_GAP) | long (filled, longer) ; plus unknown.
+function zoneMatch(doc, team) {
+    const r = (doc.robots || []).find(x => String(x.team) === String(team));
+    if (!r) return null;
+    const w = autoWindowOf(doc);
+    // the pause check is about AUTO; for zones the first motion is a good enough start
+    let on = w.on;
+    if (on === undefined) {
+        const { cnt, t0, step } = _arMovingCount(doc);
+        const i = cnt.findIndex(c => c >= 2);
+        on = i >= 0 ? t0 + i * step : 0;
+    }
+    const ownLow = _znOwnLow(doc, on)[r.alliance];
+    const [FL, FW] = doc.field?.sizeM || [16.541, 8.069];
+    const S = [...(r.samples || [])].sort((a, b) => a.t - b.t);
+    const blank = () => ({ seen: [0, 0, 0], gap: [0, 0, 0], long: [0, 0, 0], unknown: 0 });
+    const out = { key: doc.match?.key || doc.key, alliance: r.alliance, whole: blank(), auto: blank(), teleop: blank(), cells: [] };
+    let j = 0;
+    for (let t = on; t < on + ZN_MATCH_S; t += ZN_DT) {
+        const rel = t - on;
+        const phases = [out.whole, rel < AR_AUTO_S ? out.auto : rel >= ZN_TELEOP_FROM ? out.teleop : null].filter(Boolean);
+        while (j < S.length && S[j].t < t - 1e-9) j++;
+        let x = null, y = null, kind = null;
+        if (j < S.length && Math.abs(S[j].t - t) < 1e-6) { x = S[j].x; y = S[j].y; kind = 'seen'; }
+        else if (j > 0 && j < S.length) {
+            const a = S[j - 1], b = S[j], gap = b.t - a.t, f = (t - a.t) / gap;
+            x = a.x + f * (b.x - a.x); y = a.y + f * (b.y - a.y);
+            kind = gap <= ZN_SEEN_GAP ? 'seen' : gap <= ZN_LONG_GAP ? 'gap' : 'long';
+        }
+        if (kind === null) { phases.forEach(p => { p.unknown += ZN_DT; }); continue; }
+        const z = _znZone(x, ownLow);
+        phases.forEach(p => { p[kind][z] += ZN_DT; });
+        // heatmap in the team's own frame: own zone on the left (rotate when it is not)
+        if (!ownLow) { x = FL - x; y = FW - y; }
+        out.cells.push([x, y, kind === 'long' ? 0.5 : 1]);
+    }
+    return out;
+}
+
+function zonePresence(docs, team) {
+    const matches = docs.map(d => zoneMatch(d, team)).filter(Boolean);
+    const sum = (ph) => {
+        const t = { seen: [0, 0, 0], gap: [0, 0, 0], long: [0, 0, 0], unknown: 0 };
+        for (const m of matches) {
+            for (const k of ['seen', 'gap', 'long']) for (let z = 0; z < 3; z++) t[k][z] += m[ph][k][z];
+            t.unknown += m[ph].unknown;
+        }
+        return t;
+    };
+    return { matches, whole: sum('whole'), auto: sum('auto'), teleop: sum('teleop') };
+}
+
+// A stacked bar: per zone, the seen part solid and the filled parts lighter / hatched.
+function _znBar(p, height = 22) {
+    const known = [0, 1, 2].map(z => p.seen[z] + p.gap[z] + p.long[z]);
+    const all = known.reduce((s, x) => s + x, 0) + p.unknown;
+    if (!all) return '<span style="color:#64748b;">no data</span>';
+    const pct = v => (100 * v / all);
+    const seg = (w, col, style, title) => w > 0
+        ? `<div title="${title}" style="width:${w}%;background:${col};${style}"></div>` : '';
+    return `<div style="display:flex;height:${height}px;border-radius:5px;overflow:hidden;background:#0f172a;border:1px solid #1e293b;">
+        ${[0, 1, 2].map(z => [
+            seg(pct(p.seen[z]), ZN_COLOURS[z], '', `${ZN_NAMES[z]}: ${pct(p.seen[z]).toFixed(0)}% seen`),
+            seg(pct(p.gap[z]), ZN_COLOURS[z], 'opacity:.55;', `${ZN_NAMES[z]}: ${pct(p.gap[z]).toFixed(0)}% filled across short tracking gaps`),
+            seg(pct(p.long[z]), ZN_COLOURS[z], 'opacity:.35;background-image:repeating-linear-gradient(45deg,rgba(0,0,0,.45) 0 3px,transparent 3px 7px);', `${ZN_NAMES[z]}: ${pct(p.long[z]).toFixed(0)}% filled across gaps over ${ZN_LONG_GAP} s`),
+        ].join('')).join('')}
+        ${seg(pct(p.unknown), '#334155', 'background-image:repeating-linear-gradient(45deg,#1e293b 0 3px,transparent 3px 7px);', `${pct(p.unknown).toFixed(0)}% unknown: before the first or after the last sighting`)}
+      </div>`;
+}
+// Shares of KNOWN time (seen + filled), the headline numbers.
+function _znShares(p) {
+    const known = [0, 1, 2].map(z => p.seen[z] + p.gap[z] + p.long[z]);
+    const tot = known.reduce((s, x) => s + x, 0) || 1;
+    return known.map(v => v / tot);
+}
+
+function renderZonePresence(host, docs, team, paints) {
+    const res = zonePresence(docs, team);
+    if (!res.matches.length) { host.innerHTML = '<p style="color:#94a3b8;margin-top:16px;">No tracked matches for this event.</p>'; return res; }
+    const w = res.whole, sh = _znShares(w);
+    const knownS = [0, 1, 2].reduce((s, z) => s + w.seen[z] + w.gap[z] + w.long[z], 0);
+    const seenS = w.seen.reduce((s, x) => s + x, 0);
+    const allS = knownS + w.unknown;
+    const row = (label, p) => {
+        const s = _znShares(p);
+        return `<div style="display:grid;grid-template-columns:70px 1fr 150px;gap:8px;align-items:center;margin-top:6px;">
+            <span style="font-size:12px;color:#94a3b8;">${label}</span>${_znBar(p, 16)}
+            <span style="font-size:11px;color:#cbd5e1;font-variant-numeric:tabular-nums;">${s.map((v, z) => `<span style="color:${ZN_COLOURS[z]};">${Math.round(100 * v)}%</span>`).join(' · ')}</span></div>`;
+    };
+    host.innerHTML = `
+      <div class="trk-box" style="margin-top:16px;">
+        <div style="display:flex;gap:10px;align-items:baseline;flex-wrap:wrap;">
+          <b style="font-size:14px;">Zone presence</b>
+          <span style="font-size:12px;color:#94a3b8;">${res.matches.length} match${res.matches.length === 1 ? '' : 'es'}</span>
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(3,1fr);gap:8px;margin:10px 0 8px;">
+          ${[0, 1, 2].map(z => `<div style="border:1px solid #1e293b;border-radius:8px;padding:8px 10px;">
+              <div style="font-size:11px;color:#94a3b8;">${ZN_NAMES[z]}</div>
+              <div style="font-size:24px;font-weight:800;color:${ZN_COLOURS[z]};font-variant-numeric:tabular-nums;">${Math.round(100 * sh[z])}%</div>
+            </div>`).join('')}
+        </div>
+        ${_znBar(w)}
+        ${row('Auto', res.auto)}
+        ${row('Teleop', res.teleop)}
+        <div style="font-size:11px;color:#64748b;margin-top:8px;line-height:1.5;">
+          Percentages are of the time the robot's whereabouts are known.
+          Solid = seen (${Math.round(100 * seenS / allS)}% of the match); lighter = filled in across a tracking gap from the
+          sightings either side (a check on hidden stretches of real track put this in the right zone 96% of the time for
+          gaps up to 12 s); hatched = filled across a gap over ${ZN_LONG_GAP} s, less certain (85% at 20 s); grey = unknown,
+          before the first or after the last sighting (${Math.round(100 * w.unknown / allS)}%).
+          Gaps are filled rather than dropped because they are not random: robots disappear behind the hubs and into the
+          far corners, inside the alliance zones, so counting only what is seen under-counts those zones.
+          An identity mix-up in tracking shows up here as time in the wrong place.
+        </div>
+        <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:14px;">
+          <div>
+            <div style="font-size:12px;color:#94a3b8;margin-bottom:4px;">Where it spends its time — own zone on the left, blue matches rotated</div>
+            <div id="znHeatBox" style="position:relative;width:100%;border-radius:6px;overflow:hidden;">
+              <img id="znHeatImg" src="${import.meta.env.BASE_URL}${docs[0].field.imageRef}" alt="field" style="display:block;width:100%;height:auto;">
+              <canvas id="znHeatCv" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
+            </div>
+          </div>
+          <div>
+            <div style="font-size:12px;color:#94a3b8;margin-bottom:4px;">By match</div>
+            ${res.matches.map(m => {
+                const s = _znShares(m.whole);
+                return `<div style="display:grid;grid-template-columns:62px 1fr 104px;gap:6px;align-items:center;margin-top:4px;">
+                  <span style="font-size:11px;color:#cbd5e1;border-left:3px solid ${m.alliance === 'blue' ? '#3b82f6' : '#ef4444'};padding-left:5px;">${galleryEsc(String(m.key).replace(/^[^_]+_/, ''))}</span>
+                  ${_znBar(m.whole, 11)}
+                  <span style="font-size:10px;font-variant-numeric:tabular-nums;">${s.map((v, z) => `<span style="color:${ZN_COLOURS[z]};">${Math.round(100 * v)}</span>`).join(' · ')}</span></div>`;
+            }).join('')}
+          </div>
+        </div>
+      </div>`;
+    const img = host.querySelector('#znHeatImg'), cv = host.querySelector('#znHeatCv');
+    const doc0 = docs[0];
+    const paint = () => {
+        if (!_trackSizeCanvas(img, cv)) return;
+        const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, N = _trackNorm(doc0);
+        const [FL, FW] = doc0.field.sizeM;
+        const nx = Math.ceil(FL / ZN_BIN_M), ny = Math.ceil(FW / ZN_BIN_M), grid = new Float32Array(nx * ny);
+        for (const m of res.matches) for (const [x, y, wt] of m.cells) {
+            const i = Math.min(nx - 1, Math.max(0, Math.floor(x / ZN_BIN_M))), k = Math.min(ny - 1, Math.max(0, Math.floor(y / ZN_BIN_M)));
+            grid[k * nx + i] += wt;
+        }
+        const mx = Math.max(...grid) || 1;
+        ctx.clearRect(0, 0, W, H);
+        ctx.fillStyle = 'rgba(2,6,23,0.55)'; ctx.fillRect(0, 0, W, H);
+        for (let k = 0; k < ny; k++) for (let i = 0; i < nx; i++) {
+            const v = grid[k * nx + i]; if (!v) continue;
+            const a = Math.sqrt(v / mx);                      // sqrt: keep brief visits visible
+            const [x0, y0] = N(i * ZN_BIN_M, (k + 1) * ZN_BIN_M), [x1, y1] = N((i + 1) * ZN_BIN_M, k * ZN_BIN_M);
+            ctx.fillStyle = `rgba(${Math.round(255 * Math.min(1, 2 * a))},${Math.round(255 * Math.max(0, 1.6 * a - 0.6))},${Math.round(80 * (1 - a))},${0.25 + 0.65 * a})`;
+            ctx.fillRect(Math.min(x0, x1) * W, Math.min(y0, y1) * H, Math.abs(x1 - x0) * W + 0.5, Math.abs(y1 - y0) * H + 0.5);
+        }
+        ctx.strokeStyle = 'rgba(255,255,255,0.8)'; ctx.setLineDash([6, 4]); ctx.lineWidth = 1.5;
+        for (const xl of [ZN_HUB_LO, ZN_HUB_HI]) {
+            const [ax, ay] = N(xl, 0), [bx, by] = N(xl, FW);
+            ctx.beginPath(); ctx.moveTo(ax * W, ay * H); ctx.lineTo(bx * W, by * H); ctx.stroke();
+        }
+        ctx.setLineDash([]);
+        ctx.font = `bold ${Math.max(11, Math.round(W / 34))}px sans-serif`; ctx.textAlign = 'center';
+        [[ZN_HUB_LO / 2, 0], [(ZN_HUB_LO + ZN_HUB_HI) / 2, 1], [(ZN_HUB_HI + FL) / 2, 2]].forEach(([xm, z]) => {
+            const [px, py] = N(xm, FW - 0.35);
+            ctx.fillStyle = ZN_COLOURS[z]; ctx.fillText(`${Math.round(100 * sh[z])}%`, px * W, py * H + 12);
+        });
+    };
+    if (img.complete && img.naturalWidth) paint(); else img.addEventListener('load', paint, { once: true });
+    paints.push(paint);
+    return res;
+}
+
 async function renderTeamRoutesTab(teamNumber) {
     const host = document.getElementById('tab-routes');
     if (!host) return;
@@ -14396,7 +15087,18 @@ async function renderTeamRoutesTab(teamNumber) {
         return;
     }
 
+    // THREE VIEWS of the same matches: Auto (routines), Full (each match's whole route)
+    // and Zones (time per zone). Panes are rendered up front but PAINTED when shown --
+    // a canvas cannot size itself while its pane is display:none.
     host.innerHTML = `
+        <div class="trk-subtabs" id="trSubtabs" style="margin-top:14px;">
+          <button class="trk-subtab-btn" data-sub="auto">Auto</button>
+          <button class="trk-subtab-btn" data-sub="full">Full</button>
+          <button class="trk-subtab-btn" data-sub="zones">Zones</button>
+        </div>
+        <div id="trPaneAuto" class="trPane"><div id="arHost"></div></div>
+        <div id="trPaneZones" class="trPane"><div id="znHost"></div></div>
+        <div id="trPaneFull" class="trPane">
         <div style="display:grid; grid-template-columns:repeat(auto-fit,minmax(320px,1fr));
                     gap:14px; margin-top:16px;">
           ${mine.map((d, i) => `
@@ -14419,7 +15121,24 @@ async function renderTeamRoutesTab(teamNumber) {
                         style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
               </div>
             </div>`).join('')}
-        </div>${toggle}`;
+        </div>${toggle}
+        </div>`;
+
+    const paints = { auto: [], full: [], zones: [] };
+    // Routines are grouped within ONE event: a team's autos change between events.
+    try {
+        const evOfDoc = d => String(d.match?.eventKey || String(d.match?.key || d.key).split('_')[0]);
+        const ev = evKey || evOfDoc(mine[mine.length - 1]);
+        const evDocs = mine.filter(d => evOfDoc(d) === ev);
+        renderAutoRoutines(host.querySelector('#arHost'), evDocs, team, paints.auto);
+        try {
+            renderZonePresence(host.querySelector('#znHost'), evDocs, team, paints.zones);
+        } catch (e) {
+            host.querySelector('#znHost').innerHTML = `<p style="color:#f87171;font-size:12px;">Zone presence could not be computed: ${galleryEsc(String(e.message || e))}</p>`;
+        }
+    } catch (e) {
+        host.querySelector('#arHost').innerHTML = `<p style="color:#f87171;font-size:12px;">Auto routines could not be computed: ${galleryEsc(String(e.message || e))}</p>`;
+    }
 
     const only = new Set([team]);
     host.querySelectorAll('.trCv').forEach(cv => {
@@ -14447,7 +15166,19 @@ async function renderTeamRoutesTab(teamNumber) {
         };
         if (img.complete && img.naturalWidth) paint();
         else img.addEventListener('load', paint, { once: true });
+        paints.full.push(paint);
     });
+    const setSub = (name) => {
+        try { localStorage.setItem('teamRoutesSub', name); } catch { /* private window */ }
+        const ids = { auto: 'trPaneAuto', full: 'trPaneFull', zones: 'trPaneZones' };
+        for (const [k, id] of Object.entries(ids)) host.querySelector('#' + id).style.display = k === name ? 'block' : 'none';
+        host.querySelectorAll('#trSubtabs button').forEach(b => b.classList.toggle('active', b.dataset.sub === name));
+        requestAnimationFrame(() => paints[name].forEach(f => f()));
+    };
+    host.querySelectorAll('#trSubtabs button').forEach(b => b.onclick = () => setSub(b.dataset.sub));
+    let sub = 'auto';
+    try { sub = localStorage.getItem('teamRoutesSub') || 'auto'; } catch { /* ignore */ }
+    setSub(['auto', 'full', 'zones'].includes(sub) ? sub : 'auto');
     routesRenderedFor = memo;   // claim the memo only once the render actually stands
 }
 

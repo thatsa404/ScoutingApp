@@ -474,7 +474,6 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
             a += ["--calib-from", job["calibFrom"]]
         # No --relay: that mode blocks for its whole --wait on ONE curator finishing, which
         # is the opposite of a batch. Build locally, push, move on.
-        t_start = time.time()
         rc, btail = _run_logged(a, cwd=C.TRACKER_ROOT)
         if rc == 3:
             report("event busy (lock held); will retry", i, len(todo))
@@ -482,9 +481,9 @@ def run_bundle(job: dict, report) -> tuple[int, int, list[str]]:
         bundle = _bundle_path(key)
         # Curated meanwhile: the pipeline published, and the file on disk is an OLD
         # bundle the curator already answered (see run_process). Never push it.
-        if rc == 0 and _corrections_exist(key):
+        if rc == 0 and (_corrections_exist(key) or _answered_on_relay(key)):
             continue
-        if rc != 0 or not bundle.exists() or bundle.stat().st_mtime < t_start - 5:
+        if rc != 0 or not bundle.exists():
             print(f"[agent] {key} bundle failed: "
                   + (failure_reason(btail, rc) if rc != 0
                      else "pipeline succeeded but produced no curation bundle"), flush=True)
@@ -760,7 +759,6 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         # a minute after the curator sent them, so both read "bundle waiting · re-curate".
         if answers.get(key, 0.0) > 0.0:
             continue
-        t_start = time.time()
         if out >= cap or attempts >= attempt_budget:
             continue
         attempts += 1
@@ -779,12 +777,17 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
             break
         bundle = _bundle_path(key)
         # Curated while this ran: the pipeline published instead of bundling, and the
-        # bundle file on disk is the OLD one. Never push it.
-        if rc == 0 and _corrections_exist(key):
+        # bundle file on disk is the OLD one the curator already answered. Never push it.
+        #
+        # NOT "is the file older than this run": the pipeline legitimately reuses a bundle
+        # it built earlier ("bundle up to date") when that match's relay copy has simply
+        # expired, and re-pushing exactly that file is the job. Judging by file age struck
+        # eight such matches out of the event in one night.
+        if rc == 0 and (_corrections_exist(key) or _answered_on_relay(key)):
             continue
-        if rc != 0 or not bundle.exists() or bundle.stat().st_mtime < t_start - 5:
+        if rc != 0 or not bundle.exists():
             fail(key, "bundle", failure_reason(btail, rc) if rc != 0
-                 else "pipeline succeeded but wrote no new curation bundle")
+                 else "pipeline succeeded but wrote no curation bundle")
             continue
         push = [PY, "-m", "rtrack.relay", "push-bundle", key, "--file", str(bundle)]
         prc, ptail = _run_logged(push, cwd=C.TRACKER_ROOT)
@@ -1123,6 +1126,15 @@ def _focus_tids(doc: dict, focus_boxes: dict) -> dict:
     return out
 
 
+def _answered_on_relay(key: str) -> bool:
+    """Has a curator's answer for `key` reached the relay? Any doubt reads as no, so a
+    relay hiccup can never strike a match -- it only forgoes this extra check."""
+    try:
+        return relay_bundle_state()[1].get(key, 0.0) > 0.0
+    except Exception:                                # noqa: BLE001
+        return False
+
+
 def _waiting_followup(key: str) -> dict | None:
     """The follow-up bundle for `key` still on the relay and not yet answered, as built
     locally -- or None. Any doubt (relay unreachable, file unreadable) reads as none, so
@@ -1201,8 +1213,112 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     return 1, 1, []
 
 
+# RESET A MATCH'S CURATION to the state its first bundle was posted in: the original
+# bundle goes back on the relay, and every answer given since -- the first round and every
+# follow-up -- is taken out of play. Nothing is destroyed: the corrections file is kept
+# under corrections/ with a .reset-<time> suffix (human work), and the published route is
+# left alone until the match is curated again, so there is always something to look at.
+RESET_SUFFIX = "reset"
+
+
+def run_reset(job: dict, report) -> tuple[int, int, list[str], bool]:
+    """Re-post `match`'s original bundle and retire every curation round since."""
+    key = job.get("match")
+    if not key:
+        raise RuntimeError("reset job names no match")
+    event = key.split("_")[0]
+    stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+    corr = C.TRACKER_ROOT / "corrections" / f"{key}_corrections.json"
+    bundle = _bundle_path(key)
+    followup = C.STAGE3_DIR / f"{key}_followup_frames.json"
+
+    # ONE PIPELINE ON AN EVENT AT A TIME: the watcher may be re-solving this very match.
+    # Held for the whole reset so it cannot recreate the corrections underneath us; if
+    # someone else holds it, report unfinished and try again on the next poll.
+    from .pipeline import STALE_LOCK_S
+    lock = C.STAGE3_DIR / f".{event}.pipeline.lock"
+    if lock.exists():
+        try:
+            age = time.time() - json.loads(lock.read_text(encoding="utf-8")).get("at", 0)
+        except Exception:                                  # noqa: BLE001
+            age = 1e9
+        if age < STALE_LOCK_S:
+            report(f"reset {key}: event busy (lock held); will retry", 0, 3)
+            return 0, 1, [], False
+    lock.write_text(json.dumps({"match": key, "pid": os.getpid(), "at": time.time()}),
+                    encoding="utf-8")
+    try:
+        if not corr.exists() and not followup.exists():
+            raise RuntimeError(f"{key} has no curation to reset")
+
+        # 1. THE BUNDLE TO RE-POST. The file on disk is the original: it is only built when
+        # no corrections exist, and follow-ups are written to their own file. If it is
+        # gone, rebuild it (the pipeline builds one for any uncurated match).
+        report(f"reset {key}: preparing the original bundle", 0, 4)
+        if not bundle.exists():
+            lock.unlink(missing_ok=True)                      # the pipeline takes its own
+            parked = None
+            if corr.exists():                                 # out of the way, so it builds
+                parked = corr.with_name(f"{corr.name}.{RESET_SUFFIX}-{stamp}.moved")
+                corr.rename(parked)
+            a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event,
+                 "--calib-from", job.get("calibFrom") or event]
+            rc, tail = _run_logged(a, cwd=C.TRACKER_ROOT)
+            if rc != 0 or not bundle.exists():
+                if parked is not None:                        # nothing was reset: put it back
+                    parked.rename(corr)
+                raise RuntimeError("could not rebuild the original bundle: "
+                                   + failure_reason(tail, rc))
+            lock.write_text(json.dumps({"match": key, "pid": os.getpid(), "at": time.time()}),
+                            encoding="utf-8")
+        try:
+            doc = json.loads(bundle.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError) as e:
+            raise RuntimeError(f"original bundle unreadable: {e}") from e
+        if doc.get("followup"):
+            raise RuntimeError("the bundle on disk is a follow-up, not the original")
+
+        # 2. PUSH FIRST. If this fails nothing has been taken away yet.
+        report(f"reset {key}: posting the original bundle", 1, 4)
+        rc, tail = _run_logged([PY, "-m", "rtrack.relay", "push-bundle", key,
+                                "--file", str(bundle)], cwd=C.TRACKER_ROOT)
+        if rc != 0:
+            raise RuntimeError(f"push failed: {failure_reason(tail, rc)}")
+
+        # 3. RETIRE THE ANSWERS. The relay's copy goes first: the watcher acts on relay
+        # answers newer than what is on disk, so while one exists it would pull the old
+        # corrections straight back.
+        report(f"reset {key}: retiring answers", 2, 4)
+        _run_logged([PY, "-m", "rtrack.relay", "clear", "answer", key], cwd=C.TRACKER_ROOT)
+        if corr.exists():                                     # kept, not deleted
+            corr.rename(corr.with_name(f"{corr.name}.{RESET_SUFFIX}-{stamp}.moved"))
+        if followup.exists():
+            followup.rename(followup.with_name(f"{followup.name}.{RESET_SUFFIX}-{stamp}"))
+        recs = _load_jobs()
+        for sect in ("_strikes", "_reasons"):
+            recs.get(sect, {}).pop(key, None)
+        _save_jobs(recs)
+
+        # 4. THE EVENT GALLERY learns from curated matches' labels; this match's are gone.
+        report(f"reset {key}: rebuilding the curated gallery", 3, 4)
+        _run_logged([PY, "-m", "rtrack.reid", "curated-gallery", "--event", event],
+                    cwd=C.TRACKER_ROOT)
+        if corr.exists():
+            raise RuntimeError("corrections reappeared during the reset (the watcher "
+                               "pulled an answer); run the reset again")
+    finally:
+        try:
+            if json.loads(lock.read_text(encoding="utf-8")).get("pid") == os.getpid():
+                lock.unlink(missing_ok=True)
+        except Exception:                                  # noqa: BLE001
+            pass
+    report(f"reset {key}: original bundle is back on the relay", 4, 4)
+    return 1, 1, [], True
+
+
 JOB_RUNNERS = {"process": run_process, "detect": run_detect, "bundle": run_bundle,
-               "calib": run_calib, "followup": run_followup}
+               "calib": run_calib, "followup": run_followup,
+               "reset": run_reset}
 
 
 def pending_points() -> list[tuple[str, float]]:

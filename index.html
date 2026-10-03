@@ -822,6 +822,47 @@
             border-bottom-color: #3b82f6;
             background: rgba(59, 130, 246, 0.08);
         }
+        /* Tracks tab: one box geometry for every panel, so no box is narrower than the
+           table it holds. min-width:0 lets a box shrink inside its flex/grid parent, and
+           a table wider than the box scrolls inside it (.trk-scroll) instead of poking
+           out past the border. */
+        .trk-box {
+            border: 1px solid #1e293b;
+            border-radius: 8px;
+            padding: 10px 12px;
+            margin-bottom: 14px;
+            box-sizing: border-box;
+            width: 100%;
+            max-width: 100%;
+            min-width: 0;
+        }
+        .trk-box.trk-strong { border-color: #334155; }
+        .trk-scroll { overflow-x: auto; max-width: 100%; }
+        .trk-scroll > table { min-width: 100%; }
+        .trk-subtabs {
+            display: inline-flex;
+            border: 1px solid #334155;
+            border-radius: 8px;
+            overflow: hidden;
+        }
+        .trk-subtab-btn {
+            background: transparent;
+            color: #94a3b8;
+            border: none;
+            padding: 7px 18px;
+            font-size: 0.9rem;
+            font-weight: 700;
+            cursor: pointer;
+        }
+        .trk-subtab-btn.active { background: #1e293b; color: #f8fafc; }
+        .trk-filter {
+            background: #0f172a;
+            color: #e2e8f0;
+            border: 1px solid #334155;
+            border-radius: 6px;
+            padding: 6px 9px;
+            font-size: 0.82em;
+        }
         .source-logo {
             width: 16px; height: 16px;
             vertical-align: middle; margin-right: 5px;
@@ -1390,7 +1431,7 @@
         body.mobile-ui .chart-container-prep { height: 180px; }
         body.mobile-ui #teamDetailView { padding: 0 12px 0 !important; overflow-x: hidden !important; }
         body.mobile-ui #teamDetailView .view-header-container { padding: 10px 0 4px; }
-        body.mobile-ui #teamDetailView .detail-tab-content { padding-bottom: 80px; }
+        body.mobile-ui #teamDetailView .detail-tab-content { padding-bottom: calc(24px + env(safe-area-inset-bottom, 0px)); }
         #matchContributionTable { overflow-x: auto; -webkit-overflow-scrolling: touch; }
         #scheduleTable tr[data-match-start] td { border-top: 2px solid #475569; }
 

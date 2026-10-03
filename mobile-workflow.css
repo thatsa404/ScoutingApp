@@ -337,7 +337,10 @@ body.mobile-ui .live-match-card .mobile-alliance-row { padding: 8px 0; }
 body.mobile-ui .live-match-card .mobile-match-bottom { padding: 8px 0 0; }
 body.mobile-ui .live-latest-result { color: #cbd5e1; padding: 10px 2px; border-top: 1px solid #334155; }
 
-body.mobile-ui #teamDetailView { padding: 0 12px 84px !important; }
+/* The team page is a full-screen overlay ABOVE the bottom nav (z-index 100 vs 90), so
+   there is no nav to clear: reserving 84px here (plus 80px in .detail-tab-content) left
+   the bottom sixth of the screen black and empty. Only the home-indicator inset remains. */
+body.mobile-ui #teamDetailView { padding: 0 12px env(safe-area-inset-bottom, 0px) !important; }
 body.mobile-ui #teamDetailView .view-header-container { gap: 8px; }
 body.mobile-ui #teamDetailTabs { max-width: 100%; }
 body.mobile-ui #teamDetailView .detail-tab-btn { padding: 8px 10px; font-size: 0.82rem; }
