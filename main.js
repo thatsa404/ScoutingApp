@@ -1921,12 +1921,12 @@ async function renderMatchTracks(matchKey) {
     // scale it is a knot in the corner of the plot. Sample times are relative to auto
     // start, so isolating it is just an upper bound on t -- no second dataset, no
     // re-fetch, and the scrubber keeps working inside the clipped range.
-    const autoEnd = autoEndOf(doc);
+    const span = autoSpanOf(doc), autoEnd = span.t1;
     let autoOnly = false;
 
     const paint = () => renderFieldRoutes(cv, doc, {
         teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
-        tMax: autoOnly ? autoEnd : null,
+        tMin: autoOnly ? span.t0 : null, tMax: autoOnly ? autoEnd : null,
     });
     const resize = () => { if (_trackSizeCanvas(img, cv)) paint(); };
 
@@ -1968,7 +1968,7 @@ async function renderMatchTracks(matchKey) {
         // Hand over the CURRENT view, not a default one: whatever teams are shown and
         // whether auto-only is on should survive the jump to full screen.
         teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
-        tMax: autoOnly ? autoEnd : null,
+        tMin: autoOnly ? span.t0 : null, tMax: autoOnly ? autoEnd : null,
     });
     const inspectBtn = document.getElementById('mtInspect');
     if (inspectBtn) inspectBtn.onclick = () => window.openRouteInspector(doc, matchKey, {
@@ -1980,7 +1980,7 @@ async function renderMatchTracks(matchKey) {
         autoBtn.style.background = autoOnly ? '#1e3a5f' : 'transparent';
         autoBtn.style.borderColor = autoOnly ? '#3b82f6' : '#334155';
         autoBtn.style.color = autoOnly ? '#60a5fa' : '#94a3b8';
-        autoNote.textContent = autoOnly ? `first ${autoEnd.toFixed(0)}s of the match` : '';
+        autoNote.textContent = autoOnly ? `auto: ${span.t0.toFixed(1)}–${autoEnd.toFixed(1)} s${span.motion ? '' : ' (export clock)'}` : '';
     };
     autoBtn.onclick = () => {
         autoOnly = !autoOnly;
@@ -10441,7 +10441,9 @@ window.inspectMatchAt = async (matchKey, t) => {
 // Match-table filters live at module scope: Refresh, Save and the speed ranking all
 // re-render the whole tab, and a filter that reset each time would be a filter nobody uses.
 let _trkFilter = { state: 'all', team: '' };
-const TRK_SUBTAB_KEY = 'rtrackSubtab';
+// v2: the first version saved the tab on EVERY render, so every device already holds
+// 'relay' and would never see the new Curation default.
+const TRK_SUBTAB_KEY = 'rtrackSubtabV2';
 const TRK_STATES = [
     ['attention', 'Needs attention'],
     ['needs', 'Needs curation'],
@@ -10470,8 +10472,8 @@ async function renderTracksTab() {
     host.innerHTML = `
       <div style="display:flex;gap:10px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
         <div class="trk-subtabs" id="trkSubtabs">
-          <button class="trk-subtab-btn" data-sub="relay">Relay</button>
           <button class="trk-subtab-btn" data-sub="curation">Curation</button>
+          <button class="trk-subtab-btn" data-sub="relay">Relay</button>
         </div>
         <span id="trkRelayNote" style="font-size:0.8em;flex:1;min-width:160px;"></span>
         <button id="trkRefresh" style="padding:8px 12px;border-radius:6px;border:1px solid #2563eb;
@@ -10494,16 +10496,20 @@ async function renderTracksTab() {
       </div>`;
 
     const setSub = (name) => {
-        try { localStorage.setItem(TRK_SUBTAB_KEY, name); } catch { /* private window */ }
         document.getElementById('trkPaneRelay').style.display = name === 'relay' ? 'block' : 'none';
         document.getElementById('trkPaneCuration').style.display = name === 'curation' ? 'block' : 'none';
         host.querySelectorAll('#trkSubtabs button').forEach(b =>
             b.classList.toggle('active', b.dataset.sub === name));
     };
-    host.querySelectorAll('#trkSubtabs button').forEach(b => b.onclick = () => setSub(b.dataset.sub));
+    // Remembered only when chosen, so the default (Curation -- what most people open this
+    // tab for) is what anyone sees until they pick Relay themselves.
+    host.querySelectorAll('#trkSubtabs button').forEach(b => b.onclick = () => {
+        try { localStorage.setItem(TRK_SUBTAB_KEY, b.dataset.sub); } catch { /* private window */ }
+        setSub(b.dataset.sub);
+    });
     let remembered = null;
     try { remembered = localStorage.getItem(TRK_SUBTAB_KEY); } catch { /* ignore */ }
-    setSub(remembered === 'curation' ? 'curation' : 'relay');
+    setSub(remembered === 'relay' ? 'relay' : 'curation');
 
     document.getElementById('trkSave').onclick = () => {
         localStorage.setItem(RELAY_KEY, document.getElementById('trkRelay').value.trim());
@@ -11310,7 +11316,7 @@ window.openRoutesFull = function (doc, opts = {}) {
     if (!isFinite(tMin)) { tMin = 0; tMax = 1; }
     let tNow = (opts.tNow != null) ? opts.tNow : tMax;
     let playing = false, raf = 0;
-    const autoEnd = autoEndOf(doc);
+    const span = autoSpanOf(doc), autoEnd = span.t1;
     const BASE = import.meta.env.BASE_URL;
 
     const el = document.createElement('div');
@@ -11357,7 +11363,7 @@ window.openRoutesFull = function (doc, opts = {}) {
         if (!_trackSizeCanvas(img, cv)) return;
         renderFieldRoutes(cv, doc, {
             teams: shown, tNow, trailOnly: tNow < tMax, dots: tNow < tMax,
-            tMax: autoOnly ? autoEnd : null, arrows,
+            tMin: autoOnly ? span.t0 : null, tMax: autoOnly ? autoEnd : null, arrows,
         });
     };
     const style = (b, on) => {
@@ -11397,7 +11403,7 @@ window.openRoutesFull = function (doc, opts = {}) {
     const autoBtn = el.querySelector('#rfAuto');
     const syncBtns = () => {
         arrowsBtn.textContent = 'Direction ' + (arrows ? 'on' : 'off');
-        autoBtn.textContent = autoOnly ? ('Auto only (' + autoEnd.toFixed(0) + 's)') : 'Whole match';
+        autoBtn.textContent = autoOnly ? ('Auto only (' + span.t0.toFixed(1) + '–' + autoEnd.toFixed(1) + ' s)') : 'Whole match';
         style(arrowsBtn, arrows); style(autoBtn, autoOnly);
     };
     syncBtns();
@@ -14563,6 +14569,24 @@ function autoWindowOf(doc) {
     return { on };
 }
 
+// The span to SHOW for "auto only": first motion to +20.5 s, not the export's 0-20 s. The
+// export's clock puts auto's start a median 2.5 s too early (1.1-4.1 s across necmp1) and
+// its end a median 3 s too early (real end 21.6-24.6 s), so clipping at 20 s dropped the
+// last seconds of auto and kept the idle seconds before it. A match whose pause check
+// fails has no trustworthy onset and falls back to the export's span.
+const _autoSpanCache = new WeakMap();
+function autoSpanOf(doc) {
+    if (!doc || typeof doc !== 'object') return { t0: 0, t1: AUTO_END_DEFAULT, motion: false };
+    let sp = _autoSpanCache.get(doc);
+    if (!sp) {
+        const w = autoWindowOf(doc);
+        sp = (w.on !== undefined) ? { t0: w.on, t1: w.on + AR_AUTO_S, motion: true }
+                                  : { t0: 0, t1: autoEndOf(doc), motion: false };
+        _autoSpanCache.set(doc, sp);
+    }
+    return sp;
+}
+
 // Positions on a 0.2 s grid from auto onset, in red's frame; null where untracked.
 function _arResample(robot, on, doc) {
     const [FL, FW] = doc.field?.sizeM || [16.541, 8.069];
@@ -14645,6 +14669,63 @@ function _arDist(A, B) {
     return path[Math.floor(path.length / 2)];
 }
 
+// ALIGNED MEDIAN TEMPLATE. The medoid is one real run and shows only what that run had
+// tracked (16.3 s of the 20.4 s auto on necmp1, against 18.8 s for the members together).
+// The template takes, at every moment, the median position of whichever runs were tracked
+// then, so it spans everything any run saw. Two things keep that honest:
+//  - the runs are first lined up in time. Each run is shifted by a whole number of 0.2 s
+//    steps (at most 2.4 s in total) to the offset where it sits closest to an
+//    already-aligned run, starting from the medoid and chaining through whichever run it
+//    is comparable with. A rigid shift, not a warp: a warp only yields a common time axis
+//    over the part two runs share, and the point here is the union. A small penalty per
+//    step of shift keeps a stationary start from drifting to an arbitrary offset.
+//  - the number of runs behind each moment is kept, so a stretch only one run saw can be
+//    drawn as such. A median of two is their midpoint; coordinate-wise, not a path.
+const AR_SHIFT_MAX = 12;       // total shift cap, steps (2.4 s)
+const AR_SHIFT_STEP_PEN = 0.01; // m of penalty per step shifted from the partner
+
+function _arShifted(R, k) {     // value at index i is R[i + k]
+    const out = new Array(R.length).fill(null);
+    for (let i = 0; i < R.length; i++) { const j = i + k; if (j >= 0 && j < R.length) out[i] = R[j]; }
+    return out;
+}
+function _arZeroWarp(A, B) {   // median distance where both are tracked at the same index
+    const d = [];
+    for (let i = 0; i < A.length; i++) if (A[i] && B[i]) d.push(Math.hypot(A[i][0] - B[i][0], A[i][1] - B[i][1]));
+    if (d.length * AR_DT < AR_MIN_COMMON_S) return null;
+    d.sort((a, b) => a - b);
+    return d[Math.floor(d.length / 2)];
+}
+function _arTemplate(members, medoid) {
+    const shifts = new Map([[medoid, 0]]), grids = new Map([[medoid, medoid.R]]);
+    let rest = members.filter(m => m !== medoid);
+    while (rest.length) {
+        let best = null;
+        for (const m of rest) for (const a of shifts.keys()) {
+            const ka = shifts.get(a), ga = grids.get(a);
+            for (let k = Math.max(-AR_SHIFT_MAX, ka - 10); k <= Math.min(AR_SHIFT_MAX, ka + 10); k++) {
+                const d = _arZeroWarp(ga, _arShifted(m.R, k));
+                if (d === null) continue;
+                const score = d + AR_SHIFT_STEP_PEN * Math.abs(k - ka);
+                if (!best || score < best.score) best = { m, k, score };
+            }
+        }
+        if (!best) break;                                   // nothing left is comparable
+        shifts.set(best.m, best.k); grids.set(best.m, _arShifted(best.m.R, best.k));
+        rest = rest.filter(m => m !== best.m);
+    }
+    const nIdx = medoid.R.length, pts = new Array(nIdx).fill(null), n = new Array(nIdx).fill(0);
+    const med = (v) => { v.sort((a, b) => a - b); const h = v.length >> 1; return v.length % 2 ? v[h] : (v[h - 1] + v[h]) / 2; };
+    for (let i = 0; i < nIdx; i++) {
+        const xs = [], ys = [];
+        for (const g of grids.values()) if (g[i]) { xs.push(g[i][0]); ys.push(g[i][1]); }
+        n[i] = xs.length;
+        if (xs.length) pts[i] = [med(xs), med(ys)];
+    }
+    return { pts, n, covered: n.filter(c => c >= 1).length * AR_DT, supported: n.filter(c => c >= 2).length * AR_DT,
+             shifts: [...shifts.values()].map(k => k * AR_DT) };
+}
+
 // Group one team's autos into routines. docs: match track documents that include the team.
 function autoRoutines(docs, team) {
     team = String(team);
@@ -14691,7 +14772,8 @@ function autoRoutines(docs, team) {
             const s = g.reduce((t, j) => t + (i === j ? 0 : (Number.isFinite(D[i][j]) ? D[i][j] : 3)), 0);
             if (s < bestS) { bestS = s; med = i; }
         }
-        return { members: g.map(i => autos[i]), medoid: autos[med] };
+        const members = g.map(i => autos[i]);
+        return { members, medoid: autos[med], template: _arTemplate(members, autos[med]) };
     }).sort((a, b) => b.members.length - a.members.length);
     return { routines, still, tooLittle, notComparable: alone.map(g => autos[g[0]]), skipped };
 }
@@ -14723,7 +14805,9 @@ function renderAutoRoutines(host, docs, team, paints = []) {
           Blue matches are rotated 180° so every auto reads as the drive team saw it from behind its own
           driver station; the cards are drawn with that driver station on the <b>left</b> (the match maps
           below follow the camera instead). Chips are matches, outlined in the team's alliance colour.
-          The boldest line is the most typical run; a dot marks a start that was tracked.
+          The bold line is the median of the runs at each moment, after lining them up in time (each shifted by up to
+          2.4 s to match the others): solid where two or more runs back it, dashed where only one did. Faint lines
+          are the individual runs; a dot marks a tracked start. Clicking a card opens the single run most like the rest.
           A routine seen once may be a real routine or a tracking mix-up.
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px;">
@@ -14731,7 +14815,8 @@ function renderAutoRoutines(host, docs, team, paints = []) {
             <div>
               <div style="font-size:12px;margin-bottom:3px;">
                 <b style="color:${colours[i % colours.length]};">Routine ${String.fromCharCode(65 + i)}</b>
-                <span style="color:#94a3b8;"> · seen ${rt.members.length}×</span></div>
+                <span style="color:#94a3b8;"> · seen ${rt.members.length}×</span>
+                <span style="color:#64748b;"> · ${rt.template.covered.toFixed(0)} s of the auto${rt.members.length > 1 ? `, ${rt.template.supported.toFixed(0)} s by 2+ runs` : ''}</span></div>
               <div class="arBox" data-i="${i}" title="Open the most typical run full screen"
                    style="position:relative;width:100%;border-radius:6px;overflow:hidden;cursor:zoom-in;">
                 <img class="arImg" data-i="${i}" src="${import.meta.env.BASE_URL}${rt.medoid.doc.field.imageRef}" alt="field"
@@ -14751,9 +14836,9 @@ function renderAutoRoutines(host, docs, team, paints = []) {
             if (!_trackSizeCanvas(img, cv)) return;
             const ctx = cv.getContext('2d'), W = cv.width, H = cv.height, N = _trackNorm(rt.medoid.doc);
             ctx.clearRect(0, 0, W, H);
+            // the individual runs, faint: each its own tracked stretches
+            ctx.strokeStyle = colour; ctx.globalAlpha = 0.3; ctx.lineWidth = 1.2; ctx.setLineDash([]);
             for (const m of rt.members) {
-                const isMed = m === rt.medoid;
-                ctx.strokeStyle = colour; ctx.globalAlpha = isMed ? 1 : 0.45; ctx.lineWidth = isMed ? 2.5 : 1.5;
                 ctx.beginPath(); let pen = false;
                 for (const p of m.R) {
                     if (!p) { pen = false; continue; }
@@ -14762,18 +14847,39 @@ function renderAutoRoutines(host, docs, team, paints = []) {
                     pen = true;
                 }
                 ctx.stroke();
-                const first = m.R.findIndex(Boolean);
-                if (first >= 0 && first * AR_DT <= 1) {
-                    const [nx, ny] = N(m.R[first][0], m.R[first][1]);
-                    ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(nx * W, ny * H, isMed ? 4 : 3, 0, 2 * Math.PI); ctx.fill();
+            }
+            // the template, bold: runs of consecutive moments drawn as one stroke so a dash
+            // pattern reads as dashes; solid where 2+ runs back it, dashed where one does
+            const T = rt.template;
+            ctx.globalAlpha = 1; ctx.lineWidth = 2.6;
+            let run = [], runSolid = null;
+            const flush = () => {
+                if (run.length > 1) {
+                    ctx.setLineDash(runSolid ? [] : [5, 4]);
+                    ctx.beginPath();
+                    run.forEach((q, k) => { const [nx, ny] = N(q[0], q[1]); if (k) ctx.lineTo(nx * W, ny * H); else ctx.moveTo(nx * W, ny * H); });
+                    ctx.stroke();
                 }
+                run = []; runSolid = null;
+            };
+            for (let i = 0; i < T.pts.length; i++) {
+                if (!T.pts[i]) { flush(); continue; }
+                const solid = T.n[i] >= 2;
+                if (run.length && solid !== runSolid) { const last = run[run.length - 1]; flush(); run = [last]; }
+                runSolid = solid; run.push(T.pts[i]);
+            }
+            flush(); ctx.setLineDash([]);
+            const f0 = T.pts.findIndex(Boolean);
+            if (f0 >= 0 && f0 * AR_DT <= 1) {
+                const [nx, ny] = N(T.pts[f0][0], T.pts[f0][1]);
+                ctx.fillStyle = colour; ctx.beginPath(); ctx.arc(nx * W, ny * H, 4, 0, 2 * Math.PI); ctx.fill();
             }
             ctx.globalAlpha = 1;
         };
         if (img.complete && img.naturalWidth) paint(); else img.addEventListener('load', paint, { once: true });
         paints.push(paint);
         host.querySelector(`.arBox[data-i="${i}"]`).onclick = () => window.openRoutesFull(rt.medoid.doc, {
-            teams: new Set([String(team)]), tNow: null, dots: false, tMax: autoEndOf(rt.medoid.doc) });
+            teams: new Set([String(team)]), tNow: null, dots: false, tMax: autoSpanOf(rt.medoid.doc).t1 });
     });
     return res;
 }
@@ -15108,7 +15214,7 @@ async function renderTeamRoutesTab(teamNumber) {
                 <span style="font-size:11px; color:#94a3b8;">
                   ${(d.robots.find(r => String(r.team) === team)?.alliance) || ''}
                   · custody ${Math.round(100 * (d.robots.find(r => String(r.team) === team)?.custody || 0))}%
-                  ${routesAutoOnly ? `· <span style="color:#60a5fa;">first ${autoEndOf(d).toFixed(0)}s</span>` : ''}
+                  ${routesAutoOnly ? `· <span style="color:#60a5fa;">auto ${autoSpanOf(d).t0.toFixed(1)}–${autoSpanOf(d).t1.toFixed(1)} s</span>` : ''}
                 </span>
               </div>
               <div class="trBox" data-i="${i}" title="Open full screen"
@@ -15150,7 +15256,7 @@ async function renderTeamRoutesTab(teamNumber) {
         const box = host.querySelector(`.trBox[data-i="${i}"]`);
         if (box) box.onclick = () => window.openRoutesFull(mine[i], {
             teams: only, tNow: null, dots: false,
-            tMax: routesAutoOnly ? autoEndOf(mine[i]) : null,
+            tMin: routesAutoOnly ? autoSpanOf(mine[i]).t0 : null, tMax: routesAutoOnly ? autoSpanOf(mine[i]).t1 : null,
         });
         const paint = () => {
             if (_trackSizeCanvas(img, cv)) {
@@ -15160,7 +15266,7 @@ async function renderTeamRoutesTab(teamNumber) {
                 // whole match under an "Auto only" heading.
                 renderFieldRoutes(cv, mine[i], {
                     teams: only, tNow: null, dots: false,
-                    tMax: routesAutoOnly ? autoEndOf(mine[i]) : null,
+                    tMin: routesAutoOnly ? autoSpanOf(mine[i]).t0 : null, tMax: routesAutoOnly ? autoSpanOf(mine[i]).t1 : null,
                 });
             }
         };
