@@ -1726,6 +1726,7 @@ window.viewMatchDetail = async function (matchKey) {
     const blueWon = match.blueScore > match.redScore;
 
     document.getElementById('matchDetailLabel').innerText = `Match Details: Qual ${match.matchNumber}`;
+    _activeMatchKey = matchKey;
 
     const redScoreEl = document.getElementById('redTotalScore');
     const blueScoreEl = document.getElementById('blueTotalScore');
@@ -1845,7 +1846,8 @@ window.viewMatchDetail = async function (matchKey) {
     }
 
     const isSplitDetail = document.body.classList.contains('split-ui');
-    if (isSplitDetail) pushCurrentRightPanel();
+    // already open: stepping to another match, not a second panel to stack
+    if (isSplitDetail && document.getElementById('matchDetailView').style.display === 'none') pushCurrentRightPanel();
     document.getElementById('matchDetailView').style.display = isSplitDetail ? 'block' : 'flex';
     pushNavState('matchDetail');
 
@@ -1854,6 +1856,7 @@ window.viewMatchDetail = async function (matchKey) {
     // same constraint that makes performanceChart render lazily. Fire-and-forget so a
     // slow/absent tracks file never delays the modal.
     renderMatchTracks(matchKey);
+    setMatchNav(match).catch(() => {});
 };
 
 // Populates #matchTracksSection. Silent no-op when the match has no tracks, which is
@@ -1862,8 +1865,12 @@ async function renderMatchTracks(matchKey) {
     const host = document.getElementById('matchTracksSection');
     if (!host) return;
     host.innerHTML = '';
+    // Re-rendered when the match modal steps to another match: unhook the last render's
+    // resize listener, and drop this render if a newer one started while it was loading.
+    if (host._trackResize) { window.removeEventListener('resize', host._trackResize); host._trackResize = null; }
+    const tok = (host._rtTok = (host._rtTok || 0) + 1);
     const doc = await loadMatchTracks(matchKey);
-    if (!doc) return;
+    if (!doc || host._rtTok !== tok) return;
 
     const q = doc.quality || {};
     const vid = doc.source?.videoId;
@@ -5925,6 +5932,7 @@ window.viewTeamDetail = async function (teamNumber, tab = 'overview') {
     window.switchView('teamDetailView');
     pushNavState('teamDetail');
     fitDetailLabel();
+    setTeamNav(team).catch(() => {});
 };
 
 function fitDetailLabel() {
@@ -7778,7 +7786,125 @@ function popRightPanel() {
 
 // Push a history entry so the native back gesture can dismiss overlays
 function pushNavState(overlay) {
+    // One entry per OVERLAY, not per item: stepping to the next team or match re-opens the
+    // same overlay, and an entry for each would make Back walk back through every one.
+    if (history.state?.overlay === overlay) return;
     history.pushState({ overlay }, '');
+}
+
+// ── PREVIOUS / NEXT in the team, match and route headers ─────────────────────
+// Arrow buttons in each header, and a horizontal swipe on the header itself. Swipes are
+// kept to the header on purpose: the pages below scroll sideways (tables, charts) and the
+// route inspector pans its plots, so a swipe there already means something.
+const _matchOrderRe = /_(qm|ef|qf|sf|f)(\d+)(?:m(\d+))?$/;
+function matchOrder(key) {
+    const m = _matchOrderRe.exec(String(key));
+    if (!m) return [9, 0, 0];
+    return [{ qm: 0, ef: 1, qf: 2, sf: 3, f: 4 }[m[1]], Number(m[2]), Number(m[3] || 0)];
+}
+const cmpMatch = (a, b) => {
+    const x = matchOrder(a), y = matchOrder(b);
+    return x[0] - y[0] || x[1] - y[1] || x[2] - y[2] || String(a).localeCompare(String(b));
+};
+const shortKey = (k) => String(k).replace(/^[^_]+_/, '');
+
+// prev / next: { label, title, go } or null (disabled)
+function setStepNav(host, prev, next) {
+    if (!host) return;
+    host.textContent = '';
+    for (const [dir, it] of [['prev', prev], ['next', next]]) {
+        const b = document.createElement('button');
+        b.type = 'button'; b.className = 'step-btn'; b.dataset.dir = dir; b.disabled = !it;
+        const lbl = document.createElement('span');
+        lbl.className = 'lbl'; lbl.textContent = it ? it.label : '';
+        if (dir === 'prev') { b.append('\u2039', lbl); lbl.textContent = it ? ' ' + it.label : ''; }
+        else { lbl.textContent = it ? it.label + ' ' : ''; b.append(lbl, '\u203a'); }
+        b.title = it ? (dir === 'prev' ? 'Previous: ' : 'Next: ') + it.title : (dir === 'prev' ? 'No previous' : 'No next');
+        if (it) b.onclick = (e) => { e.stopPropagation(); it.go(); };
+        host.appendChild(b);
+    }
+}
+
+function attachStepSwipe(el, getNav) {
+    if (!el || el._stepSwipe) return;
+    el._stepSwipe = true;
+    el.style.touchAction = 'pan-y';
+    let x0 = null, y0 = 0, t0 = 0;
+    el.addEventListener('pointerdown', (e) => {
+        if (e.target.closest('button, a, input, select, textarea')) { x0 = null; return; }
+        x0 = e.clientX; y0 = e.clientY; t0 = performance.now();
+    });
+    el.addEventListener('pointerup', (e) => {
+        if (x0 === null) return;
+        const dx = e.clientX - x0, dy = e.clientY - y0, dt = performance.now() - t0;
+        x0 = null;
+        if (Math.abs(dx) < 60 || Math.abs(dx) < 2 * Math.abs(dy) || dt > 700) return;
+        const nav = getNav();
+        (dx < 0 ? nav?.next : nav?.prev)?.go();      // swipe left = next, right = previous
+    });
+    el.addEventListener('pointercancel', () => { x0 = null; });
+}
+
+// A second tap while one step is still loading is ignored, not queued.
+let _stepBusy = false;
+async function stepTo(fn) {
+    if (_stepBusy) return;
+    _stepBusy = true;
+    try { await fn(); } finally { _stepBusy = false; }
+}
+
+// Tracked matches (manifest + relay) for an event, in match order.
+async function routeMatchKeys(eventKey) {
+    const keys = new Set();
+    const man = await loadTracksManifest();
+    for (const m of man.matches || []) if (String(m.key).startsWith(eventKey + '_')) keys.add(m.key);
+    try { for (const k of (await relayTracksIndex()).keys()) if (String(k).startsWith(eventKey + '_')) keys.add(k); } catch { /* relay down */ }
+    return [...keys].sort(cmpMatch);
+}
+// navKeys restricts the walk (a team's own matches); otherwise every tracked match of the event.
+async function routeNeighbors(key, navKeys = null) {
+    const keys = navKeys ? [...new Set(navKeys)].sort(cmpMatch) : await routeMatchKeys(String(key).split('_')[0]);
+    const i = keys.indexOf(key);
+    return { prev: i > 0 ? keys[i - 1] : null, next: (i >= 0 && i < keys.length - 1) ? keys[i + 1] : null };
+}
+
+let _teamNav = null, _matchNav = null, _activeMatchKey = null;
+async function setTeamNav(team) {
+    const host = document.getElementById('detailNav');
+    if (!host) return;
+    setStepNav(host, null, null);
+    let nums = [];
+    try { nums = (await db.teams.where('eventKey').equals(team.eventKey).toArray()).map(t => Number(t.teamNumber)).sort((a, b) => a - b); } catch { /* no event */ }
+    if (Number(activeTeamNumber) !== Number(team.teamNumber)) return;      // a newer team took over
+    const i = nums.indexOf(Number(team.teamNumber));
+    const mk = (n) => n == null ? null : { label: String(n), title: `Team ${n}`, go: () => stepTo(async () => {
+        await window.viewTeamDetail(n, lastDetailTab);        // stay on the same tab: compare team to team
+        document.querySelectorAll('#teamDetailView .detail-tab-content').forEach(c => { c.scrollTop = 0; });
+    }) };
+    _teamNav = { prev: i > 0 ? mk(nums[i - 1]) : null, next: (i >= 0 && i < nums.length - 1) ? mk(nums[i + 1]) : null };
+    setStepNav(host, _teamNav.prev, _teamNav.next);
+    attachStepSwipe(host.parentElement, () => _teamNav);
+}
+async function setMatchNav(match) {
+    const host = document.getElementById('matchNav');
+    if (!host) return;
+    setStepNav(host, null, null);
+    let list = [];
+    try {
+        list = (await db.matches.where('eventKey').equals(match.eventKey).toArray())
+            .filter(m => m.key === match.key || (Number(m.redScore) >= 0 && Number(m.blueScore) >= 0))   // played ones, like the schedule
+            .sort((a, b) => cmpMatch(a.key, b.key));
+    } catch { /* no event */ }
+    if (_activeMatchKey !== match.key) return;
+    const i = list.findIndex(m => m.key === match.key);
+    const mk = (m) => m && { label: 'Q' + m.matchNumber, title: `Qual ${m.matchNumber}`, go: () => stepTo(async () => {
+        await window.viewMatchDetail(m.key);
+        const v = document.getElementById('matchDetailView');
+        if (v) { v.scrollTop = 0; v.querySelector('.modal-content')?.scrollTo?.(0, 0); }
+    }) };
+    _matchNav = { prev: i > 0 ? mk(list[i - 1]) : null, next: (i >= 0 && i < list.length - 1) ? mk(list[i + 1]) : null };
+    setStepNav(host, _matchNav.prev, _matchNav.next);
+    attachStepSwipe(host.parentElement, () => _matchNav);
 }
 
 // LAYERED OVERLAYS (the route inspector, full-screen routes, the gallery review panel):
@@ -7928,7 +8054,8 @@ window.switchView = function (viewId, btn) {
     // whatever is open (including matchPrepView) — handle it first, before the
     // prep-close block below would interfere.
     if (document.body.classList.contains('split-ui') && viewId === 'teamDetailView') {
-        pushCurrentRightPanel();
+        // already open: this is a step to another team, not a second panel to stack
+        if (document.getElementById('teamDetailView').style.display !== 'flex') pushCurrentRightPanel();
         window.previousView = window.currentView;
         document.getElementById('teamDetailView').style.display = 'flex';
         updateDetailBackButton();
@@ -11326,6 +11453,7 @@ window.openRoutesFull = function (doc, opts = {}) {
     el.innerHTML = [
         '<div style="display:flex; align-items:center; gap:10px; flex-wrap:wrap;">',
         '  <b style="font-size:15px;">' + title + '</b>',
+        '  <span id="rfNav" class="step-nav"></span>',
         '  <span id="rfNote" style="color:#64748b; font-size:12px;"></span>',
         '  <span style="flex:1;"></span>',
         '  <button id="rfArrows" style="padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer;"></button>',
@@ -11436,6 +11564,25 @@ window.openRoutesFull = function (doc, opts = {}) {
     else img.addEventListener('load', () => setT(tNow), { once: true });
     _fsRoutes = paint;
     window.addEventListener('resize', paint);
+    // previous / next match: every tracked match of the event, or opts.navKeys when it was
+    // opened from one team's list (then that team stays selected and only its matches count)
+    {
+        const here = doc.match?.key || doc.key;
+        let fsNav = null;
+        setStepNav(el.querySelector('#rfNav'), null, null);
+        attachStepSwipe(el.firstElementChild, () => fsNav);
+        if (here) routeNeighbors(here, opts.navKeys || null).then((nb) => {
+            if (document.getElementById('routesFull') !== el) return;
+            const mk = (k) => k && { label: shortKey(k), title: k, go: () => stepTo(async () => {
+                const d = await loadMatchTracks(k);
+                if (!d || document.getElementById('routesFull') !== el) return;
+                window.openRoutesFull(d, { teams: opts.navKeys ? shown : undefined, tMax: autoOnly ? 1 : null,
+                                           arrows, navKeys: opts.navKeys });
+            }) };
+            fsNav = { prev: mk(nb.prev), next: mk(nb.next) };
+            setStepNav(el.querySelector('#rfNav'), fsNav.prev, fsNav.next);
+        }).catch(() => {});
+    }
     const onKey = (e) => {
         if (e.key === 'Escape') {
             closeRoutesFull();
@@ -11593,6 +11740,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     el.innerHTML = `
       <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap;">
         <b style="font-size:15px;">Inspect ${galleryEsc(key || 'routes')}</b>
+        <span id="riNav" class="step-nav"></span>
         <span style="color:#64748b;font-size:12px;">1 s average speed; gaps filled linearly (dashed, faded); red line ${INSPECT_FAST} m/s</span>
         <span style="flex:1;"></span>
         <button onclick="closeRouteInspector()" style="padding:6px 14px;border-radius:8px;border:1px solid #334155;background:#1e293b;color:#e2e8f0;cursor:pointer;">Close</button>
@@ -12037,6 +12185,19 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
     document.addEventListener('keydown', onKey);
     _inspect = { el, chart, onResize, onKey, stop };
     navLayerOpen('routeInspector', closeRouteInspector, () => !!_inspect);
+    // previous / next tracked match of this event; the plots below pan, so only the header swipes
+    let inspNav = null;
+    setStepNav(el.querySelector('#riNav'), null, null);
+    attachStepSwipe(el.firstElementChild, () => inspNav);
+    if (key) routeNeighbors(key).then((nb) => {
+        if (!_inspect || _inspect.el !== el) return;                 // closed or replaced meanwhile
+        const mk = (k) => k && { label: shortKey(k), title: k, go: () => stepTo(async () => {
+            const d = await loadMatchTracks(k);
+            if (d && _inspect && _inspect.el === el) window.openRouteInspector(d, k, {});
+        }) };
+        inspNav = { prev: mk(nb.prev), next: mk(nb.next) };
+        setStepNav(el.querySelector('#riNav'), inspNav.prev, inspNav.next);
+    }).catch(() => {});
     if (img.complete && img.naturalWidth) setT(tNow);
     else img.addEventListener('load', () => setT(tNow), { once: true });
     requestAnimationFrame(() => setT(tNow));
@@ -14879,7 +15040,8 @@ function renderAutoRoutines(host, docs, team, paints = []) {
         if (img.complete && img.naturalWidth) paint(); else img.addEventListener('load', paint, { once: true });
         paints.push(paint);
         host.querySelector(`.arBox[data-i="${i}"]`).onclick = () => window.openRoutesFull(rt.medoid.doc, {
-            teams: new Set([String(team)]), tNow: null, dots: false, tMax: autoSpanOf(rt.medoid.doc).t1 });
+            teams: new Set([String(team)]), tNow: null, dots: false, tMax: autoSpanOf(rt.medoid.doc).t1,
+            navKeys: docs.map(d => d.match?.key || d.key) });
     });
     return res;
 }
@@ -15255,7 +15417,7 @@ async function renderTeamRoutesTab(teamNumber) {
         // match is worth a closer look; this is the closer look.
         const box = host.querySelector(`.trBox[data-i="${i}"]`);
         if (box) box.onclick = () => window.openRoutesFull(mine[i], {
-            teams: only, tNow: null, dots: false,
+            teams: only, tNow: null, dots: false, navKeys: mine.map(d => d.match?.key || d.key),
             tMin: routesAutoOnly ? autoSpanOf(mine[i]).t0 : null, tMax: routesAutoOnly ? autoSpanOf(mine[i]).t1 : null,
         });
         const paint = () => {

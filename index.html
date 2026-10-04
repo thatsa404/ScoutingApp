@@ -367,6 +367,28 @@
             margin-bottom: 25px;
         }
 
+        /* Previous / next in the team, match and route headers */
+        .step-nav { display: flex; gap: 6px; flex-shrink: 0; }
+        .step-btn {
+            padding: 6px 10px;
+            font-size: 0.85rem;
+            font-weight: 700;
+            line-height: 1.2;
+            border-radius: 6px;
+            border: 1px solid #334155;
+            background: transparent;
+            color: #cbd5e1;
+            cursor: pointer;
+            white-space: nowrap;
+            touch-action: manipulation;
+        }
+        .step-btn:disabled { opacity: 0.3; cursor: default; }
+        .step-btn:not(:disabled):active { background: #1e293b; }
+        body.light-mode .step-btn { color: #334155; border-color: #cbd5e1; }
+        body.light-mode .step-btn:not(:disabled):active { background: #e2e8f0; }
+        /* the neighbour's number is dropped on narrow screens; the arrows stay */
+        @media (max-width: 480px) { .step-btn .lbl { display: none; } .step-btn { padding: 6px 12px; font-size: 1rem; } }
+
         .shortcut-btn {
             background-color: #334155;
             color: white;
@@ -2721,6 +2743,7 @@
                     <span style="color:#475569;font-weight:700;font-size:0.85em;text-transform:uppercase;letter-spacing:0.07em;margin-right:5px;font-style:normal;">Intro</span><span id="detailTeamQuipText" style="color:#64748b;font-style:italic;"></span>
                 </p>
             </div>
+            <div id="detailNav" class="step-nav"></div>
         </div>
 
         <div class="detail-tabs" id="teamDetailTabs">
@@ -2839,6 +2862,7 @@
         <div class="modal-content">
             <div class="view-header-container">
                 <h2 id="matchDetailLabel">Match Details</h2>
+                <div id="matchNav" class="step-nav" style="margin-left:auto;"></div>
                 <button onclick="closeMatchDetail()" class="nav-btn">Close</button>
             </div>
 
