@@ -34,8 +34,11 @@ jobs:
           # phone at an event types nothing. Unset is safe: the pages fall back to
           # asking, exactly as before. Set VITE_RTRACK_ANSWER_TOKEN alongside it --
           # publishing the URL without one leaves /answer open to anybody.
-          VITE_RTRACK_RELAY: ${{ secrets.VITE_RTRACK_RELAY }}
+          VITE_RTRACK_RELAY: ${{ secrets.RELAY_URL_RTRACK }}
           VITE_RTRACK_ANSWER_TOKEN: ${{ secrets.VITE_RTRACK_ANSWER_TOKEN }}
+          # The Nexus status relay. The app has no field for it; unset falls back to the
+          # address hard-coded in main.js (NEXUS_DEFAULT_URL).
+          VITE_NEXUS_RELAY: ${{ secrets.RELAY_URL_NEXUS }}
       - uses: actions/configure-pages@v5
       - uses: actions/upload-pages-artifact@v3
         with:

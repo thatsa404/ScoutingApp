@@ -335,8 +335,9 @@ def _main(argv=None) -> int:
     if args.no_votes:
         print("    votes: SKIPPED by --no-votes; identity from geometry and hue only")
     elif gallery_available:
+        # The head counts as an input: refitting it changes every vote.
         vote_inputs = [appear_cnn if args.appearance == "cnn" else appear, gallery,
-                       reviewed_latest, curated_gallery]
+                       reviewed_latest, curated_gallery, C.STAGE3_DIR / f"{event}_head.npz"]
         votes_fresh = (newer(votes, *vote_inputs) and
                        _votes_current(votes, args.appearance, reviewed_latest))
         if do("votes", votes_fresh):
@@ -514,6 +515,19 @@ def _main(argv=None) -> int:
             build_curated_gallery(event)
         except Exception as e:
             print(f"[pipeline] curated gallery not rebuilt ({type(e).__name__}: {e})")
+        # AND THE HEAD, from the same curator labels. It was only ever fitted by hand, so
+        # 2026gal and 2026mawor voted on raw embeddings all event. Replayed in match order
+        # (match N from matches 1..N-1), the head is worth ~10 points within-alliance:
+        # 2026gal 63.8% -> 74.3%, 2026mawor 63.9% -> 77.8%, 2026necmp1 86.2% -> 92.4%.
+        # Under MIN_HEAD_TRACKS curated tracks build_head refuses (SystemExit), and votes
+        # stay on raw embeddings -- below that a head measured worse than none.
+        try:
+            from .reid import build_head
+            build_head(event)
+        except SystemExit as e:
+            print(f"[pipeline] head not fitted yet: {e}")
+        except Exception as e:
+            print(f"[pipeline] head not refitted ({type(e).__name__}: {e})")
 
     # Gallery LAST: reviewed appearance learning is explicitly separate from route
     # curation.  The old command remains available only as a migration/control path;

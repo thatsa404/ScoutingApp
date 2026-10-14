@@ -98,6 +98,14 @@ def get(kind: str, ident: str) -> dict | None:
     return r.json()
 
 
+def delete(kind: str, ident: str) -> None:
+    """Remove one entry. Needs the full (home-machine) token; a missing entry is fine."""
+    url, tok = _env()
+    r = requests.delete(f"{url}/{kind}/{ident}", headers={"Rtrack-Token": tok}, timeout=60)
+    if r.status_code != 404:
+        r.raise_for_status()
+
+
 def wait(kind: str, ident: str, timeout: float = DEFAULT_TIMEOUT_S,
          poll: float = POLL_S) -> dict | None:
     """Block until something appears, or give up. Prints progress so a long wait for a

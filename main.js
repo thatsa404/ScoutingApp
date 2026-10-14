@@ -107,9 +107,12 @@ let _nexusLastKey        = sessionStorage.getItem('nexusLastKey') || null; // "l
 let _nexusStatusBarKey   = null; // db match key currently shown in the status bar
 let nexusMatchCache      = {}; // matchKey → { status, isQueuing }
 
-const NEXUS_DEFAULT_URL = 'https://nexus-relay.thatsa404.workers.dev';
+// Fixed per build (repository secret RELAY_URL_NEXUS, else this team's relay); there is
+// no field for it any more. A URL saved on a device or carried in an imported archive is
+// ignored, so an old entry cannot point a phone somewhere stale.
+const NEXUS_DEFAULT_URL = (import.meta.env.VITE_NEXUS_RELAY || 'https://nexus-relay.thatsa404.workers.dev').trim();
 
-function getNexusUrl()     { return (localStorage.getItem('nexusRelayUrl') || NEXUS_DEFAULT_URL).trim(); }
+function getNexusUrl()     { return NEXUS_DEFAULT_URL; }
 function isNexusEnabled()  { return localStorage.getItem('nexusEnabled') === 'true'; }
 
 async function maybeAutoActivateNexus() {
@@ -126,11 +129,9 @@ async function maybeAutoActivateNexus() {
 function updateNexusUI() {
     const btn   = document.getElementById('nexusToggleBtn');
     const label = document.getElementById('nexusToggleLabel');
-    const urlIn = document.getElementById('nexusRelayUrlInput');
     if (!btn) return;
     const enabled = isNexusEnabled();
     const hasUrl  = !!getNexusUrl();
-    if (urlIn && !urlIn.value) urlIn.value = getNexusUrl();
     const keyIn = document.getElementById('nexusEventKeyOverride');
     if (keyIn && !keyIn.value) keyIn.value = localStorage.getItem('nexusEventKeyOverride') || '';
     btn.style.opacity = (enabled && hasUrl) ? '1' : '0.45';
@@ -418,17 +419,11 @@ window.updateNexusStatusBar = function updateNexusStatusBar(data, matchKey) {
 }
 
 window.toggleNexus = function () {
-    if (!isNexusEnabled() && !getNexusUrl()) { alert('Enter the Relay URL first.'); return; }
+    if (!isNexusEnabled() && !getNexusUrl()) { alert('This build has no Nexus relay configured.'); return; }
     const nowEnabled = !isNexusEnabled();
     localStorage.setItem('nexusEnabled', String(nowEnabled));
     updateNexusUI();
     if (nowEnabled) startNexusPolling(); else stopNexusPolling();
-};
-
-window.saveNexusUrl = function () {
-    const url = document.getElementById('nexusRelayUrlInput')?.value.trim();
-    if (url) localStorage.setItem('nexusRelayUrl', url);
-    updateNexusUI();
 };
 
 function initNexusIntegration() {
@@ -1941,7 +1936,14 @@ async function renderMatchTracks(matchKey) {
         <button class="mt-team" data-team="${r.team}" style="padding:4px 9px; font-size:12px;
                 border:1px solid #334155; border-radius:6px; cursor:pointer;
                 background:transparent; color:${window.trackColourFor(r, i)};
-                font-weight:700;">${r.team}</button>`).join('');
+                font-weight:700;">${r.team}</button>`).join('')
+        // Scheduled teams the curator never saw on the field (rtrack corrections.absent_teams):
+        // named, struck through, so a five-robot plot reads as a no-show, not a lost route.
+        + (doc.absent || []).map(t => `
+        <span class="mt-absent" title="Scheduled, but never seen on the field during curation -- treated as a no-show"
+              style="padding:4px 9px; font-size:12px; border:1px dashed #475569; border-radius:6px;
+                     color:#64748b; text-decoration:line-through;">${t}</span>
+        <span style="font-size:11px; color:#64748b;">no-show</span>`).join('');
     // Only name a shading that is actually on screen. A legend entry for an overlay the
     // reader cannot see teaches them to look for something that is not there -- and on a
     // camera that sees the whole field, "outside camera coverage" is genuinely absent.
@@ -3533,11 +3535,8 @@ async function importArchiveBundle(data, eventKey) {
             if (data.draftConfig.epaWeights)       localStorage.setItem('draftEPAWeights', JSON.stringify(data.draftConfig.epaWeights));
         }
         if (data.nexusConfig) {
-            if (data.nexusConfig.relayUrl)          localStorage.setItem('nexusRelayUrl', data.nexusConfig.relayUrl);
             if (data.nexusConfig.enabled != null)   localStorage.setItem('nexusEnabled', data.nexusConfig.enabled);
             if (data.nexusConfig.eventKeyOverride)  localStorage.setItem('nexusEventKeyOverride', data.nexusConfig.eventKeyOverride);
-            const urlIn = document.getElementById('nexusRelayUrlInput');
-            if (urlIn) urlIn.value = data.nexusConfig.relayUrl || '';
             const keyIn = document.getElementById('nexusEventKeyOverride');
             if (keyIn) keyIn.value = data.nexusConfig.eventKeyOverride || '';
             updateNexusUI();
@@ -3702,7 +3701,12 @@ window.syncScoutingData = async function () {
     try {
         const resp = await fetch(source);
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-        const data = rawSource.endsWith('.json') ? await resp.json() : parseCSV(await resp.text());
+        let data = rawSource.endsWith('.json') ? await resp.json() : parseCSV(await resp.text());
+        // A sheet from another scouting system is translated into our columns BEFORE it is
+        // stored, not only when processed: Galileo's raw rows carry 359 columns each, ~7 MB
+        // as JSON, which is past localStorage's quota -- the save threw and nothing loaded.
+        const adapt = SCOUTING_SOURCES[eventKey]?.rowAdapter;
+        if (adapt && Array.isArray(data)) data = data.map(adapt).filter(r => String(r['Team Number'] || '').trim());
         const now = new Date().toLocaleTimeString();
         localStorage.setItem('lastSync_scoutingData', now);
         const summary = await importArchiveBundle(data, eventKey);
@@ -3891,7 +3895,6 @@ function showArchiveSummaryModal(bundle) {
         row('Pit sheet URL', check(bundle.pitSheetUrl)),
         row('Pick list order', bundle.pickListOrder?.length ? `${bundle.pickListOrder.filter(e => e !== '---separator---').length} teams` : check(false)),
         row('Draft config', check(bundle.draftConfig?.mode)),
-        row('Nexus relay URL', check(bundle.nexusConfig?.relayUrl)),
         row('Nexus enabled', bundle.nexusConfig?.enabled != null ? bundle.nexusConfig.enabled === 'true' ? '<span style="color:#4ade80;">Yes</span>' : 'No' : check(false)),
         row('Local EPA', bundle.localEpaEnabled != null ? bundle.localEpaEnabled === 'true' ? '<span style="color:#4ade80;">Enabled</span>' : 'Disabled' : check(false)),
         row('W-L calibration beta', bundle.calibrationBeta != null ? bundle.calibrationBeta.toFixed(4) : check(false)),
@@ -3959,8 +3962,11 @@ window.saveArchiveBundle = async function (mode = 'full') {
         rpThresholds:     rpThresholdsForArchive,
         webcasts:         JSON.parse(localStorage.getItem(`webcasts_${eventKey}`) ?? 'null'),
         eventNotes:       JSON.parse(localStorage.getItem(`eventNotes_${eventKey}`) ?? 'null'),
-        scoutingSheetUrl: localStorage.getItem(`scoutingSheetUrl_${eventKey}`) ?? null,
-        pitSheetUrl:      localStorage.getItem(`pitSheetUrl_${eventKey}`) ?? null,
+        // The URLs the app actually syncs from -- the game config's eventSources first,
+        // then a URL pasted on this device. Reading localStorage alone archived nothing
+        // for any event whose sheets are configured in games/ (2026necmp1 among them).
+        scoutingSheetUrl: getScoutingSource(eventKey),
+        pitSheetUrl:      getPitSource(eventKey),
         pickListOrder:    filteredPickOrder,
         draftConfig: {
             mode:             localStorage.getItem('draftMode') ?? null,
@@ -3969,7 +3975,6 @@ window.saveArchiveBundle = async function (mode = 'full') {
             epaWeights:       JSON.parse(localStorage.getItem('draftEPAWeights') ?? 'null'),
         },
         nexusConfig: {
-            relayUrl:         localStorage.getItem('nexusRelayUrl') ?? null,
             enabled:          localStorage.getItem('nexusEnabled') ?? null,
             eventKeyOverride: localStorage.getItem('nexusEventKeyOverride') ?? null,
         },
@@ -3990,10 +3995,34 @@ window.saveArchiveBundle = async function (mode = 'full') {
         //
         // Size scales with how many matches were actually processed, not with the event:
         // ~143 KB each, and a realistic event has tracks for a fraction of its matches
-        // (11 of 100 on 2026mawor). Only what is already cached locally is included; the
-        // archive is a snapshot of what this device has, not a fetch-everything trigger.
+        // (11 of 100 on 2026mawor).
+        //
+        // EVERY AVAILABLE ROUTE, NOT JUST WHAT THIS DEVICE HAPPENS TO HAVE CACHED. This
+        // used to archive the Dexie cache alone, which only holds matches someone opened
+        // here -- a 2026necmp1 archive came out with 33 of the 50 routes. Each listed match
+        // (published manifest + relay) goes through loadMatchTracks, which also replaces a
+        // cached copy that a later curation has made stale. Anything cached but no longer
+        // listed anywhere (e.g. expired from the relay, never committed) is kept too.
         try {
-            bundle.matchTracks = await db.matchTracks.where('eventKey').equals(eventKey).toArray();
+            const keys = new Set();
+            try {
+                const man = await loadTracksManifest(true);
+                (man.matches || []).forEach(m => { if (String(m.key).startsWith(eventKey + '_')) keys.add(m.key); });
+            } catch {}
+            try {
+                [...(await relayTracksIndex()).keys()].forEach(k => { if (k.startsWith(eventKey + '_')) keys.add(k); });
+            } catch {}
+            const got = new Map(), list = [...keys];
+            document.body.style.cursor = 'progress';         // a few seconds for a full event
+            try {
+                for (let i = 0; i < list.length; i += 6) {  // a few at a time, not 50 at once
+                    (await Promise.all(list.slice(i, i + 6).map(k => loadMatchTracks(k).catch(() => null))))
+                        .forEach(d => { if (d) got.set(d.key, d); });
+                }
+            } finally { document.body.style.cursor = ''; }
+            (await db.matchTracks.where('eventKey').equals(eventKey).toArray())
+                .forEach(d => { if (!got.has(d.key)) got.set(d.key, d); });
+            bundle.matchTracks = [...got.values()];
         } catch { bundle.matchTracks = []; }
     }
 
@@ -9254,12 +9283,14 @@ window.switchToolsTab = function (tab) {
 
 const RELAY_KEY = 'rtrackRelay';
 
-// Baked default last, matching the precedence in public/rtrack/*.html. main.js is
-// bundled so it can read import.meta.env directly; the standalone curator pages cannot,
-// and get the same value through the generated rtrack/relay.js.
+// The BAKED URL WINS (repository secret RELAY_URL_RTRACK, set at build time), and the
+// URL field is only shown on a build without one -- nobody should have to know or type
+// it. A value a device saved earlier is used only then, so a stale entry from before the
+// secret existed cannot shadow it. Same precedence in public/rtrack/*.html, which get
+// the value through the generated rtrack/relay.js since they are not bundled.
+const RELAY_BAKED = (import.meta.env.VITE_RTRACK_RELAY || '').trim();
 function relayUrl() {
-    return ((localStorage.getItem(RELAY_KEY)
-             || import.meta.env.VITE_RTRACK_RELAY || '')).trim().replace(/\/+$/, '');
+    return (RELAY_BAKED || localStorage.getItem(RELAY_KEY) || '').trim().replace(/\/+$/, '');
 }
 
 // The index is one small GET, but loadMatchTracks runs once per match and the team
@@ -9267,6 +9298,8 @@ function relayUrl() {
 // requests. Memoised for a few seconds, which is long enough to cover one render and
 // short enough that a freshly published match shows up on the next interaction.
 let _relayIdx = null, _relayIdxAt = 0;
+const OFFLINE_RELAY_IDX = 'rtrackRelayIdxCache';
+const OFFLINE_MANIFEST = 'rtrackManifestCache';
 const RELAY_IDX_TTL_MS = 8000;
 
 async function relayTracksIndex() {
@@ -9274,10 +9307,14 @@ async function relayTracksIndex() {
     if (!url) return new Map();
     if (_relayIdx && Date.now() - _relayIdxAt < RELAY_IDX_TTL_MS) return _relayIdx;
     const items = await _relayIndex(url);
-    const m = new Map();
+    let m = new Map();
     for (const it of items || []) {
         if (it.kind === 'tracks' && it.id) m.set(it.id, it.at || 0);
     }
+    // OFFLINE: the last list that loaded, so relay-only routes saved in Dexie can still be
+    // found by the Routes tab. Their stored _relayAt matches it, so they serve from cache.
+    if (items) { try { localStorage.setItem(OFFLINE_RELAY_IDX, JSON.stringify([...m])); } catch {} }
+    else { try { m = new Map(JSON.parse(localStorage.getItem(OFFLINE_RELAY_IDX) || '[]')); } catch {} }
     // A failed fetch caches an EMPTY map for the TTL rather than retrying per match.
     // Falling back to git on a flaky relay is correct; hammering it is not.
     _relayIdx = m; _relayIdxAt = Date.now();
@@ -10132,6 +10169,46 @@ async function postJob(relay, agentId, body, statusEl) {
     return true;
 }
 
+// CANCEL A JOB. The control token can post job documents but cannot delete anything, so
+// this re-posts the job with `cancelled: true` and the home machine does the rest with its
+// own token (rtrack.agent process_cancellations): it closes the job, deletes it from the
+// relay and, for a process job, removes that job's unanswered first-round bundles -- the
+// part that matters, since every unanswered bundle on the relay counts against the cap
+// for every event. Follow-ups and everything already curated are kept.
+window.cancelRelayJob = async (jobId, btn) => {
+    const relay = relayUrl(), tok = controlToken();
+    if (!relay || !tok) { alert('Enter the control token in the Relay tab first.'); return; }
+    if (!confirm('Cancel this job?\n\n'
+        + '• It stops, and its unanswered curation bundles are taken off the relay, freeing their slots.\n'
+        + '• Curation already done is kept; requesting the same range again resumes where it stopped.')) return;
+    const say = (t) => { if (btn) { btn.textContent = t; btn.disabled = true; } };
+    say('Cancelling…');
+    try {
+        const r = await fetch(`${relay}/job/${encodeURIComponent(jobId)}`, { cache: 'no-store' });
+        if (r.status === 404) { say('Already gone'); return; }
+        if (!r.ok) throw new Error(`relay returned ${r.status}`);
+        const doc = await r.json();
+        const body = JSON.stringify({ ...doc, cancelled: true, cancelledAt: new Date().toISOString() });
+        // Re-posted until the index shows it, for the same reason postJob confirms: a
+        // concurrent index write can drop an entry, and the agent only reads the index.
+        let listed = false;
+        for (let attempt = 0; attempt < 6 && !listed; attempt++) {
+            const p = await fetch(`${relay}/job/${encodeURIComponent(jobId)}`, {
+                method: 'POST', headers: { 'Content-Type': 'application/json', 'Rtrack-Token': tok }, body });
+            if (!p.ok) {
+                const d = await p.json().catch(() => ({}));
+                throw new Error(d.error || `relay returned ${p.status}`);
+            }
+            await new Promise(res => setTimeout(res, 800 + 700 * attempt));
+            const idx = await fetch(`${relay}/index`, { cache: 'no-store' }).then(x => x.json()).catch(() => null);
+            listed = !!idx?.items?.some(it => it.kind === 'job' && it.id === jobId && it.cancelled);
+        }
+        say(listed ? 'Cancel sent — the home machine finishes it on its next poll' : 'Sent, not yet confirmed');
+    } catch (e) {
+        if (btn) { btn.textContent = 'Cancel failed: ' + e.message; btn.disabled = false; }
+    }
+};
+
 // One line per job the agent is running or recently finished. Rendered from the status
 // document rather than from the job documents: the relay knows what was ASKED FOR, only
 // the agent knows how far it has got.
@@ -10195,9 +10272,24 @@ function renderJobLines(jobs) {
     const rows = [
         ...running.map(j => `<div style="color:#93c5fd;">\u25b8 ${galleryEsc(j.type || 'job')}
             ${galleryEsc(j.event || '')} ${bar(j)}
-            ${j.note ? `<span style="color:#64748b;">${galleryEsc(j.note)}</span>` : ''}</div>
+            ${j.note ? `<span style="color:#64748b;">${galleryEsc(j.note)}</span>` : ''}
+            <button onclick="cancelRelayJob('${galleryEsc(j.id)}', this)"
+                    title="Stop this job and take its unanswered bundles off the relay, freeing their slots. Curation already done is kept."
+                    style="margin-left:6px;padding:1px 8px;border-radius:4px;border:1px solid #7f1d1d;
+                           background:transparent;color:#fca5a5;cursor:pointer;font-size:0.95em;">Cancel</button></div>
             ${planLines(j)}`),
         ...recent.slice(0, 3).map(j => {
+            if (j.state === 'cancelled') {
+                return `<div style="color:#475569;">\u2013 ${galleryEsc(j.type || 'job')}
+                    ${galleryEsc(j.event || '')} cancelled${j.freed ? `, ${Number(j.freed)} bundle slot${j.freed === 1 ? '' : 's'} freed` : ''}</div>`;
+            }
+            // Retired without finishing: replaced by a newer identical request, or gone
+            // from the relay. Neither is a success or a failure, so neither gets a mark.
+            if (j.state === 'superseded' || j.state === 'dropped') {
+                return `<div style="color:#475569;">– ${galleryEsc(j.type || 'job')}
+                    ${galleryEsc(j.event || '')} ${j.state === 'superseded'
+                        ? 'replaced by a newer request' : 'closed, no longer on the relay'}</div>`;
+            }
             const bad = j.state === 'failed' || (j.failed || []).length;
             return `<div style="color:${bad ? '#f87171' : '#64748b'};">
                 ${bad ? '\u2715' : '\u2713'} ${galleryEsc(j.type || 'job')}
@@ -10418,7 +10510,8 @@ function renderRelayControl(hostId, relay, items) {
                   background:#059669;color:#fff;font-weight:600;cursor:pointer;">
             ${running ? 'Re-arm' : 'Start'}</button>
           <button id="rcStop" style="padding:6px 12px;border-radius:5px;border:1px solid #334155;
-                  background:transparent;color:#f87171;cursor:pointer;">Stop</button>
+                  background:transparent;color:#f87171;cursor:pointer;"
+                  title="Stops the watcher that publishes curated routes. Jobs keep running -- cancel a job from its line below.">Stop watcher</button>
         </div>
         ${!stream && eventKey ? `<div style="color:#fbbf24;font-size:0.76em;margin-top:5px;">
             No stream found for today in this event's webcast data \u2014 paste one, or sync
@@ -10434,10 +10527,10 @@ function renderRelayControl(hostId, relay, items) {
           <button id="rcProcess" style="padding:5px 12px;border-radius:5px;border:0;
                   background:#2563eb;color:#fff;cursor:pointer;font-size:0.78em;font-weight:600;">
             Process</button>
-          <button id="rcCalib" title="Put this event's camera calibration on the relay to review, correct or add AprilTags to"
+          <button id="rcCalibBtn" title="Put this event's camera on the relay to calibrate (a new event) or to review and refine an existing calibration"
                   style="padding:5px 10px;border-radius:5px;border:1px solid #334155;
                   background:transparent;color:#93c5fd;cursor:pointer;font-size:0.78em;">
-            Review calibration</button>
+            Calibrate camera</button>
           <span style="color:#64748b;font-size:0.74em;">detect \u2192 bundle \u2192 route,
             <input id="rcOutstanding" type="number" min="1" max="12" value="4"
                    title="How many uncurated bundles to leave on the relay at once"
@@ -10506,15 +10599,19 @@ function renderRelayControl(hostId, relay, items) {
     };
 
     // The camera is named for the event by convention (calib/<event>.json), so the event
-    // field is the camera. The machine picks the footage to take the plate from.
-    document.getElementById('rcCalib').onclick = async () => {
+    // field is the camera. The machine picks the footage to take the plate from (and, for
+    // a new event with no clip yet, fetches one first). rcCalibBtn, NOT rcCalib: that id
+    // is the "calib from" input above, so the handler used to land on the input -- the
+    // button did nothing, and clicking into the input posted a calibration request.
+    document.getElementById('rcCalibBtn').onclick = async () => {
         rememberToken();
         const cam = document.getElementById('rcEvent').value.trim().toLowerCase();
         if (!cam) { statusEl.innerHTML = `<span style="color:#f87171;">An event key is required.</span>`; return; }
         const ok = await postJob(relay, agent.id, { type: 'calib', camera: cam, event: cam }, statusEl);
         if (ok === true) statusEl.innerHTML = `<span style="color:#22c55e;">Requested. When the machine has
-            posted it (usually under a minute), ${galleryEsc(cam)} appears under <b>Cameras</b>
-            below with a <b>Calibrate</b> link. Your existing points load with it.</span>`;
+            posted it (usually under a minute; a few more for a new event, whose first clip is
+            fetched first), ${galleryEsc(cam)} appears under <b>Cameras</b> below with a
+            <b>Calibrate</b> link. Any existing points load with it.</span>`;
     };
 
     document.getElementById('rcStop').onclick = async () => {
@@ -10606,14 +10703,15 @@ async function renderTracksTab() {
         <button id="trkRefresh" style="padding:8px 12px;border-radius:6px;border:1px solid #2563eb;
                 background:#2563eb;color:#fff;cursor:pointer;font-weight:600;">Refresh</button>
       </div>
+      <div id="trkOffline" style="font-size:0.76em;color:#64748b;margin:-6px 0 10px;"></div>
       <div id="trkPaneRelay">
-        <div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
+        ${RELAY_BAKED ? '' : `<div style="display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin-bottom:12px;">
           <input id="trkRelay" value="${relay}" placeholder="https://rtrack-relay.<you>.workers.dev"
                  style="flex:1;min-width:240px;background:#0f172a;color:#e2e8f0;border:1px solid #334155;
                         border-radius:6px;padding:8px 10px;font-size:0.85em;">
           <button id="trkSave" style="padding:8px 12px;border-radius:6px;border:1px solid #334155;
                   background:transparent;color:#94a3b8;cursor:pointer;">Save</button>
-        </div>
+        </div>`}
         <div id="trkControl"></div>
         <div id="trkCameras"></div>
         <p id="trkRelayHelp" style="font-size:0.76em;color:#64748b;margin-top:12px;"></p>
@@ -10622,6 +10720,7 @@ async function renderTracksTab() {
         <div id="trkBody" style="color:#94a3b8;">Loading…</div>
       </div>`;
 
+    paintOfflineRoutes();
     const setSub = (name) => {
         document.getElementById('trkPaneRelay').style.display = name === 'relay' ? 'block' : 'none';
         document.getElementById('trkPaneCuration').style.display = name === 'curation' ? 'block' : 'none';
@@ -10638,7 +10737,7 @@ async function renderTracksTab() {
     try { remembered = localStorage.getItem(TRK_SUBTAB_KEY); } catch { /* ignore */ }
     setSub(remembered === 'relay' ? 'relay' : 'curation');
 
-    document.getElementById('trkSave').onclick = () => {
+    if (!RELAY_BAKED) document.getElementById('trkSave').onclick = () => {
         localStorage.setItem(RELAY_KEY, document.getElementById('trkRelay').value.trim());
         renderTracksTab();
     };
@@ -10756,7 +10855,10 @@ async function renderTracksTab() {
          font-weight:700;border:1px solid ${col};color:${col};white-space:nowrap;">${txt}</span>`;
 
     const act = (txt, href, primary) =>
-        `<a href="${href}" target="_blank" rel="noopener" style="display:inline-block;
+        // ONE TAB PER TOOL, reused: the curator (or calibrator) for the next match opens in
+        // the same tab rather than stacking a new one per click. No `noopener` -- these are
+        // this app's own pages, and the curator's Back needs window.opener to return here.
+        `<a href="${href}" target="rtrack-${String(href).split('?')[0].split('/').pop().replace('.html', '')}" style="display:inline-block;
           padding:5px 10px;border-radius:6px;font-size:0.78em;text-decoration:none;
           border:1px solid ${primary ? '#2563eb' : '#334155'};
           background:${primary ? '#2563eb' : 'transparent'};
@@ -11691,7 +11793,11 @@ function inspectSuspects(series) {
         let run = null;
         series.grid.forEach((t, k) => {
             const v = r.speed[k];
-            if (v != null && v >= INSPECT_FAST) {
+            // SEEN motion only. Across a tracking gap the speed is a straight line drawn
+            // between two sightings, and on 792 robot-matches that is where nearly every
+            // 4.5 m/s flag came from (18% of robots overall, 1% on stretches actually
+            // seen). A swap across a gap is still listed: as a jump or a route break below.
+            if (v != null && v >= INSPECT_FAST && !r.interp[k]) {
                 if (!run) run = { team: r.team, t0: t, t1: t, tPeak: t, peak: v, interp: r.interp[k] };
                 else { run.t1 = t; if (v > run.peak) { run.peak = v; run.tPeak = t; } run.interp ||= r.interp[k]; }
             } else if (run) { out.push(run); run = null; }
@@ -14659,11 +14765,87 @@ async function loadTracksManifest(force = false) {
         if (!resp.ok) { _tracksManifestAt = Date.now(); return (_tracksManifest = { matches: [] }); }
         const doc = await resp.json();
         _tracksManifest = (doc && Array.isArray(doc.matches)) ? doc : { matches: [] };
-    } catch { _tracksManifest = { matches: [] }; }
+        try { localStorage.setItem(OFFLINE_MANIFEST, JSON.stringify(_tracksManifest)); } catch {}
+    } catch {
+        // OFFLINE (the HEAD probe throws, and the service worker does not answer HEAD):
+        // the last manifest that loaded, so routes saved in Dexie are still listed. It
+        // used to come back empty, hiding every saved route from the Routes tab.
+        try { _tracksManifest = JSON.parse(localStorage.getItem(OFFLINE_MANIFEST) || 'null'); } catch {}
+        if (!_tracksManifest || !Array.isArray(_tracksManifest.matches)) _tracksManifest = { matches: [] };
+    }
     _tracksManifestAt = Date.now();
     return _tracksManifest;
 }
 window.loadTracksManifest = loadTracksManifest;
+
+// The curator's Back closes its tab and tells this one; the Tracks list may now be stale.
+window.addEventListener('message', e => {
+    if (e.origin !== location.origin || e.data?.type !== 'rtrack-curator-back') return;
+    if (document.getElementById('tools-tab-tracks')) renderTracksTab();
+});
+
+// ── ROUTES FOR OFFLINE USE ───────────────────────────────────────────────────
+// The app works offline from what it has cached, and routes were cached only when opened:
+// a scout in a venue with no signal could see the matches they happened to have looked at
+// and nothing else. So whenever there is a connection -- on start, when it comes back, and
+// every ten minutes -- every published route (git manifest and relay, all events) that is
+// missing or out of date is downloaded into Dexie, through loadMatchTracks so it is
+// revalidated exactly as a viewed route is. A route that is already current costs one
+// Dexie read. Curation bundles are not cached: curating needs the relay anyway.
+const ROUTE_SYNC_EVERY_MS = 10 * 60 * 1000;
+const ROUTE_SYNC_STATUS = 'rtrackRouteSync';
+let _routeSyncBusy = false;
+
+async function syncRoutesForOffline() {
+    if (_routeSyncBusy || navigator.onLine === false) return;
+    _routeSyncBusy = true;
+    try {
+        const man = await loadTracksManifest(true);
+        let relay = new Map();
+        try { relay = await relayTracksIndex(); } catch {}
+        const keys = [...new Set([...(man.matches || []).map(m => m.key), ...relay.keys()])];
+        let saved = 0, i = 0;
+        const images = new Set();
+        const worker = async () => {
+            while (i < keys.length) {
+                const k = keys[i++];
+                try {
+                    const d = await loadMatchTracks(k);
+                    if (d) { saved++; if (d.field?.imageRef) images.add(d.field.imageRef); }
+                } catch {}
+            }
+        };
+        await Promise.all([worker(), worker(), worker(), worker()]);
+        // The field image is fetched once so the service worker holds it too: a saved route
+        // is no use offline if the field it is drawn on is not.
+        for (const ref of images) { try { await fetch(`${import.meta.env.BASE_URL}${ref}`); } catch {} }
+        try {
+            localStorage.setItem(ROUTE_SYNC_STATUS, JSON.stringify(
+                { at: Date.now(), saved, listed: keys.length }));
+        } catch {}
+        paintOfflineRoutes();
+    } finally { _routeSyncBusy = false; }
+}
+window.syncRoutesForOffline = syncRoutesForOffline;
+
+async function paintOfflineRoutes() {
+    const el = document.getElementById('trkOffline');
+    if (!el) return;
+    let st = null;
+    try { st = JSON.parse(localStorage.getItem(ROUTE_SYNC_STATUS) || 'null'); } catch {}
+    let have = 0;
+    try { have = await db.matchTracks.count(); } catch {}
+    const when = st?.at ? new Date(st.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
+    el.innerHTML = navigator.onLine === false
+        ? `<span style="color:#f59e0b;">Offline</span> · ${have} saved route${have === 1 ? '' : 's'} available${when ? ` (last updated ${when})` : ''}`
+        : st ? `Routes saved for offline: ${st.saved} of ${st.listed}${when ? ` · updated ${when}` : ''}`
+             : `Saving routes for offline use…`;
+}
+
+window.addEventListener('online', () => { paintOfflineRoutes(); syncRoutesForOffline(); });
+window.addEventListener('offline', () => paintOfflineRoutes());
+setInterval(() => { if (document.visibilityState === 'visible') syncRoutesForOffline(); },
+            ROUTE_SYNC_EVERY_MS);
 
 // Small-multiples: this team's route in every tracked match.
 // ── AUTO ROUTINES ────────────────────────────────────────────────────────────
@@ -14940,7 +15122,7 @@ function autoRoutines(docs, team) {
 }
 
 // The routine cards at the top of a team's Routes tab.
-function renderAutoRoutines(host, docs, team, paints = []) {
+function renderAutoRoutines(host, docs, team, paints = [], explain = true) {
     const res = autoRoutines(docs, team);
     const total = res.routines.reduce((s, r) => s + r.members.length, 0);
     const colours = ['#60a5fa', '#f59e0b', '#34d399', '#f472b6', '#a78bfa', '#f87171', '#22d3ee', '#facc15'];
@@ -14961,7 +15143,7 @@ function renderAutoRoutines(host, docs, team, paints = []) {
               ? `${res.routines.length} distinct routine${res.routines.length === 1 ? '' : 's'} seen across ${total} auto${total === 1 ? '' : 's'}`
               : 'No moving autos tracked well enough to group yet'}</span>
         </div>
-        <div style="font-size:11px;color:#64748b;margin:4px 0 8px;line-height:1.5;">
+        <div style="font-size:11px;color:#64748b;margin:4px 0 8px;line-height:1.5;${explain ? '' : 'display:none;'}">
           Each auto is the 20 s from the first robot motion, checked against the pause that follows.
           Blue matches are rotated 180° so every auto reads as the drive team saw it from behind its own
           driver station; the cards are drawn with that driver station on the <b>left</b> (the match maps
@@ -15165,7 +15347,7 @@ function _znShares(p) {
     return known.map(v => v / tot);
 }
 
-function renderZonePresence(host, docs, team, paints) {
+function renderZonePresence(host, docs, team, paints, explain = true) {
     const res = zonePresence(docs, team);
     if (!res.matches.length) { host.innerHTML = '<p style="color:#94a3b8;margin-top:16px;">No tracked matches for this event.</p>'; return res; }
     const w = res.whole, sh = _znShares(w);
@@ -15194,21 +15376,22 @@ function renderZonePresence(host, docs, team, paints) {
         ${row('Auto', res.auto)}
         ${row('Teleop', res.teleop)}
         <div style="font-size:11px;color:#64748b;margin-top:8px;line-height:1.5;">
-          Percentages are of the time the robot's whereabouts are known.
+          ${explain ? '' : `Solid = seen (${Math.round(100 * seenS / allS)}% of the match); lighter / hatched = filled across tracking gaps; grey = unknown (${Math.round(100 * w.unknown / allS)}%).`}
+          <span style="${explain ? '' : 'display:none;'}">Percentages are of the time the robot's whereabouts are known.
           Solid = seen (${Math.round(100 * seenS / allS)}% of the match); lighter = filled in across a tracking gap from the
           sightings either side (a check on hidden stretches of real track put this in the right zone 96% of the time for
           gaps up to 12 s); hatched = filled across a gap over ${ZN_LONG_GAP} s, less certain (85% at 20 s); grey = unknown,
           before the first or after the last sighting (${Math.round(100 * w.unknown / allS)}%).
           Gaps are filled rather than dropped because they are not random: robots disappear behind the hubs and into the
           far corners, inside the alliance zones, so counting only what is seen under-counts those zones.
-          An identity mix-up in tracking shows up here as time in the wrong place.
+          An identity mix-up in tracking shows up here as time in the wrong place.</span>
         </div>
         <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(300px,1fr));gap:14px;margin-top:14px;">
           <div>
             <div style="font-size:12px;color:#94a3b8;margin-bottom:4px;">Where it spends its time — own zone on the left, blue matches rotated</div>
-            <div id="znHeatBox" style="position:relative;width:100%;border-radius:6px;overflow:hidden;">
-              <img id="znHeatImg" src="${import.meta.env.BASE_URL}${docs[0].field.imageRef}" alt="field" style="display:block;width:100%;height:auto;">
-              <canvas id="znHeatCv" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
+            <div class="znHeatBox" style="position:relative;width:100%;border-radius:6px;overflow:hidden;">
+              <img class="znHeatImg" src="${import.meta.env.BASE_URL}${docs[0].field.imageRef}" alt="field" style="display:block;width:100%;height:auto;">
+              <canvas class="znHeatCv" style="position:absolute;inset:0;width:100%;height:100%;"></canvas>
             </div>
           </div>
           <div>
@@ -15223,7 +15406,7 @@ function renderZonePresence(host, docs, team, paints) {
           </div>
         </div>
       </div>`;
-    const img = host.querySelector('#znHeatImg'), cv = host.querySelector('#znHeatCv');
+    const img = host.querySelector('.znHeatImg'), cv = host.querySelector('.znHeatCv');
     const doc0 = docs[0];
     const paint = () => {
         if (!_trackSizeCanvas(img, cv)) return;
@@ -15299,8 +15482,11 @@ async function renderTeamRoutesTab(teamNumber) {
             if (teamsOf.has(k)) listed.set(k, { key: k, eventKey: k.split('_')[0], teams: teamsOf.get(k) });
         }
     }
+    // A no-show (rtrack lists the team under `absent`) counts as a match of the team's:
+    // it is a finding about that team, shown as such below rather than dropped.
     const forTeam = [...listed.values()]
-        .filter(r => (r.teams || []).map(String).includes(team))
+        .filter(r => (r.teams || []).map(String).includes(team)
+                  || (r.absent || []).map(String).includes(team))
         .sort((a, b) => String(a.key).localeCompare(String(b.key)));
     // Event comes from the match key's prefix when the manifest does not carry one --
     // rtrack names every match <event>_<comp><n>, which is the same split export.py uses.
@@ -15347,18 +15533,36 @@ async function renderTeamRoutesTab(teamNumber) {
         return;
     }
 
-    const mine = (await Promise.all(want.map(r => loadMatchTracks(r.key))))
+    const loaded = (await Promise.all(want.map(r => loadMatchTracks(r.key))))
         .filter(Boolean);
-    if (!mine.length) {
+    if (!loaded.length) {
         host.innerHTML = `<p style="color:#94a3b8; margin-top:18px;">
             Tracks listed for ${team} but none could be loaded.</p>`;
+        return;
+    }
+    // NO-SHOWS: scheduled, but curation never saw the robot on the field. They have no
+    // route, so they are named here and kept out of the Auto / Full / Zones views, where
+    // an empty field would read as a route that failed to load.
+    const isNoShow = d => (d.absent || []).map(String).includes(team)
+        && !(d.robots || []).some(r => String(r.team) === team);
+    const noShows = loaded.filter(isNoShow);
+    const mine = loaded.filter(d => !isNoShow(d));
+    const noShowNote = noShows.length ? `
+        <p style="color:#94a3b8; font-size:12px; margin:14px 0 0;"
+           title="Scheduled, but never seen on the field during curation">
+          <span style="color:#f59e0b; font-weight:700;">No-show</span> in
+          ${noShows.map(d => String(d.match?.key || d.key).split('_').pop()).join(', ')}
+          — not seen on the field during curation, so no route.</p>` : '';
+    if (!mine.length) {
+        host.innerHTML = `${noShowNote}${toggle}`;
+        routesRenderedFor = memo;
         return;
     }
 
     // THREE VIEWS of the same matches: Auto (routines), Full (each match's whole route)
     // and Zones (time per zone). Panes are rendered up front but PAINTED when shown --
     // a canvas cannot size itself while its pane is display:none.
-    host.innerHTML = `
+    host.innerHTML = `${allEventsBox ? `<div style="margin-top:14px;">${allEventsBox}</div>` : ''}${noShowNote}
         <div class="trk-subtabs" id="trSubtabs" style="margin-top:14px;">
           <button class="trk-subtab-btn" data-sub="auto">Auto</button>
           <button class="trk-subtab-btn" data-sub="full">Full</button>
@@ -15389,24 +15593,35 @@ async function renderTeamRoutesTab(teamNumber) {
                         style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
               </div>
             </div>`).join('')}
-        </div>${toggle}
+        </div><div style="margin-top:14px;">${autoBox}</div>
         </div>`;
 
     const paints = { auto: [], full: [], zones: [] };
-    // Routines are grouped within ONE event: a team's autos change between events.
-    try {
-        const evOfDoc = d => String(d.match?.eventKey || String(d.match?.key || d.key).split('_')[0]);
-        const ev = evKey || evOfDoc(mine[mine.length - 1]);
+    // Auto and Zones cover the SAME matches as Full (so the other-events toggle applies to
+    // all three), but one section per event: a team's autos change between events, so
+    // routines are never grouped across them, and zone time is kept per event to match.
+    // The current event comes first, then the rest.
+    const evOfDoc = d => String(d.match?.eventKey || String(d.match?.key || d.key).split('_')[0]);
+    const events = [...new Set(mine.map(evOfDoc))]
+        .sort((a, b) => (b === evKey) - (a === evKey) || b.localeCompare(a));
+    const many = events.length > 1;
+    const evHead = ev => many ? `<div style="font-size:13px;font-weight:700;color:#e2e8f0;margin-top:18px;">${galleryEsc(ev)}</div>` : '';
+    host.querySelector('#arHost').innerHTML = events.map((ev, n) => `${evHead(ev)}<div class="arEv" data-n="${n}"></div>`).join('');
+    host.querySelector('#znHost').innerHTML = events.map((ev, n) => `${evHead(ev)}<div class="znEv" data-n="${n}"></div>`).join('');
+    events.forEach((ev, n) => {
         const evDocs = mine.filter(d => evOfDoc(d) === ev);
-        renderAutoRoutines(host.querySelector('#arHost'), evDocs, team, paints.auto);
+        const arEl = host.querySelector(`.arEv[data-n="${n}"]`), znEl = host.querySelector(`.znEv[data-n="${n}"]`);
         try {
-            renderZonePresence(host.querySelector('#znHost'), evDocs, team, paints.zones);
+            renderAutoRoutines(arEl, evDocs, team, paints.auto, n === 0);
         } catch (e) {
-            host.querySelector('#znHost').innerHTML = `<p style="color:#f87171;font-size:12px;">Zone presence could not be computed: ${galleryEsc(String(e.message || e))}</p>`;
+            arEl.innerHTML = `<p style="color:#f87171;font-size:12px;">Auto routines could not be computed: ${galleryEsc(String(e.message || e))}</p>`;
         }
-    } catch (e) {
-        host.querySelector('#arHost').innerHTML = `<p style="color:#f87171;font-size:12px;">Auto routines could not be computed: ${galleryEsc(String(e.message || e))}</p>`;
-    }
+        try {
+            renderZonePresence(znEl, evDocs, team, paints.zones, n === 0);
+        } catch (e) {
+            znEl.innerHTML = `<p style="color:#f87171;font-size:12px;">Zone presence could not be computed: ${galleryEsc(String(e.message || e))}</p>`;
+        }
+    });
 
     const only = new Set([team]);
     host.querySelectorAll('.trCv').forEach(cv => {
@@ -16882,6 +17097,9 @@ const bootApp = async () => {
     }
 
     await checkAdjustmentsFromURL();
+    // After the UI is up, so a slow download never delays the first paint. See
+    // syncRoutesForOffline.
+    setTimeout(() => { syncRoutesForOffline(); }, 4000);
 };
 
 bootApp();

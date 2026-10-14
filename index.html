@@ -1977,11 +1977,8 @@
                     <!-- Nexus Live Status -->
                     <div class="setup-adv-section">
                         <div class="setup-section-label setup-label-amber">Nexus Live Status</div>
-                        <p class="setup-section-desc">Receive real-time match status from FRC Nexus via a Cloudflare Worker relay. See <code style="font-size:0.9em;color:#94a3b8;">nexus-relay/worker.js</code> for setup.</p>
+                        <p class="setup-section-desc">Receive real-time match status from FRC Nexus.</p>
                         <div style="display:flex;gap:8px;flex-wrap:wrap;align-items:center;margin-bottom:8px;">
-                            <input id="nexusRelayUrlInput" type="url" placeholder="https://nexus-relay.yourname.workers.dev"
-                                style="padding:8px 10px;border-radius:4px;border:1px solid #334155;background:#0f172a;color:#f8fafc;font-size:0.85em;width:280px;"
-                                onblur="window.saveNexusUrl()">
                             <button onclick="window.toggleNexus()"
                                 style="padding:8px 14px;border-radius:4px;border:1px solid #f59e0b;background:transparent;color:#fbbf24;cursor:pointer;font-size:0.85em;">
                                 📡 <span id="nexusToggleLabel">Off</span><span id="nexusToggleBtn" style="opacity:0.45;"></span>

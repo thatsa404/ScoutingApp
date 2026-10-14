@@ -8,6 +8,95 @@
 //
 // Sheet prerequisite: delete group-label header row, rename duplicate columns per CLAUDE.md plan.
 
+// ── Galileo (2026gal) adapter ─────────────────────────────────────────────────
+// Galileo's match scouting comes from another team's system: one wide row per robot per
+// match (359 columns), letter-coded ratings and per-period role flags rather than our
+// sheet's per-shift checkboxes. This rewrites each row into our column names so the rest
+// of the pipeline (processRow, aggregation, TBA fusion) runs unchanged.
+//
+// How the fields line up, checked against the sheet's own values:
+//   periods      Period1..4 -> our shifts TS1, S2, S3, S4 (their Transition is separate
+//                and almost never used: one value across all 746 rows)
+//   roles        a robot can hold several per period. Scorer = Alliance or Neutral;
+//                Shuttler = Passing; Defender = Defending; Died = NonFunctioning.
+//                Measured against their own per-period fuel estimates (2,984 robot-
+//                periods): Neutral-only periods are credited ~21 fuel, so Neutral means
+//                scoring from the neutral zone, not shuttling; Passing, Defending and
+//                Stealing are never credited fuel. Hybrid is set exactly when Alliance
+//                and Neutral both are (374/374), so it adds nothing. Stealing is left out
+//                on purpose -- a tangential role, mostly alongside Passing or Defending.
+//   auto fuel    CalculatedAuto -- a per-robot estimate; an alliance's robots sum to its
+//                count (e.g. 4 + 4 + 36 against 46), so it works as our share weight
+//   ratings      scoring and defense from the scout's direct inputs (see _gScoringEff);
+//                passing from their computed PassingRolePerformance (display only)
+//   climbs       DidEndRung1..3 -> L1..L3; AutoClimbYes -> auto climb
+//   start        PrematchAutoStart [4]/[36] trench, [20] hub, [12]/[28] bump
+const _G_ROLES = (row, p) => {
+    const on = (r) => String(row[`Period${p}Role${r}`] ?? '').trim() === '1';
+    return {
+        scorer:   on('Alliance') || on('Neutral'),
+        shuttler: on('Passing'),
+        defender: on('Defending'),
+        died:     on('NonFunctioning'),
+    };
+};
+const _G_START = { '[4]': 'Trench', '[36]': 'Trench', '[20]': 'Hub', '[12]': 'Bump', '[28]': 'Bump' };
+
+// EFFECTIVENESS FROM WHAT THE SCOUT ENTERED, not from the sheet's computed columns.
+// The scout grades each period with one letter (the robot's play that period overall);
+// the sheet's *RolePerformance columns copy that grade onto every role held and then
+// average it by a formula that includes Transition/Endgame in ways we cannot see.
+//   Scoring: the mean grade over exactly the periods we mark Scorer (Alliance or
+//            Neutral); 0 when it never scored.
+//   Defense: the scout's own post-match defense rating. "Not Observed" (490 of 746
+//            rows) is 0, as a blank Defense Skill is on our sheets.
+// The letter scale is the sheet's own fixed lookup (a=10, c=8, d=7, f=5, g=4, i=2, j=1,
+// identical in every period); b/e/h fill the gaps on the same step.
+const _G_GRADE = { a: 10, b: 9, c: 8, d: 7, e: 6, f: 5, g: 4, h: 3, i: 2, j: 1 };
+const _G_PERIOD = ['PeriodOnePerformance', 'PeriodTwoPerformance', 'PeriodThreePerformance', 'PeriodFourPerformance'];
+const _G_DEFENSE = { 'Not Effective': 2, 'Average': 5, 'Very Effective': 8 };
+function _gScoringEff(row) {
+    const grades = [1, 2, 3, 4]
+        .filter(p => _G_ROLES(row, p).scorer)
+        .map(p => _G_GRADE[String(row[_G_PERIOD[p - 1]] ?? '').trim().toLowerCase()])
+        .filter(v => v !== undefined);
+    return grades.length ? Math.round(10 * grades.reduce((s, v) => s + v, 0) / grades.length) / 10 : 0;
+}
+function galileoRow(row) {
+    // Already translated (sync stores translated rows; see syncScoutingData): pass through.
+    if (!('m (MatchScouting1)' in row) && 'Match Number' in row) return row;
+    const g = (c) => String(row[c] ?? '').trim();
+    const yes = (c) => g(c) === '1' || g(c).toUpperCase() === 'Y';
+    const tf = (b) => (b ? 'TRUE' : 'FALSE');
+    const level = yes('DidEndRung3') ? 'L3' : yes('DidEndRung2') ? 'L2' : yes('DidEndRung1') ? 'L1' : 'No';
+    const collect = ['Depot', 'Neutral', 'Outpost'].filter(z => yes(`AutoCollect${z}`)).join('+');
+    const out = {
+        'Scouter Initials':        g('s (MatchScouting1)'),
+        'Match Number':            g('m (MatchScouting1)'),
+        'Team Number':             g('Team Number'),
+        'Starting Position':       _G_START[g('PrematchAutoStart')] || '',
+        'No Show':                 tf(yes('PostNoShow')),
+        'Auto Action 1':           (parseFloat(g('CalculatedAuto')) || 0) > 0 ? 'Scored' : 'NoAction',
+        'Auto Action 2':           collect ? `Collect ${collect}` : '',
+        'Climbed Auto':            tf(yes('AutoClimbYes')),
+        'Successful Climb':        tf(yes('AutoClimbYes')),
+        'Fuel Scored in Auto?':    g('CalculatedAuto') || '0',
+        'Climbed':                 level,
+        'Scored Fuel in Endgame?': tf(yes('EndgameRoleAlliance') || yes('EndgameRoleNeutral')),
+        'Scoring Effectiveness':   String(_gScoringEff(row)),
+        'Passing Skill':           g('PassingRolePerformance') || '0',
+        'Defense Skill':           String(_G_DEFENSE[g('PostDefenseRating')] ?? 0),
+        'Shuttle Style?':          '',
+        'Comments':                g('PostNote'),
+    };
+    [['TS1', 1], ['S2', 2], ['S3', 3], ['S4', 4]].forEach(([s, p]) => {
+        const r = _G_ROLES(row, p);
+        out[`${s} Scorer?`] = tf(r.scorer); out[`${s} Shuttler?`] = tf(r.shuttler);
+        out[`${s} Defender?`] = tf(r.defender); out[`${s} Died?`] = tf(r.died);
+    });
+    return out;
+}
+
 export default {
     year: 2026,
     name: 'REBUILT',
@@ -26,6 +115,14 @@ export default {
             label:  '2026 NE Championship - Burns',
             url:    'https://docs.google.com/spreadsheets/d/1ojsk9s9Tjc6-ZWRj-7yJsEaUwLkIFcg9wdnAA02aXUQ/edit?gid=0#gid=0',
             pitUrl: 'https://docs.google.com/spreadsheets/d/14ZDaH9QYnHnpaf0fCz_WMjRwNNyD7ud41nXrrQe2ncU/edit?gid=2048789223#gid=2048789223',
+        },
+        '2026gal': {
+            label:  '2026 Championship - Galileo',
+            // Another team's scouting system; rowAdapter translates it (see galileoRow).
+            url:    'https://docs.google.com/spreadsheets/d/1sXE9_dJb7oGlKwj_kT0TkRKGpLpthdDCPRNZsZHsRm0/edit?gid=0#gid=0',
+            // Same pit form as ours, so no adapter needed for it.
+            pitUrl: 'https://docs.google.com/spreadsheets/d/1sXE9_dJb7oGlKwj_kT0TkRKGpLpthdDCPRNZsZHsRm0/edit?gid=2048789223#gid=2048789223',
+            rowAdapter: galileoRow,
         },
         '2026mawor': {
             'label':  '2026 Week 5 - WPI - IN PROCESS',

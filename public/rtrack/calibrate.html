@@ -237,11 +237,13 @@ function needToken(msg) {
 }
 const say = (el, t, cls = '') => { el.hidden = false; el.className = 'msg ' + cls; el.textContent = t; };
 
-// Baked default LAST, so it fills a fresh device but never overrides a deliberate
-// choice this device has already made. Same precedence as curate.html's LS.
-$('#relay').value = localStorage.getItem('rtrackRelay') || window.RTRACK_DEFAULT_RELAY || '';
+// The baked relay (repository secret RELAY_URL_RTRACK) WINS and its field is hidden;
+// the device's saved value is used only on a build without one. Same as curate.html.
+const BAKED_RELAY = (window.RTRACK_DEFAULT_RELAY || '').trim();
+$('#relay').value = BAKED_RELAY || localStorage.getItem('rtrackRelay') || '';
+if (BAKED_RELAY) { $('#relay').style.display = 'none'; $('label[for=relay]').style.display = 'none'; }
 $('#token').value = localStorage.getItem('rtrackToken') || window.RTRACK_DEFAULT_TOKEN || '';
-if ($('#token').value) $('#tokRow').hidden = false;
+if ($('#token').value && !window.RTRACK_DEFAULT_TOKEN) $('#tokRow').hidden = false;
 $('#vid').value   = localStorage.getItem('rtrackCalibVid') || '';
 // Straight to the Tracks queue, like the curator. history.back() is no use: the app opens
 // this page with target="_blank", so the tab has no history of its own. '../' (not
@@ -712,11 +714,11 @@ $('#submit').onclick = async () => {
 (function deepLink() {
   const q = new URLSearchParams(location.search || location.hash.replace(/^#/, '?'));
   const relay = q.get('relay'), token = q.get('token'), id = q.get(ID_PARAM);
-  if (relay) { $('#relay').value = relay; localStorage.setItem('rtrackRelay', relay); }
+  if (relay && !BAKED_RELAY) { $('#relay').value = relay; localStorage.setItem('rtrackRelay', relay); }
   if (token) { $('#token').value = token; localStorage.setItem('rtrackToken', token);
                $('#tokRow').hidden = false; }
   if (id) { $(ID_FIELD).value = id; }
-  if (relay && id) $('#load').click();     // straight to work
+  if ((relay || BAKED_RELAY) && id) $('#load').click();     // straight to work
 })();
 </script>
 </body>

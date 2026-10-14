@@ -45,6 +45,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from . import config as C
+from . import smooth as _SM
 from .acquire import video_id
 from . import tba as tba_mod
 
@@ -133,7 +134,8 @@ def max_speed(robots: list[dict]) -> dict | None:
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
           calib_stem: str | None = None, allow_stale: bool = False,
           allow_unsafe_calibration: bool = False,
-          route_correction: bool = True, clean_routes: bool = False) -> dict:
+          route_correction: bool = True, clean_routes: bool = False,
+          smooth_routes: bool = True) -> dict:
     # IDENTITY PROVENANCE. Appearance is an enhancement, not a gate, so a route can be
     # produced with a full gallery behind it or with nothing but the curator's anchors --
     # and those two are not the same claim about the route's reliability. Reading the votes
@@ -315,6 +317,10 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
     for team in sorted(by_team, key=lambda t: (alliance_of.get(t, "z"),
                                                station_of.get(t, 9))):
         ss = sorted(by_team[team], key=lambda z: z["t"])
+        # SMOOTHED BEFORE THINNING, at the full 15 Hz, and never across a gap or a
+        # teleport -- see rtrack.smooth. Each point gains `sd`, its uncertainty (m).
+        if smooth_routes:
+            ss = _SM.smooth(ss)
         picked, last_t = [], None
         for s in ss:
             t = round(s["t"] - t0, 3)
@@ -323,9 +329,11 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             last_t = t
             px, py = (_rc.apply_xy(float(s["x"]), float(s["y"]), corr) if corr
                       else (float(s["x"]), float(s["y"])))
-            picked.append({"t": t, "x": round(px, 3), "y": round(py, 3),
-                           "conf": round(float(s.get("conf") or 0.0), 3),
-                           "_tid": int(s["tid"])})
+            pt = {"t": t, "x": round(px, 3), "y": round(py, 3),
+                  "conf": round(float(s.get("conf") or 0.0), 3), "_tid": int(s["tid"])}
+            if "sd" in s:
+                pt["sd"] = round(float(s["sd"]), 3)
+            picked.append(pt)
         gaps = [{"tStart": a["t"], "tEnd": b["t"], "reason": "unobserved"}
                 for a, b in zip(picked, picked[1:]) if b["t"] - a["t"] > GAP_S]
         gaps.extend(_route_jump_gaps(picked))
@@ -455,6 +463,11 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         # not draw a phase split rather than guess one.
         "phases": {"autoEndT": auto_end},
         "robots": out_robots,
+        # Scheduled teams judged NOT ON THE FIELD (no curator label on a well-curated
+        # match; see corrections.absent_teams). They have no entry in `robots`, and that
+        # is a finding, not missing data -- consumers should say so rather than imply a
+        # route failed.
+        "absent": list(robots_doc.get("absent") or []),
         # Where the curator labelled what, in match time: lets the route inspector show
         # which moments are already answered, so a re-review can target the exact frame
         # an old label sits on. [] when uncurated.
@@ -493,6 +506,11 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             # from the solver's answer. {"applied": false} unless run with --clean.
             "cleaning": ({"applied": True, **clean_stats} if clean_routes
                          else {"applied": False}),
+            # Kalman (RTS) smoothing of each route before thinning; see rtrack.smooth.
+            "smoothing": ({"applied": True, "model": "constant-velocity RTS",
+                           "sigmaAccel": _SM.SIGMA_A,
+                           "sigmaPos": _SM.SIGMA_Z}
+                          if smooth_routes else {"applied": False}),
             "curated": bool(n_labels),
             "curatorLabels": n_labels,
             # "reviewed-gallery" | "legacy-gallery" | "anchors-only". See the note where
@@ -569,6 +587,8 @@ def main(argv=None) -> int:
     ap.add_argument("--no-route-correction", action="store_true",
                     help="publish uncorrected samples even if calib/<camera>_route_"
                          "correction.json exists. For A/B checks; see rtrack.route_correction.")
+    ap.add_argument("--no-smooth", action="store_true",
+                    help="publish raw positions (thinned, not smoothed); see rtrack.smooth")
     ap.add_argument("--clean", action="store_true",
                     help="EXPERIMENTAL, off by default: apply rtrack.route_clean "
                          "(alliance-conflict, handover-momentum and partial-box fixes). "
@@ -599,7 +619,7 @@ def main(argv=None) -> int:
                 allow_stale=args.allow_stale,
                 allow_unsafe_calibration=args.allow_unsafe_calibration,
                 route_correction=not args.no_route_correction,
-                clean_routes=args.clean)
+                clean_routes=args.clean, smooth_routes=not args.no_smooth)
 
     problems = validate(doc)
     for p in problems:
@@ -676,6 +696,9 @@ def write_manifest(tracks_dir: Path) -> int:
                 "matchNumber": m.get("matchNumber"),
                 "videoId": (d.get("source") or {}).get("videoId"),
                 "teams": [str(r.get("team")) for r in d.get("robots") or []],
+                # Scheduled but not on the field: listed so a team's page can show the
+                # match as a no-show instead of not showing it at all.
+                "absent": [str(t) for t in d.get("absent") or []],
                 "curated": bool(q.get("curated")),
                 # So the Tracks tab can tell a gallery-backed route from an
                 # anchors-only one without downloading every route document.

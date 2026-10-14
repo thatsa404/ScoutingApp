@@ -17,7 +17,8 @@
   it above large team buttons. You judge the crop, not the frame.
 
   Output is the same corrections shape the pipeline already consumes:
-      { labels: [ { f, xy: [x, y], team } | { f, xy, notrobot } | { f, xy, unknown } ] }
+      { labels: [ { f, xy: [x, y], team } | { f, xy, notrobot } | { f, xy, unknown, alliance? }
+                  | { f, xy, mixed } ] }
   `xy` is in ORIGINAL video pixels, which is why corrections survive track renumbering.
 -->
 <style>
@@ -32,6 +33,16 @@
   header{display:flex;gap:10px;align-items:center;padding:8px 12px;background:var(--panel);
          border-bottom:1px solid var(--line);position:sticky;top:0;z-index:10}
   h1{font-size:14px;margin:0;font-weight:600;white-space:nowrap}
+  header{flex-wrap:wrap}
+  #prog[hidden]{display:none}
+  #prog{flex:1 0 100%;order:99;position:relative;height:16px;border-radius:5px;
+        background:#0f1115;border:1px solid var(--line);overflow:hidden}
+  #progFill{position:absolute;inset:0 auto 0 0;width:0;background:var(--red);
+            transition:width .25s,background-color .25s}
+  #prog.mid #progFill{background:#eab308}
+  #prog.ok #progFill{background:var(--ok)}
+  #progText{position:relative;display:block;text-align:center;font-size:11px;
+            line-height:14px;font-weight:600;color:#fff;text-shadow:0 0 3px #000}
   .sp{flex:1}
   button{background:#2a2e35;color:var(--fg);border:1px solid var(--line);border-radius:8px;
          padding:9px 13px;font:inherit;cursor:pointer}
@@ -41,7 +52,7 @@
   input{background:#0f1115;color:var(--fg);border:1px solid var(--line);border-radius:8px;
         padding:9px 11px;font:inherit;width:100%}
   main{padding:10px 12px calc(12px + var(--safe))}
-  .setup{max-width:520px;margin:6vh auto}
+  .setup{max-width:520px;margin:calc(6vh / var(--z, 1)) auto}
   .setup label{display:block;margin:14px 0 5px;color:var(--dim);font-size:13px}
   .row{display:flex;gap:8px;align-items:center}
   .msg{margin-top:12px;padding:10px;border-radius:8px;border:1px solid var(--line);
@@ -58,7 +69,7 @@
      keeps the page scrollable vertically while horizontal drags reach the swipe
      handler instead of being eaten by the browser's own gesture. */
   #zoomWrap{margin-top:10px;display:none;position:relative;touch-action:pan-y}
-  #zoom{display:block;width:100%;max-height:34vh;object-fit:contain;background:#0b0d10;
+  #zoom{display:block;width:100%;max-height:calc(34vh / var(--z, 1));object-fit:contain;background:#0b0d10;
         border:2px solid var(--warn);border-radius:10px;image-rendering:auto}
   /* CONFIRMED BY THE CURATOR, and only by the curator. The border turns green and a tick
      lands in the corner, so "have I done this one" is answerable from the crop the eye is
@@ -84,9 +95,20 @@
   #note{margin:0 0 10px;padding:10px 12px;border-radius:8px;border:1px solid #2563eb;
         background:#12243f;color:#bfdbfe;font-size:13px;line-height:1.45}
   #ovl[hidden]{display:none}
-  #ovl{margin-top:8px;padding:9px 11px;border-radius:8px;
-       border:1px solid var(--warn);background:#2a2110;color:#fcd34d;font-size:13px;
-       display:flex;gap:9px;align-items:flex-start;line-height:1.4}
+  /* OVER the close-up, not above it: a warning used to take three or four lines of the
+     column and squeeze the close-up to almost nothing on a phone. Folded, it is one line
+     (its bold title first); a tap unfolds the whole message over the image, and another
+     folds it. Translucent so the robot stays visible behind the folded line. */
+  #ovl{position:absolute;top:6px;left:6px;right:6px;z-index:3;padding:6px 9px;
+       border-radius:8px;border:1px solid var(--warn);background:rgba(42,33,16,.93);
+       color:#fcd34d;font-size:13px;display:flex;gap:8px;align-items:flex-start;
+       line-height:1.4;cursor:pointer;box-shadow:0 2px 10px #0008}
+  #ovl:not(.open) #ovlText{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+  #ovl:not(.open) #ovlText br{display:none}
+  #ovl:not(.open)::after{content:'more';flex:none;align-self:center;font-size:11px;
+       color:#fde68a;opacity:.8;text-decoration:underline}
+  #ovl.open{max-height:calc(100% - 12px);overflow-y:auto}
+  #ovlText{flex:1;min-width:0}
   #ovl b{color:#fde68a}
   #ovlIcon{flex:0 0 auto;font-size:15px;line-height:1.2}
   /* The amber banner explains a confusing picture. The red one says a tap is about to
@@ -102,6 +124,38 @@
   .vstrip img{height:112px;width:auto;display:block;border:1px solid var(--line);
               border-radius:6px;background:#0b0d10}
   .vstrip figcaption{color:var(--dim);font-size:10px;text-align:center}
+  .vstrip figure{cursor:pointer}
+  .vstrip figure.on img{border:2px solid #facc15}
+  .vstrip .now{display:flex;align-items:center;justify-content:center;height:112px;
+               padding:0 10px;border:1px solid var(--line);border-radius:6px;
+               color:var(--dim);font-size:12px;background:#0b0d10}
+  #mrefs[hidden],#topTeamsBtn[hidden]{display:none}
+  #mrefs{margin-top:8px}
+  #mrefStrip{display:flex;gap:12px;overflow-x:auto;padding-bottom:4px}
+  .mrg{flex:none;display:flex;flex-direction:column;gap:3px}
+  .mrg b{font-size:12px;line-height:14px}
+  .mrg.red b{color:var(--red)} .mrg.blue b{color:var(--blue)}
+  .mri{display:flex;gap:4px}
+  .mri img{height:84px;width:auto;display:block;border:1px solid var(--line);border-radius:6px;
+           background:#0b0d10;cursor:zoom-in}
+  .flags.unk button.chip{font-weight:700}
+  .flags.unk button.red{color:var(--red);border-color:#5b2626}
+  .flags.unk button.blue{color:var(--blue);border-color:#23406e}
+  .flags.unk{grid-template-columns:repeat(4,1fr)}
+  /* [hidden] must beat .flags{display:grid}; see #refSheet[hidden] for why. */
+  .flags[hidden],#doneBar[hidden]{display:none}
+  #zoom{cursor:zoom-in}
+  .seg{display:none}
+  /* Full-size view. Fixed over everything; any tap closes it. */
+  #expand[hidden]{display:none}
+  #expand{position:fixed;inset:0;z-index:60;background:#000;display:flex;
+          flex-direction:column;align-items:center;justify-content:center;
+          padding:10px 10px calc(10px + var(--safe));cursor:zoom-out}
+  /* Fills the screen: crops are small (often under 200px), and the point is to read a
+     bumper number, so scale UP to fit rather than just capping at the screen size. */
+  #expandImg{width:100%;height:calc(100% - 28px);object-fit:contain;image-rendering:auto}
+  #expandCap{color:var(--dim);font-size:12px;margin-top:8px;text-align:center}
+  #countTop{display:none}
   .team{padding:14px 6px;border-radius:10px;border:1px solid var(--line);background:var(--panel);
         font-size:18px;font-weight:700;letter-spacing:.3px;text-align:center}
   .team.red{color:var(--red);border-color:#5b2626}
@@ -130,7 +184,7 @@
             display:flex;align-items:flex-end}
   #refPanel{width:100%;background:var(--panel);border-top:1px solid var(--line);
             border-radius:14px 14px 0 0;padding:12px 12px calc(14px + var(--safe));
-            max-height:72vh;overflow-y:auto}
+            max-height:calc(72vh / var(--z, 1));overflow-y:auto}
   #refHead{display:flex;gap:10px;align-items:center;margin-bottom:10px}
   .refGroup{margin-bottom:12px}
   .refCap{color:var(--dim);font-size:11px;text-transform:uppercase;letter-spacing:.05em;
@@ -141,7 +195,7 @@
               border-radius:8px;background:#0b0d10}
   .refRow figcaption{color:var(--dim);font-size:10px;text-align:center}
 
-  #zoomWrap{display:block!important;height:clamp(200px,30vh,320px);margin:0 0 8px;
+  #zoomWrap{display:block!important;height:clamp(200px,calc(30vh / var(--z, 1)),320px);margin:0 0 8px;
             overflow:hidden}
   #zoom{width:100%;height:calc(100% - 18px);max-height:none;object-fit:contain}
   #zoomWrap.empty #zoom,#zoomWrap.loading #zoom,#zoomWrap.unavailable #zoom{
@@ -157,57 +211,177 @@
   #swipeHint{position:absolute;bottom:0;left:0;right:0;height:18px;
              line-height:18px;margin:0;overflow:hidden;white-space:nowrap}
 
+  /* ── by team ── */
+  #gal[hidden],#galMsg[hidden],#modeBtn[hidden],.gflags[hidden]{display:none}
+  #gal{display:flex;flex-direction:column;max-width:1200px;margin:0 auto}
+  #galTop{position:sticky;top:49px;z-index:5;background:var(--bg);padding:2px 0 8px;
+          display:flex;flex-direction:column;gap:6px}
+  #galMsg{margin:0}
+  .gchips{display:grid;grid-template-columns:repeat(6,minmax(0,1fr));gap:6px}
+  .gchips .team{padding:7px 2px;font-size:17px;min-width:0;line-height:1.15}
+  .gchips .team small{display:block;font-size:10px;font-weight:500;color:var(--dim)}
+  .gchips .team.on,.gflags button.on{outline:3px solid currentColor;outline-offset:-3px;
+                                     background:#2a2e35}
+  .gflags{display:flex;gap:6px}
+  .gflags button{flex:1;padding:7px 4px;font-size:13px;white-space:nowrap}
+  .gflags button.red{color:var(--red);border-color:#5b2626;font-weight:700}
+  .gflags button.blue{color:var(--blue);border-color:#23406e;font-weight:700}
+  .gflags [data-b=unkback]{flex:0 0 40px}
+  #gRef{display:flex;gap:6px;align-items:center;overflow-x:auto;height:64px;flex:none}
+  #gRef[hidden]{display:none}
+  #gRef .glab{color:var(--dim);font-size:11px;line-height:1.25;flex:none;max-width:90px}
+  #gRef img{height:60px;width:auto;flex:none;border:1px solid var(--line);border-radius:6px;
+            background:#0b0d10;cursor:zoom-in}
+  #gGrid{display:grid;gap:6px;align-content:start;
+         grid-template-columns:repeat(auto-fill,minmax(var(--gt,110px),1fr))}
+  .gsec{grid-column:1/-1;color:var(--dim);font-size:11px;text-transform:uppercase;
+        letter-spacing:.05em;margin:6px 0 0}
+  .gsec button{margin-left:8px;padding:3px 9px;font-size:11px;text-transform:none;
+               letter-spacing:0}
+  /* An explicit height, not aspect-ratio: tiles sized by aspect-ratio got zero-height
+     rows inside the phone's fixed-height scroller and overlapped one another. */
+  .gt{position:relative;height:var(--gt,110px);background:#0b0d10;border:1px solid var(--line);
+      border-radius:8px;overflow:hidden;cursor:pointer;touch-action:manipulation;
+      user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+  .gt img,.gt svg{position:absolute;inset:0;width:100%;height:100%;object-fit:contain;
+                  pointer-events:none}
+  .gt.red{border-bottom:3px solid #7f1d1d}
+  .gt.blue{border-bottom:3px solid #1e3a8a}
+  .gt.dim{opacity:.32}
+  .gt.mate{box-shadow:inset 0 0 0 3px #22d3ee}
+  .gt.got{outline:3px solid var(--ok);outline-offset:-3px}
+  .gt.got img,.gt.got svg{opacity:.55}
+  /* A corner tag, not a label across the middle: the bumper stays readable for a recheck. */
+  .gt .gb{position:absolute;top:4px;left:4px;display:none;padding:1px 6px;border-radius:6px;
+          background:#16803c;color:#fff;font-weight:700;font-size:12px;line-height:1.4}
+  .gt.got .gb{display:block}
+  .gt .gtm{position:absolute;bottom:1px;right:4px;font-size:10px;color:#cbd5e1;
+           text-shadow:0 0 3px #000}
+  .gbar{display:flex;gap:6px;align-items:center;position:sticky;bottom:0;z-index:5;
+        background:var(--panel);border-top:1px solid var(--line);
+        padding:8px 12px calc(8px + var(--safe));margin:10px -12px calc(-12px - var(--safe))}
+  #gal .empty{grid-column:1/-1;color:var(--dim);text-align:center;padding:30px 10px}
+
   @media (min-width:701px) {
     #work:not([hidden]){display:grid;grid-template-columns:minmax(0,1fr) minmax(300px,430px);
                          gap:18px;align-items:start;max-width:1440px;margin:0 auto}
     .curation-evidence{min-width:0}
-    .curation-decision{position:sticky;top:64px;min-width:0}
+    /* Taller now that the views, hint and done actions live here: capped to the
+       viewport and scrolling as a whole, so sticky never hides its own bottom. */
+    .curation-decision{position:sticky;top:64px;min-width:0;
+                       max-height:calc(100vh / var(--z, 1) - 76px);overflow-y:auto}
     .curation-decision .bar{position:static;margin:12px 0 0;padding:10px 0 0}
   }
 
-  /* The phone is a fixed work surface: the frame and optional context scroll above,
-     while the crop and answer targets keep their positions between decisions. */
+  /* THE PHONE IS ONE FIXED SCREEN -- NOTHING SCROLLS VERTICALLY. It used to split into
+     a 330px scrolling pane (frame, clearest views, hint, done buttons) over a fixed
+     answer panel, so the clearest views sat below the fold of a small box and scrolling
+     felt like the page was stuck. Now, top to bottom: the field frame OR this robot's
+     other crops (the Field / This track toggle), the close-up, which takes ALL the
+     height left over and opens full size on a tap, and the answer controls. Anything
+     that appears on demand -- a warning, the done actions -- takes its room from the
+     close-up, never from the controls, and the panel clips rather than overflowing. */
   @media (max-width:700px) {
     html,body{height:100%}
     body{height:100vh;height:100svh;display:flex;flex-direction:column;overflow:hidden}
     header{flex:none;gap:6px;padding:6px 8px}
-    header h1{font-size:12px}
+    header h1{display:none}
     header .sp{display:none}
-    header #hdr{flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+    header #hdr{flex:none;max-width:42%;overflow:hidden;text-overflow:ellipsis;
                 white-space:nowrap}
+    #countTop{display:block;flex:1;min-width:0;overflow:hidden;text-overflow:ellipsis;
+              white-space:nowrap}
     #backBtn,#cfgBtn{flex:none;white-space:nowrap;padding:6px 8px!important}
     main{display:flex;flex:1;min-height:0;overflow:hidden;padding:0}
     #setup:not([hidden]){width:100%;min-height:0;overflow-y:auto;padding:12px;margin:0 auto}
     #work:not([hidden]){display:flex;flex:1;flex-direction:column;min-height:0;overflow:hidden}
-    .curation-evidence{flex:1;min-height:0;overflow-y:auto;overscroll-behavior:contain;
-                       padding:8px 12px 12px}
-    .curation-decision{flex:none;display:flex;flex-direction:column;gap:6px;
-                       padding:8px 12px calc(8px + var(--safe));background:var(--panel);
-                       border-top:1px solid var(--line)}
-    .curation-evidence .meta{margin:0 2px 8px}
-    #zoomWrap{flex:none;height:clamp(112px,24svh,200px);margin:0}
-    .teams{grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:48px;
-           gap:6px;min-height:102px;margin:0}
-    .team{min-width:0;height:48px;padding:0 2px}
-    .flags{gap:6px;margin:0}
+    /* THE SPACE ABOVE holds the field frame OR this robot's other crops (#topSeg),
+       never both, at the frame's height (--topH, measured) so switching does not move
+       the close-up. Capped at 32svh so a wide frame on a short screen cannot crowd out
+       the controls. */
+    /* CONTEXT, NOT THE SUBJECT: the field (or the track's crops) is capped at a fifth of
+       the screen so the close-up -- what a label is actually read from -- gets the
+       height. The frame shrinks but keeps its aspect, so its boxes stay tappable. The
+       frame/time line is dropped on a phone: the pips already say which frame this is. */
+    .curation-evidence{flex:none;overflow:hidden;padding:6px 8px 0}
+    .curation-evidence .meta{display:none}
+    #wrap{border-radius:8px;width:fit-content;max-width:100%;margin:0 auto}
+    #frame{width:auto;max-width:100%;max-height:20svh}
+    #note{margin:6px 0 0;padding:6px 9px;font-size:12px;max-height:12svh;overflow-y:auto}
+    #work.top-track #wrap,#work.top-track #note{display:none}
+    #work:not(.top-track) #views{display:none}
+    /* The note stays: a follow-up's note says what it is asking, and keeping it means
+       Field and Teams take exactly the same height above the close-up. */
+    #work.top-teams #wrap{display:none}
+    #work:not(.top-teams) #mrefs{display:none}
+    #mrefs{margin:0;height:var(--topH,30svh)}
+    #mrefs .vlabel{display:none}
+    #mrefStrip{height:100%;padding-bottom:0}
+    .mri img{height:calc(var(--topH,30svh) - 20px)}
+    #views{margin:0;height:var(--topH,30svh)}
+    #views .vlabel{display:none}
+    .vstrip{height:100%;padding-bottom:0;gap:6px}
+    .vstrip figure{height:100%}
+    .vstrip img{height:calc(100% - 14px);width:auto;max-width:none}
+    .vstrip figcaption{font-size:10px;line-height:14px}
+    .seg{display:flex;flex:none;gap:0;border:1px solid var(--line);border-radius:8px;
+         overflow:hidden}
+    .seg button{flex:1;border:0;border-radius:0;padding:4px 4px;font-size:12px;
+                background:transparent;color:var(--dim)}
+    .seg button.on{background:#2a2e35;color:var(--fg);font-weight:600}
+    .seg button:disabled{opacity:.4}
+    #trackN{margin-left:5px;font-size:11px;color:var(--dim)}
+    /* Clips rather than overflows: nothing in here can push the bottom row off screen. */
+    .curation-decision{flex:1;min-height:0;display:flex;flex-direction:column;gap:6px;
+                       padding:6px 8px calc(6px + var(--safe));overflow:hidden}
+    #ovl{font-size:12px;padding:5px 8px}
+    /* The close-up takes the height left over and is the only thing that gives way
+       (down to nothing): tapping it opens it full size, so a small close-up costs a tap,
+       where a pushed-off Submit cost the page. */
+    #zoomWrap{flex:1 1 0;min-height:0;height:auto;margin:0}
+    #hint{flex:none;margin:0;font-size:11px;white-space:nowrap;overflow:hidden;
+          text-overflow:ellipsis}
+    #doneBar{flex:none;display:flex;gap:6px}
+    #doneBar[hidden],#doneBar.mid{display:none}
+    #doneBar button{margin:0!important;padding:10px 6px!important;font-size:14px!important;
+                    flex:1;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .teams{grid-template-columns:repeat(3,minmax(0,1fr));grid-auto-rows:46px;
+           gap:6px;margin:0;flex:none}
+    .team{min-width:0;height:46px;padding:0 2px}
+    .flags{gap:6px;margin:0;flex:none}
+    .flags[hidden]{display:none}
     .flags button{height:40px;padding:3px 2px;font-size:12px;line-height:1.1}
-    .nav{height:40px;flex:none;margin:0}
-    .nav > button{height:40px;width:44px;padding:0;flex:none}
-    .pips{min-width:0;height:40px;flex-wrap:nowrap;align-items:center;
+    .navbar{display:flex;gap:6px;align-items:center;flex:none}
+    .nav{height:44px;flex:1;min-width:0;margin:0}
+    .nav > button{height:44px;width:42px;padding:0;flex:none}
+    .pips{min-width:0;height:44px;flex-wrap:nowrap;align-items:center;
           overflow-x:auto;overflow-y:hidden;padding:4px 3px}
     .pip{flex:none}
-    .bar{position:static;min-height:44px;margin:0;padding:0;border:0;
-         background:transparent}
-    .bar .sp{display:none}
-    #count{min-width:0;flex:1;overflow:hidden;text-overflow:ellipsis;
-           white-space:nowrap;font-size:11px!important}
-    #clock{display:none}
-    #submit{min-width:90px;min-height:44px}
+    .bar{position:static;margin:0;padding:0;border:0;background:transparent;flex:none}
+    .bar .sp,#count,#clock{display:none}
+    #submit{min-width:84px;min-height:44px}
+    /* By team: the chips stay put and only the grid scrolls. */
+    #gal:not([hidden]){display:flex;flex:1;min-height:0;overflow:hidden;width:100%}
+    #galTop{position:static;flex:none;padding:6px 8px}
+    #gGrid{flex:1;min-height:0;overflow-y:auto;padding:0 8px 8px;overscroll-behavior:contain}
+    .gchips .team{font-size:15px;padding:6px 1px}
+    .gbar{position:static;margin:0;flex:none;padding:6px 8px calc(6px + var(--safe))}
+    #gSubmit{min-height:42px}
   }
-  @media (max-width:700px) and (max-height:520px) {
-    #zoomWrap{height:clamp(100px,20svh,120px)}
-    .teams{grid-auto-rows:42px;min-height:90px}
-    .team{height:42px}
+  /* Short phones (iPhone SE: 667px). The close-up keeps its 88px floor by shrinking
+     everything else a little, not by scrolling. */
+  /* Very short (a 600px viewport once the browser's bars are counted): the frame gives a
+     little height too, so a warning plus the done buttons still fit with the controls. */
+  @media (max-width:700px) and (max-height:620px) {
+    #frame{max-height:18svh}
+  }
+  @media (max-width:700px) and (max-height:700px) {
+    #swipeHint{display:none!important}
+    #zoom{height:100%}
+    .teams{grid-auto-rows:40px}
+    .team{height:40px;font-size:16px}
+    .flags button{height:36px}
+    .nav,.nav > button,#submit{height:40px;min-height:40px}
   }
 </style>
 </head>
@@ -216,8 +390,17 @@
   <h1>rtrack curator</h1>
   <span class="sp"></span>
   <span id="hdr" style="color:var(--dim);font-size:12px"></span>
+  <span id="countTop" style="color:var(--dim);font-size:11px"></span>
+  <button id="modeBtn" style="padding:6px 10px" hidden
+          title="Switch between answering frame by frame and assigning by team">By team</button>
   <button id="backBtn" style="padding:6px 10px" title="Back to the app">‹ Back</button>
   <button id="cfgBtn" style="padding:6px 10px">⚙</button>
+  <!-- How much of the bundle has an answer from you. Measured on 2026gal (8 matches,
+       held-out labels): routes at 75% answered are as good as at 100%, so the bar turns
+       yellow at 60% and green at 80% -- past that, more answers buy nothing visible. -->
+  <div id="prog" hidden title="Share of this bundle's detections you have answered">
+    <div id="progFill"></div><span id="progText"></span>
+  </div>
 </header>
 
 <main>
@@ -256,42 +439,116 @@
         <img id="frame" alt="match frame">
         <canvas id="hit"></canvas>
       </div>
-      <!-- Context may change per box without shifting the answer controls. -->
-      <div id="note" hidden></div>
-      <div id="ovl" hidden><span id="ovlIcon">⚠</span><span id="ovlText"></span></div>
+      <!-- Other crops of the selected robot's track. On a phone they share the field
+           frame's space, switched by the Field / This track toggle above the close-up;
+           on a wider screen they sit under the frame. Tapping one opens it full screen. -->
       <div id="views" hidden>
-        <div class="vlabel">Clearest views of this robot</div>
+        <div class="vlabel">Clearest views of this robot — tap one to enlarge</div>
         <div class="vstrip" id="vstrip"></div>
       </div>
-      <p class="hint" id="hint">Tap a box in the frame, then tap who it is.</p>
-      <div id="doneBar" hidden style="margin-top:10px"></div>
-    </div>
-    <div class="curation-decision">
-      <div id="zoomWrap" class="empty">
-        <canvas id="zoom" aria-label="Close-up of selected robot"></canvas>
-        <div id="tick" aria-hidden="true">&#10003;</div>
-        <div id="swipeHint">swipe the image left or right to change box</div>
+      <!-- FOLLOW-UPS: what the curator already said each team looks like in this match
+           (matchRefs, built by the agent from their own earlier answers), so new frames
+           are judged against them rather than from memory. -->
+      <div id="mrefs" hidden>
+        <div class="vlabel">Your earlier answers in this match — tap to enlarge</div>
+        <div id="mrefStrip"></div>
       </div>
+      <!-- Context may change per box without shifting the answer controls. -->
+      <div id="note" hidden></div>
+    </div>
+    <!-- EVERYTHING ABOUT THE SELECTED BOX, IN ONE PLACE. The overlap warning, the
+         clearest views and the done actions used to sit under the field frame in a
+         separately scrolling pane, which on a phone left the clearest views below the
+         fold of a 330px box. They live beside the close-up now, always visible; on a
+         phone the close-up takes whatever height is left, so nothing scrolls. -->
+    <div class="curation-decision">
+      <!-- What fills the space above: the field frame (tap a box to select it) or the
+           selected robot's other crops from its track. Phone only; remembered. -->
+      <div class="seg" id="topSeg" role="tablist">
+        <button data-top="field" class="on">Field</button>
+        <button data-top="track">This track<span id="trackN"></span></button>
+        <button data-top="teams" id="topTeamsBtn" hidden>Teams</button>
+      </div>
+      <div id="zoomWrap" class="empty">
+        <!-- Warnings about the selected box sit OVER the close-up as a one-line banner
+             (tap to read it all), so they never take height from the image. -->
+        <div id="ovl" hidden><span id="ovlIcon">⚠</span><span id="ovlText"></span></div>
+        <canvas id="zoom" aria-label="Close-up of selected robot — tap to enlarge"></canvas>
+        <div id="tick" aria-hidden="true">&#10003;</div>
+        <div id="swipeHint">tap to enlarge · swipe to change box</div>
+      </div>
+      <p class="hint" id="hint">Tap a box in the frame, then tap who it is.</p>
+      <div id="doneBar" hidden></div>
       <div class="teams" id="teams"></div>
-      <div class="flags">
+      <div class="flags" id="flagRow">
         <button data-flag="notrobot">not a robot</button>
         <button data-flag="unknown">can't tell</button>
         <button data-flag="clear">clear</button>
       </div>
-      <div class="nav">
-        <button id="prev">‹</button>
-        <div class="pips" id="pips"></div>
-        <button id="next">›</button>
+      <!-- Shown in place of the row above once "can't tell" is tapped: what CAN be told.
+           Bumper colour alone narrows the robot to three teams, and the camera's colour
+           call is wrong on 2.4% of boxes (3.7% on 2026gal) -- usually confidently. -->
+      <div class="flags unk" id="unkRow" hidden>
+        <button data-unk="red" class="chip red" title="Red bumpers, number not readable">● red</button>
+        <button data-unk="blue" class="chip blue" title="Blue bumpers, number not readable">● blue</button>
+        <button data-unk="mixed" title="This box covers more than one robot">multiple</button>
+        <button data-unk="none" title="Cannot tell even the colour">just can't tell</button>
       </div>
-      <div class="bar">
-        <span id="count" style="color:var(--dim);font-size:13px"></span>
-        <span id="clock" style="color:#64748b;font-size:12px;margin-left:10px"></span>
-        <span class="sp"></span>
-        <button id="submit" class="primary">Submit</button>
+      <div class="navbar">
+        <div class="nav">
+          <button id="prev">‹</button>
+          <div class="pips" id="pips"></div>
+          <button id="next">›</button>
+        </div>
+        <div class="bar">
+          <span id="count" style="color:var(--dim);font-size:13px"></span>
+          <span id="clock" style="color:#64748b;font-size:12px;margin-left:10px"></span>
+          <span class="sp"></span>
+          <button id="submit" class="primary">Submit</button>
+        </div>
       </div>
     </div>
   </section>
+
+  <!-- ── by team ──────────────────────────────────────────────────────────
+       The alternative to frame-by-frame: pick a team, then tap every tile that is that
+       robot. One robot held in mind at a time, instead of six in rotation per frame. -->
+  <section id="gal" hidden>
+    <div id="galTop">
+      <div id="galMsg" class="msg" hidden></div>
+      <div class="gchips" id="gTeams"></div>
+      <div class="gflags" id="gFlags">
+        <button data-b="notrobot">not a robot</button>
+        <button data-b="unkmenu">can't tell…</button>
+        <button data-b="leftovers" id="gLeftBtn">leftovers</button>
+      </div>
+      <div class="gflags" id="gUnk" hidden>
+        <button data-b="unk:red" class="red">● red</button>
+        <button data-b="unk:blue" class="blue">● blue</button>
+        <button data-b="mixed">multiple</button>
+        <button data-b="unknown">just can't tell</button>
+        <button data-b="unkback">‹</button>
+      </div>
+      <div id="gRef"></div>
+    </div>
+    <div id="gGrid"></div>
+    <div class="gbar">
+      <button id="gUndo" disabled>↶ Undo</button>
+      <span id="gCount" style="color:var(--dim);font-size:12px;min-width:0;overflow:hidden;
+            text-overflow:ellipsis;white-space:nowrap"></span>
+      <span class="sp"></span>
+      <button id="gSmaller" title="Smaller tiles" style="padding:6px 11px">−</button>
+      <button id="gBigger" title="Larger tiles" style="padding:6px 11px">+</button>
+      <button id="gSubmit" class="primary">Submit</button>
+    </div>
+  </section>
 </main>
+
+<!-- Full-size look at the close-up or any crop of the track. Tap anywhere to close. -->
+<div id="expand" hidden role="dialog" aria-label="Enlarged view">
+  <img id="expandImg" alt="enlarged view">
+  <div id="expandCap"></div>
+</div>
 
 <div id="refSheet" hidden>
   <div id="refPanel">
@@ -312,17 +569,34 @@
 <script src="relay.js"></script>
 
 <script>
+// BIG SCREENS. The page is laid out for ~1700 CSS px of width; on a 4K monitor the browser
+// reports far more (2560 at 150% Windows scaling), and the close-up and buttons shrank to
+// where the curator was zooming the browser to 150% by hand. So above that width the whole
+// page is scaled to fit it -- 2560 px -> 1.5x. A browser zoom the user sets themselves
+// still works: it shrinks innerWidth, and this scales by correspondingly less. Phones are
+// never touched. Viewport-height lengths in the CSS are divided by --z so they keep
+// meaning a share of the screen once scaled.
+(function fitScreen() {
+  const DESIGN_W = 1700, MAX_Z = 2.25;
+  const apply = () => {
+    const w = window.innerWidth;
+    const z = w > DESIGN_W ? Math.min(MAX_Z, w / DESIGN_W) : 1;
+    const r = document.documentElement;
+    r.style.zoom = z === 1 ? '' : String(Math.round(z * 100) / 100);
+    r.style.setProperty('--z', String(Math.round(z * 100) / 100));
+  };
+  apply();
+  window.addEventListener('resize', apply);
+})();
 const $ = s => document.querySelector(s);
 const ID_PARAM = 'match', ID_FIELD = '#match';
 
-// Precedence: a ?relay= on the URL (handled in deepLink below, which writes through to
-// localStorage) > whatever this device last used > the value baked in at build time.
-// The baked default is LAST so it can never overwrite a deliberate choice -- someone
-// pointing a phone at a second relay for a test must not have it silently reverted on
-// the next load.
+// The value baked in at build time (repository secret RELAY_URL_RTRACK) WINS, and the
+// relay field is hidden when there is one: nobody should have to know the URL. The
+// device's saved value and a ?relay= are used only on a build without it.
+const BAKED_RELAY = (window.RTRACK_DEFAULT_RELAY || '').trim();
 const LS = {
-  get url()   { return localStorage.getItem('rtrackRelay')
-                    || window.RTRACK_DEFAULT_RELAY || ''; },
+  get url()   { return BAKED_RELAY || localStorage.getItem('rtrackRelay') || ''; },
   set url(v)  { localStorage.setItem('rtrackRelay', v); },
   get tok()   { return localStorage.getItem('rtrackToken')
                     || window.RTRACK_DEFAULT_TOKEN || ''; },
@@ -341,6 +615,7 @@ function needToken(msg) {
   if (r) r.hidden = false;
   document.getElementById('setup').hidden = false;
   document.getElementById('work').hidden = true;
+  document.getElementById('gal').hidden = true;
   document.getElementById('token')?.focus();
   return msg;
 }
@@ -352,8 +627,10 @@ const keyOf = (f, xy) => `${f}|${xy[0]}|${xy[1]}`;
 
 // ── setup ───────────────────────────────────────────────────────────────
 $('#relay').value = LS.url;
+if (BAKED_RELAY) { $('#relay').style.display = 'none'; $('label[for=relay]').style.display = 'none'; }
 $('#token').value = LS.tok;
-if ($('#token').value) $('#tokRow').hidden = false;
+// A baked token is filled in silently; the row only appears when the relay refuses it.
+if ($('#token').value && !window.RTRACK_DEFAULT_TOKEN) $('#tokRow').hidden = false;
 $('#match').value = LS.match;
 // Always straight to the Tracks queue, which is the only place anyone arrives from and
 // the list you want next after finishing a match. history.back() was never right here:
@@ -361,14 +638,28 @@ $('#match').value = LS.match;
 // the fallback fired instead -- landing on the app root, a tab and a scroll away from
 // the queue. '../' (not '../../') because this page lives at <base>rtrack/curate.html,
 // so one level up IS the app root under a project path like /ScoutingApp/.
+// BACK CLOSES THIS TAB when the app opened it, and hands focus back to the app's own tab
+// (which refreshes its Tracks list). Navigating this tab to the app instead left a second
+// copy of the app open per curated match. The app opens the curator in one named tab, so
+// a later match reuses it. A tab the browser will not let a script close -- opened by
+// hand, or navigated within -- still goes to the app as before.
 $('#backBtn').onclick = () => {
   const dirty = ANS.size && !SENT;
   if (dirty && !confirm('You have labels that have not been sent. Leave anyway?')) return;
+  const app = window.opener;
+  if (app && !app.closed) {
+    try { app.postMessage({ type: 'rtrack-curator-back', match: DOC?.match || null }, location.origin); } catch { }
+    try { app.focus(); } catch { }
+    window.close();
+    setTimeout(() => { location.href = '../#tools/tracks'; }, 300);   // close was refused
+    return;
+  }
   location.href = '../#tools/tracks';
 };
 $('#cfgBtn').onclick = () => {
   const s = $('#setup'), w = $('#work');
-  if (s.hidden) { s.hidden = false; w.hidden = true; } else if (DOC) { s.hidden = true; w.hidden = false; }
+  if (s.hidden) { s.hidden = false; w.hidden = true; $('#gal').hidden = true; }
+  else if (DOC) { s.hidden = true; setMode(MODE); }
 };
 
 function cfg() {
@@ -473,6 +764,9 @@ const TIMER = {
       actions: this.s.actions,
       sends: this.s.sends,
       idleGapS: IDLE_GAP_S,
+      // Which workflow the labels came from, so the two can be compared per match.
+      // Per-label it is also in aid ('gallery'), which survives a merge of two passes.
+      mode: MODE === 'team' ? 'team' : 'frame',
     };
   },
 };
@@ -539,10 +833,31 @@ function start(doc) {
     wireRefPress(b);
   });
   drawPips();
+  renderMatchRefs();
   showFrame(0);
+  $('#modeBtn').hidden = false;
+  setMode(MODE);
 }
 
 function frame() { return DOC.frames[FI]; }
+
+// Earlier answers per team, in schedule order, red then blue. Absent from first-round
+// bundles, so this hides itself (and the Teams toggle) unless the agent sent some.
+function renderMatchRefs() {
+  const refs = DOC.matchRefs || {};
+  const red = (DOC.teams?.red || []).map(String);
+  const order = [...red, ...(DOC.teams?.blue || []).map(String)].filter(t => (refs[t] || []).length);
+  $('#mrefs').hidden = !order.length;
+  $('#topTeamsBtn').hidden = !order.length;
+  $('#mrefStrip').innerHTML = order.map(t => `<div class="mrg ${red.includes(t) ? 'red' : 'blue'}">
+      <b>${t}</b><div class="mri">${refs[t].map((r, i) =>
+        `<img src="${r.crop}" data-team="${t}" data-i="${i}" alt="${t} at ${r.t}s">`).join('')}</div></div>`).join('');
+  $('#mrefStrip').querySelectorAll('img').forEach(im => im.onclick = () => {
+    const r = refs[im.dataset.team][Number(im.dataset.i)];
+    noteAid('matchRefs');
+    openExpand(r.crop, `${im.dataset.team} — your answer at ${r.t}s`);
+  });
+}
 
 function clearZoom() {
   // Cancel an image decode from the previous box before clearing its close-up.
@@ -560,12 +875,12 @@ function showFrame(i) {
   SEL = null;
   const f = frame();
   const img = $('#frame');
-  img.onload = () => { sizeHit(); paint(); };
+  img.onload = () => { sizeHit(); paint(); measureTop(); };
   img.src = f.img;
   $('#info').innerHTML =
     `<b>frame ${f.f}</b> · t=${(f.t ?? 0).toFixed(1)}s · ${f.dets.length} boxes · ${FI + 1}/${DOC.frames.length}`;
   clearZoom(); $('#views').hidden = true; $('#ovl').hidden = true;
-  $('#doneBar').hidden = true;
+  $('#doneBar').hidden = true; showUnkRow(false); applyTop();
   // PRE-FILL from the machine's guess. rtrack.reid labels a match ~84% correctly once
   // the event gallery knows its teams, so most of these are right and the curator's
   // job becomes spotting the wrong ones.
@@ -586,20 +901,7 @@ function showFrame(i) {
   //
   // The tracks under question are absent from `carry` by construction (robots.py
   // excludes them), so this can never pre-answer the thing being asked.
-  const carryByTid = new Map((DOC.carry || [])
-    .filter(c => c && c.team != null && c.tid != null)
-    .map(c => [Number(c.tid), String(c.team)]));
-  if (carryByTid.size) {
-    for (const d of f.dets) {
-      const team = carryByTid.get(Number(d.tid));
-      if (!team) continue;
-      const k = keyOf(f.f, d.xy);
-      const cur = ANS.get(k);
-      if (!cur || cur.src !== 'human') {
-        ANS.set(k, { f: f.f, xy: d.xy, team, src: 'human', carried: true });
-      }
-    }
-  }
+  carryFrame(f);
   drawPips(); updateCount(); paint();
   // A clash frame has exactly one question; go straight to it.
   const fsel = frame().dets.findIndex(d => isFocus(d));
@@ -624,6 +926,24 @@ function showFrame(i) {
   else img.addEventListener('load', go, { once: true });
 }
 
+// Split out of showFrame so the by-team gallery, which never visits a frame, applies it
+// to every frame up front.
+function carryFrame(f) {
+  const carryByTid = new Map((DOC.carry || [])
+    .filter(c => c && c.team != null && c.tid != null)
+    .map(c => [Number(c.tid), String(c.team)]));
+  if (!carryByTid.size) return;
+  for (const d of f.dets) {
+    const team = carryByTid.get(Number(d.tid));
+    if (!team) continue;
+    const k = keyOf(f.f, d.xy);
+    const cur = ANS.get(k);
+    if (!cur || cur.src !== 'human') {
+      ANS.set(k, { f: f.f, xy: d.xy, team, src: 'human', carried: true });
+    }
+  }
+}
+
 function sizeHit() {
   const img = $('#frame'), cv = $('#hit');
   const r = img.getBoundingClientRect();
@@ -640,6 +960,15 @@ function scale() {
 }
 
 function answerFor(d) { return ANS.get(keyOf(frame().f, d.xy)); }
+
+// The answer in words, for the hint line.
+function answerText(a) {
+  if (a.team) return a.team;
+  if (a.notrobot) return 'not a robot';
+  if (a.mixed) return 'more than one robot';
+  if (a.unknown && a.alliance) return `${a.alliance}, number not readable`;
+  return 'can’t tell';
+}
 
 // THE BOX THE QUESTION IS ABOUT. A clash bundle asks about ONE robot per frame -- the
 // pipeline gave its team name to two different machines and only a person can say which
@@ -669,6 +998,7 @@ function paint() {
     // Green = you said so. Cyan = the machine's guess, standing unless you change it.
     if (a?.team) col = a.src === 'human' ? '#22c55e' : '#22d3ee';
     else if (a?.notrobot) col = '#6b7280';
+    else if (a?.mixed) col = '#a855f7';
     else if (a?.unknown) col = '#f59e0b';
     if (a?.team && a.src === 'machine') ctx.setLineDash([6, 4]);
     else ctx.setLineDash([]);
@@ -690,10 +1020,14 @@ function paint() {
       ctx.strokeRect(X - 4, Y - 4, W + 8, H + 8);
     }
     ctx.globalAlpha = 1;
-    if (a?.team) {
+    // A team, or what the curator could tell instead: "?" in the bumper colour they saw,
+    // or "2+" for a box over several robots.
+    const tag = a?.team ? a.team : a?.mixed ? '2+' : (a?.unknown && a.alliance) ? '?' : null;
+    if (tag) {
+      const tcol = a.team ? col : a.mixed ? col : (a.alliance === 'red' ? '#ef4444' : '#3b82f6');
       ctx.font = 'bold 13px system-ui'; ctx.textAlign = 'center';
-      ctx.fillStyle = '#000'; ctx.fillText(a.team, X + W / 2 + 1, Y - 3);
-      ctx.fillStyle = col; ctx.fillText(a.team, X + W / 2, Y - 4);
+      ctx.fillStyle = '#000'; ctx.fillText(tag, X + W / 2 + 1, Y - 3);
+      ctx.fillStyle = tcol; ctx.fillText(tag, X + W / 2, Y - 4);
     }
   });
 }
@@ -774,7 +1108,8 @@ function wireRefPress(btn) {
   const team = btn.dataset.team;
   const start = () => {
     // Arm if there is anything at all to show, from either source.
-    if (!(DOC?.teamRefs || {})[team] && !inMatchCrops(team).length) return;
+    if (!(DOC?.teamRefs || {})[team] && !(DOC?.matchRefs || {})[team]
+        && !inMatchCrops(team).length) return;
     fired = false;
     timer = setTimeout(() => { fired = true; showRefs(team); }, REF_HOLD_MS);
   };
@@ -798,7 +1133,8 @@ function wireRefPress(btn) {
 function showRefs(team) {
   const mine = inMatchCrops(team);
   const refs = (DOC?.teamRefs || {})[team] || [];
-  if (!mine.length && !refs.length) return;
+  const earlier = (DOC?.matchRefs || {})[team] || [];
+  if (!mine.length && !refs.length && !earlier.length) return;
   if (navigator.vibrate) { try { navigator.vibrate(12); } catch { } }
   $('#refTeam').textContent = team;
   const strip = (items, cap) => items.length ? `
@@ -807,6 +1143,8 @@ function showRefs(team) {
         <figcaption>${r.label}</figcaption></figure>`).join('')
     }</div></div>` : '';
   $('#refBody').innerHTML =
+    strip(earlier.map(r => ({ crop: r.crop, label: `t${r.t}s` })),
+          'Your earlier answers in this match') +
     strip(mine.map(r => ({
       crop: r.crop,
       // Machine guesses marked, since a consistent run of wrong ones is the thing to spot.
@@ -826,28 +1164,96 @@ $('#refSheet').addEventListener('click', e => {
 
 // Bundles built before best views simply have no det.views, so this hides itself and
 // the page behaves exactly as it did -- no version check needed.
+//
+// Every crop in it opens full size on a tap (see openExpand): the strip is for spotting
+// which look is worth having, the full-screen view is for reading a bumper number.
 function renderViews(d) {
+  // Bring the earlier answers of the team this box is currently given into view, so the
+  // comparison the curator needs is the one on screen.
+  const cur = String(answerFor(d)?.team || d.team || '');
+  const grp = [...document.querySelectorAll('#mrefStrip .mrg')].find(g => g.querySelector('b')?.textContent === cur);
+  if (grp) $('#mrefStrip').scrollLeft = grp.offsetLeft - $('#mrefStrip').offsetLeft;
   const box = $('#views'), strip = $('#vstrip');
   const vs = d.views || [];
-  if (!vs.length) { box.hidden = true; strip.innerHTML = ''; return; }
-  strip.innerHTML = vs.map(v =>
-    `<figure><img src="${v.crop}" alt="clearer view of this robot at ${v.t}s">
+  $('#trackN').textContent = vs.length ? `(${vs.length})` : '';
+  $('#topSeg [data-top=track]').disabled = !vs.length;
+  if (!vs.length) { box.hidden = true; strip.innerHTML = ''; applyTop(); return; }
+  strip.innerHTML = vs.map((v, i) =>
+    `<figure data-i="${i}"><img src="${v.crop}" alt="clearer view of this robot at ${v.t}s">
      <figcaption>t${v.t}s</figcaption></figure>`).join('');
+  strip.querySelectorAll('figure').forEach(fig => fig.onclick = () => {
+    const v = vs[Number(fig.dataset.i)];
+    noteAid('views');
+    openExpand(v.crop, `this robot at t${v.t}s`);
+  });
   box.hidden = false;
   strip.scrollLeft = 0;
   noteAid('views');
+  applyTop();
 }
+
+// The warning banner folds and unfolds on a tap, and swallows the pointer so the tap
+// does not also reach the close-up underneath (which would open it full size or swipe).
+['pointerdown', 'pointerup'].forEach(ev =>
+  $('#ovl').addEventListener(ev, e => e.stopPropagation()));
+$('#ovl').addEventListener('click', e => {
+  e.stopPropagation();
+  $('#ovl').classList.toggle('open');
+});
+
+// ── Full-size view ────────────────────────────────────────────────────────────
+// The close-up shares its space with everything else and loses height first, and a
+// tall crop letterboxes small in a wide slot -- so any image can be opened full screen.
+function openExpand(src, cap) {
+  if (!src) return;
+  $('#expandImg').src = src;
+  $('#expandCap').textContent = (cap ? cap + ' · ' : '') + 'tap anywhere to close';
+  $('#expand').hidden = false;
+}
+$('#expand').addEventListener('click', () => { $('#expand').hidden = true; });
+
+// ── Field / This track ────────────────────────────────────────────────────────
+// The phone has room above the close-up for ONE of: the field frame, or the selected
+// robot's other crops. The choice is remembered; the field shows whenever there is no
+// robot selected or it has no other crops, since then there is nothing else to show.
+const TOP_KEY = 'rtrackTopMode';
+let TOP_PREF = 'field';
+try { const v = localStorage.getItem(TOP_KEY); TOP_PREF = v === 'track' || v === 'teams' ? v : 'field'; } catch { }
+const hasMatchRefs = () => !!(DOC && Object.values(DOC.matchRefs || {}).some(v => v && v.length));
+function applyTop() {
+  const can = SEL !== null && !$('#views').hidden;
+  const mode = (TOP_PREF === 'track' && can) ? 'track'
+             : (TOP_PREF === 'teams' && hasMatchRefs()) ? 'teams' : 'field';
+  $('#work').classList.toggle('top-track', mode === 'track');
+  $('#work').classList.toggle('top-teams', mode === 'teams');
+  document.querySelectorAll('#topSeg button').forEach(b =>
+    b.classList.toggle('on', b.dataset.top === mode));
+  if (mode === 'field' && sizeHit()) paint();
+}
+document.querySelectorAll('#topSeg button').forEach(b => b.onclick = () => {
+  TOP_PREF = b.dataset.top;
+  try { localStorage.setItem(TOP_KEY, TOP_PREF); } catch { }
+  applyTop();
+});
+// The crops take the frame's height, so switching never moves the close-up below.
+function measureTop() {
+  const w = $('#wrap');
+  if (w.offsetParent !== null && w.offsetHeight) {
+    $('#work').style.setProperty('--topH', w.offsetHeight + 'px');
+  }
+}
+window.addEventListener('resize', () => { measureTop(); if (sizeHit()) paint(); });
 
 // The point of the whole page: an image big enough to actually identify the robot.
 // Prefers det.crop -- cut from the FULL-RESOLUTION frame by rtrack.curate -- and only
 // falls back to magnifying the shipped frame for older bundles that lack it. The
 // fallback is visibly worse: it enlarges pixels that were already thrown away.
-function showZoom() {
+function showZoom(keepViews = false) {
   const d = frame().dets[SEL], z = $('#zoom');
   const a = answerFor(d);
   const wrap = $('#zoomWrap');
   const requestId = ++zoomRequestId;
-  renderViews(d);
+  if (!keepViews) { renderViews(d); showUnkRow(false); }
   z.getContext('2d').clearRect(0, 0, z.width, z.height);
   wrap.classList.remove('empty', 'unavailable', 'finished');
   wrap.classList.add('loading');
@@ -903,7 +1309,7 @@ function showZoom() {
   swipeNote('');
   const len = d.n ? `  ·  ${d.n} frames` : '';
   $('#hint').textContent = (a
-    ? `Currently: ${a.team || (a.notrobot ? 'not a robot' : 'can’t tell')}`
+    ? `Currently: ${answerText(a)}`
     : `Box ${SEL + 1} of ${frame().dets.length} — who is this?`) + len
     + overlapNote(SEL);
   markTaken();
@@ -935,6 +1341,9 @@ function showZoom() {
 // demotes the weaker pin to a preference -- a recoverable outcome, unlike a dropped track.
 //
 // "not a robot" now means only what it says: a referee, a field element, a ball pile.
+// (Since 2026-10-12 it is no longer whole-track either: a team label elsewhere on the
+// same track splits it -- see THE GUARD below. Labelling both boxes is still the answer
+// for a duplicate, because a split still drops the flagged stretch of a real robot.)
 let OVL_STICKY = false;
 function overlapNote(i) {
   const box = $('#ovl');
@@ -954,12 +1363,12 @@ function overlapNote(i) {
   });
   if (hit === null) { box.hidden = true; return ''; }
   const mine = ds[i].n || 0, other = ds[hit].n || 0;
-  box.classList.remove('stop');
+  box.classList.remove('stop', 'open');      // folded: the bold title says what it is
   $('#ovlText').innerHTML =
     `<b>Two boxes on one robot.</b> Give <b>both</b> the same team — this one `
     + `(${mine} frames) and box ${hit + 1} (${other}). The solver fuses boxes you name `
     + `as one team while both are on screen. Do <b>not</b> use “not a robot” here; `
-    + `it drops the whole track, team labels included.`;
+    + `it drops that stretch of a real robot.`;
   box.hidden = false;
   return '';       // the banner carries it now; the hint line stays about the question
 }
@@ -1003,20 +1412,10 @@ function assign(val) {
     ms: BOX_T0 ? Math.min(Date.now() - BOX_T0, 120000) : null,
     aid: BOX_AID && BOX_AID.size ? [...BOX_AID] : undefined,
   });
-  if (val !== 'clear' && val.team) {
-    const stale = notrobotKeysOnTrack(d.tid);
-    if (stale.length) {
-      stale.forEach(sk => ANS.delete(sk));
-      const box = $('#ovl');
-      box.classList.add('stop');
-      $('#ovlText').innerHTML =
-        `<b>Cleared ${stale.length} earlier “not a robot” on this track.</b> `
-        + `That flag applies to the whole track, so keeping it would have thrown away `
-        + `the team you just gave. If this really is not a robot, flag it again.`;
-      box.hidden = false;
-      OVL_STICKY = true;       // survive the showZoom() that follows this assignment
-    }
-  }
+  // A team given on a track that also carries "not a robot" elsewhere is KEPT alongside
+  // it: since 2026-10-12 the solver cuts the track between the two (corrections.cuts_from),
+  // which is exactly how a track that sat on a volunteer and then followed a robot is
+  // expressed. This used to delete the earlier flag, when it still erased the whole track.
   DRAFT.save(DOC?.match, ANS);   // write through on every tap; see DRAFT
   TIMER.tick(DOC?.match);        // and charge the time it took; see TIMER
   paint(); drawPips(); updateCount(); markTaken(); paintClock();
@@ -1047,7 +1446,7 @@ function assign(val) {
     // -- otherwise the team just assigned is the one team that never strikes through,
     // which reads as a missing answer rather than a finished frame.
     SEL = null;
-    $('#zoomWrap').classList.add('done', 'finished'); $('#views').hidden = true;
+    $('#zoomWrap').classList.add('done', 'finished'); $('#views').hidden = true; applyTop();
     swipeNote(FI >= DOC.frames.length - 1
       ? 'Frame complete — send labels' : 'Frame complete — use Next frame');
     // Keep a banner this assignment just wrote. The frame being finished is not a reason
@@ -1080,6 +1479,9 @@ function updateDoneBar() {
   const last = FI >= DOC.frames.length - 1;
   const bar = $('#doneBar');
   bar.hidden = false;
+  // Mid-sweep (a box still selected) the phone hides this: the sweep advances on its own
+  // and the room is worth more to the close-up. It reappears when the frame is finished.
+  bar.classList.toggle('mid', SEL !== null);
   const left = unreviewed();
   // With boxes still unreviewed, REVIEWING is the primary action and accepting is the
   // secondary one. It used to be a single "Accept N & next frame" button, which made
@@ -1090,10 +1492,10 @@ function updateDoneBar() {
       `<button class="primary" id="dbReview" style="width:100%;padding:16px;font-size:17px;">`
       + `Review ${left.length} unconfirmed ›</button>`
       + `<button id="dbSkip" style="width:100%;padding:11px;margin-top:8px;font-size:14px;">`
-      + `${last ? `Accept them and send ${ANS.size} labels` : `Accept them and go to the next frame`}`
+      + `${last ? `Accept all, send ${ANS.size}` : `Accept all, next frame ›`}`
       + `</button>`;
     bar.querySelector('#dbReview').onclick = () => {
-      SEL = left[0]; beginBox(); showZoom(); paint(); markTaken();
+      SEL = left[0]; beginBox(); showZoom(); paint(); markTaken(); updateDoneBar();
     };
     bar.querySelector('#dbSkip').onclick = last ? () => $('#submit').click()
                                                 : () => showFrame(FI + 1);
@@ -1122,32 +1524,45 @@ function teamLabelsOnTrack(tid) {
   return out;
 }
 
-// The same walk, for the answers that have to be REMOVED rather than counted.
-function notrobotKeysOnTrack(tid) {
-  const t = Number(tid);
-  if (!DOC || !Number.isFinite(t) || t < 0) return [];
-  const out = [];
-  (DOC.frames || []).forEach(fr => (fr.dets || []).forEach(d => {
-    if (Number(d.tid) !== t) return;
-    const k = keyOf(fr.f, d.xy), a = ANS.get(k);
-    if (a && a.src === 'human' && a.notrobot) out.push(k);
-  }));
-  return out;
-}
 
-// THE GUARD. notrobot is the only answer that is not local to the box it is tapped on:
-// corrections.tracks() puts the tid in `blocked`, and `blocked` is subtracted from the
-// pins, so the flag deletes every team label on that track. A curator has no way to see
-// that from here -- the other boxes are in other frames, and they go on showing their
-// green ticks afterwards.
+// THE GUARD. "Not a robot" on a track labelled with a team elsewhere now SPLITS the track
+// between the two (corrections.cuts_from) rather than deleting the team labels -- the
+// right reading when the detector sat on a volunteer and then followed a robot. The
+// warning stays for the mistake that once cost 15 of qm24's 16 errors: flagging a SECOND
+// box on a robot already named, which should get that team instead.
 //
-// So it asks once, naming what would be lost, and a second tap goes through. This is the
-// same shape as leaveArmed: a guard against doing it by accident, not a lock. A curator
-// who genuinely means "that long track is a referee" is still one extra tap away.
+// So it asks once, and a second tap goes through: a guard, not a lock.
+// "CAN'T TELL" ASKS WHAT CAN BE TOLD. The row swaps for four choices in the same space:
+// the bumper colour (narrows the robot to three teams; the solver weighs it well above
+// the camera's colour call), "multiple" (one box over several robots -- the solver's
+// `mixed`, which had no button until now), or plain can't tell. Nothing is recorded
+// until one is picked; changing box or frame puts the normal row back.
+function showUnkRow(on) {
+  $('#unkRow').hidden = !on;
+  $('#flagRow').hidden = !!on;
+  if (on) $('#hint').textContent = 'Can’t read it — bumper colour? more than one robot?';
+}
+document.querySelectorAll('#unkRow button').forEach(b => {
+  b.onclick = () => {
+    const k = b.dataset.unk;
+    showUnkRow(false);
+    flagArmed = null;
+    assign(k === 'mixed' ? { mixed: true }
+         : (k === 'red' || k === 'blue') ? { unknown: true, alliance: k }
+         : { unknown: true });
+  };
+});
+
 let flagArmed = null;          // tid currently warned about, as a string, or null
-document.querySelectorAll('.flags button').forEach(b => {
+document.querySelectorAll('#flagRow button').forEach(b => {
   b.onclick = () => {
     const flag = b.dataset.flag;
+    if (flag === 'unknown') {
+      if (SEL === null) { $('#hint').textContent = 'Tap a box first.'; return; }
+      flagArmed = null;
+      showUnkRow(true);
+      return;
+    }
     if (flag !== 'notrobot') {
       flagArmed = null;
       assign(flag === 'clear' ? 'clear' : { [flag]: true });
@@ -1160,15 +1575,16 @@ document.querySelectorAll('.flags button').forEach(b => {
       flagArmed = String(d.tid);
       const teams = [...new Set(had)];
       const box = $('#ovl');
-      box.classList.add('stop');
+      box.classList.add('stop'); box.classList.remove('open');
+      // The ACTION leads, so the folded one-line banner is enough to act on.
       $('#ovlText').innerHTML =
-        `<b>This would delete ${had.length} answer${had.length > 1 ? 's' : ''} you `
-        + `already gave.</b> Box ${SEL + 1} belongs to a track you labelled `
-        + `<b>${teams.join(' / ')}</b> elsewhere. “Not a robot” applies to the `
-        + `whole track, so those labels go with it.<br>`
+        `<b>Tap “not a robot” again to split this track.</b> `
+        + `It is labelled ${teams.join(' / ')} elsewhere. `
+        + `“Not a robot” here splits that track: this stretch is dropped, and the `
+        + `stretch you labelled keeps its team. Right when the box sat on a person or `
+        + `field element for a while and then moved onto a robot.<br>`
         + `If this is a second box on a robot you have already named, give it that team `
-        + `instead — the solver merges duplicates. Tap “not a robot” again `
-        + `only if it really is a referee or a field element.`;
+        + `instead — the solver merges duplicates.`;
       box.hidden = false;
       return;
     }
@@ -1227,7 +1643,7 @@ function swipeNote(txt) {
   const h = $('#swipeHint');
   if (!h) return;
   h.style.display = (txt || swipeShown) ? 'block' : 'none';
-  h.textContent = txt || 'swipe the image left or right to change box';
+  h.textContent = txt || 'tap to enlarge · swipe to change box';
 }
 
 function selectBox(i) {
@@ -1246,6 +1662,15 @@ function selectBox(i) {
     swX = swY = null;
     if (x0 === null || SEL === null || !DOC) return;
     const dx = e.clientX - x0, dy = e.clientY - y0;
+    // A TAP (barely moved) opens the close-up full size. The bundle's own crop when the
+    // box has one -- full resolution -- else what the canvas is showing.
+    if (Math.hypot(dx, dy) < 10) {
+      const d = frame().dets[SEL];
+      let src = d?.crop || null;
+      if (!src) { try { src = $('#zoom').toDataURL('image/jpeg', 0.92); } catch { src = null; } }
+      openExpand(src, `box ${SEL + 1} · frame ${frame().f}`);
+      return;
+    }
     if (Math.abs(dx) < SWIPE_MIN_PX || Math.abs(dy) > SWIPE_MAX_OFF_AXIS) return;
     const to = SEL + (dx < 0 ? 1 : -1);
     if (to < 0 || to >= frame().dets.length) {
@@ -1277,17 +1702,44 @@ function drawPips() {
   $('#pips').querySelectorAll('.pip').forEach(p => p.onclick = () => showFrame(Number(p.dataset.i)));
 }
 
+// Answered by the curator (carried answers count: they are theirs from an earlier pass).
+function paintProgress() {
+  if (!DOC) return;
+  const total = DOC.frames.reduce((s, f) => s + f.dets.length, 0);
+  const keys = new Set(DOC.frames.flatMap(f => f.dets.map(d => keyOf(f.f, d.xy))));
+  let mine = 0;
+  for (const [k, a] of ANS) if (a.src === 'human' && keys.has(k)) mine++;
+  const pct = total ? Math.round(100 * mine / total) : 0;
+  const bar = $('#prog');
+  bar.hidden = false;
+  bar.classList.toggle('mid', pct >= 60 && pct < 80);
+  bar.classList.toggle('ok', pct >= 80);
+  $('#progFill').style.width = pct + '%';
+  $('#progText').textContent = `${pct}% answered · ${mine}/${total}`;
+}
+
 function updateCount() {
+  paintProgress();
   const total = DOC.frames.reduce((s, f) => s + f.dets.length, 0);
   let human = 0;
   for (const a of ANS.values()) if (a.src === 'human') human++;
   $('#count').textContent = `${ANS.size}/${total} labelled · ${human} by you`;
+  $('#countTop').textContent = `${ANS.size}/${total} · ${human} by you`;   // phone header
 }
 
 $('#submit').onclick = async () => {
   const { url, tok } = cfg();
   const id = $('#match').value.trim();
-  if (!ANS.size) return say($('#workMsg'), 'Nothing labelled yet.', 'err');
+  const msg = MODE === 'team' ? $('#galMsg') : $('#workMsg');
+  if (!ANS.size) return say(msg, 'Nothing labelled yet.', 'err');
+  // A team with no box from the curator is read by the pipeline as NOT ON THE FIELD
+  // (corrections.absent_teams) and gets no route. Say so before sending, since on a
+  // partial pass it may only mean that robot's tiles were skipped.
+  const named = new Set([...ANS.values()].filter(a => a.src === 'human' && a.team).map(a => String(a.team)));
+  const silent = [...(DOC.teams?.red || []), ...(DOC.teams?.blue || [])].map(String).filter(t => !named.has(t));
+  if (silent.length && !confirm(`No box was given to ${silent.join(', ')}. `
+      + `${silent.length > 1 ? 'They' : 'It'} will be treated as not on the field (a no-show) `
+      + `and get no route.\n\nSend anyway?`)) return;
   // The session block sits BESIDE the labels and never inside them: it is metadata
   // about how the work was done, not a claim about any robot. corrections.load ignores
   // unknown top-level keys, so an older consumer reads this file unchanged.
@@ -1296,10 +1748,13 @@ $('#submit').onclick = async () => {
     schemaVersion: 1,
     video: DOC.video, match: DOC.match,
     createdAt: new Date().toISOString(),
-    session: TIMER.report(),
+    // How many detections the by-team view left unanswered (sent as nothing, i.e. "a
+    // robot, solver decides") -- the gallery's coverage is otherwise invisible.
+    session: { ...TIMER.report(), ...(MODE === 'team' && G
+      ? { unanswered: G.items.filter(it => !isHuman(ANS.get(it.k))).length } : {}) },
     labels: [...ANS.values()],
   };
-  say($('#workMsg'), `Sending ${payload.labels.length} labels…`);
+  say(msg, `Sending ${payload.labels.length} labels…`);
   try {
     const r = await fetch(`${url}/answer/${encodeURIComponent(id)}`, {
       method: 'POST',
@@ -1308,7 +1763,7 @@ $('#submit').onclick = async () => {
     });
     const d = await r.json().catch(() => ({}));
     if (r.status === 401) {
-      return say($('#workMsg'), needToken(
+      return say(msg, needToken(
         'This relay requires a device token to accept answers. Enter it in setup, then send again.'), 'err');
     }
     if (!r.ok) throw new Error(d.error || `HTTP ${r.status}`);
@@ -1321,11 +1776,394 @@ $('#submit').onclick = async () => {
     // again; restarting the timer on the first send would report the second pass as
     // the whole cost of the match. It is cleared when a new match is loaded.
     paintClock();
-    say($('#workMsg'), `Sent ${payload.labels.length} labels for ${id}. You can keep editing and send again, or go Back.`, 'ok');
+    say(msg, `Sent ${payload.labels.length} labels for ${id}. You can keep editing and send again, or go Back.`, 'ok');
     $('#backBtn').style.background = '#16803c';
     $('#backBtn').style.borderColor = '#16803c';
-  } catch (e) { say($('#workMsg'), 'Send failed:\n' + e.message, 'err'); }
+  } catch (e) { say(msg, 'Send failed:\n' + e.message, 'err'); }
 };
+
+// ── by team (gallery) ───────────────────────────────────────────────────
+// Frame by frame asks about six robots in rotation: every box is a fresh "which of the
+// six is this?", and confirming the machine's guess measured no faster than overriding
+// it (both 1.23 s median over 9,124 answers), so the time goes into recognising, not
+// tapping. This turns it around -- hold ONE robot in mind, pick out every tile of it,
+// then move on to the next. Same labels, same draft, same submit; each one is tagged
+// aid:['gallery'] so the two workflows can be compared on real matches.
+//
+// THE GRID DOES NOT MOVE UNDER A TAP. An assigned tile stays where it is, greyed, until
+// the team changes; only then does the grid close up. Collapsing on every tap slid the
+// next tile under a thumb already on its way down, which is a wrong label at speed.
+const MODE_KEY = 'rtrackMode', GSIZE_KEY = 'rtrackGalSize';
+const G_SIZES = [76, 92, 110, 132, 160];
+let MODE = 'frame';
+try { if (localStorage.getItem(MODE_KEY) === 'team') MODE = 'team'; } catch { }
+let G_SIZE = 2;
+try { const r = localStorage.getItem(GSIZE_KEY), v = Number(r); if (r !== null && v >= 0 && v < G_SIZES.length) G_SIZE = v; } catch { }
+let G = null;            // { items, byKey } for the loaded DOC
+let BRUSH = null;        // a team number, or notrobot | unknown | unk:red | unk:blue | mixed
+let G_T0 = 0;            // last gallery action; per-label ms is the gap since it
+let G_UNDO = [];         // [{ k, prev }] newest last
+let G_KEEP = new Set();  // answered since the last re-layout: still drawn, greyed
+let G_SHOW_DONE = false; // the folded "frame already has this team" section, opened
+// LEFTOVERS: every unanswered tile in one grid that does NOT re-sort when the team
+// changes. The per-team view re-lays the grid out on every switch, which is right while
+// sweeping a team but wrong for the last stragglers: spotting a 6665 among them, picking
+// 6665 and having the whole grid rearrange lost the tile that prompted the switch.
+// Whatever is still unanswered at the end is simply not written -- the solver treats it
+// as a robot and decides which. It is NOT sent as "can't tell": that is a real answer to
+// the solver, which cuts a track where it meets a team label (corrections.cuts_from), and
+// 28 of the 66 tiles left in the first four gallery matches sat on tracks named elsewhere.
+let G_LEFT = false;
+const brushName = b => /^\d/.test(b) ? b : ({ notrobot: 'not a robot', mixed: 'multiple robots',
+  unknown: "can't tell", 'unk:red': "red, can't read", 'unk:blue': "blue, can't read" })[b];
+
+function setMode(m) {
+  MODE = m === 'team' ? 'team' : 'frame';
+  try { localStorage.setItem(MODE_KEY, MODE); } catch { }
+  $('#modeBtn').textContent = MODE === 'team' ? 'By frame' : 'By team';
+  if (!DOC || !$('#setup').hidden) return;
+  $('#work').hidden = MODE === 'team';
+  $('#gal').hidden = MODE !== 'team';
+  if (MODE === 'team') galStart();
+  else { showFrame(FI); }
+}
+$('#modeBtn').onclick = () => setMode(MODE === 'team' ? 'frame' : 'team');
+
+const G_TEAMS = () => [...(DOC.teams?.red || []), ...(DOC.teams?.blue || [])].map(String);
+const teamAlliance = t => (DOC.teams?.red || []).map(String).includes(String(t)) ? 'red' : 'blue';
+
+function galStart() {
+  const items = [];
+  for (const f of DOC.frames) {
+    carryFrame(f);
+    for (const d of f.dets) items.push({ k: keyOf(f.f, d.xy), f: f.f, t: f.t ?? 0, d });
+  }
+  G = { items, byKey: new Map(items.map(it => [it.k, it])) };
+  G_KEEP = new Set(); G_UNDO = []; G_T0 = Date.now(); G_SHOW_DONE = false; G_LEFT = false;
+  if (!BRUSH || !(G_TEAMS().includes(BRUSH) || !/^\d/.test(BRUSH))) BRUSH = G_TEAMS()[0] || 'notrobot';
+  $('#gGrid').style.setProperty('--gt', G_SIZES[G_SIZE] + 'px');
+  galChips(); galRender();
+}
+
+const isHuman = a => a && a.src === 'human';
+
+// The value a brush writes, in the same shapes the frame view writes.
+function brushVal(b) {
+  if (b === 'notrobot') return { notrobot: true };
+  if (b === 'mixed') return { mixed: true };
+  if (b === 'unknown') return { unknown: true };
+  if (b === 'unk:red' || b === 'unk:blue') return { unknown: true, alliance: b.slice(4) };
+  return { team: String(b) };
+}
+function sameVal(a, b) {
+  if (!isHuman(a)) return false;
+  const v = brushVal(b);
+  return (v.team && String(a.team) === v.team) || (v.notrobot && a.notrobot)
+      || (v.mixed && a.mixed)
+      || (v.unknown && a.unknown && (a.alliance || null) === (v.alliance || null));
+}
+function badge(a) {
+  if (!a) return '';
+  if (a.team) return a.team;
+  if (a.notrobot) return '✕';
+  if (a.mixed) return '2+';
+  return a.alliance ? `? ${a.alliance}` : '?';
+}
+
+// Frames in which a human has already named this team: a robot is in a frame once, so
+// nothing else there can be it.
+function framesWith(team) {
+  const s = new Set();
+  for (const it of G.items) {
+    const a = ANS.get(it.k);
+    if (isHuman(a) && String(a.team) === String(team)) s.add(it.f);
+  }
+  return s;
+}
+
+function galChips() {
+  const n = DOC.frames.length;
+  $('#gTeams').innerHTML = G_TEAMS().map(t => {
+    const got = framesWith(t).size;
+    return `<button class="team ${teamAlliance(t)}${BRUSH === t ? ' on' : ''}" data-b="${t}">`
+      + `${t}<small>${got}/${n}</small></button>`;
+  }).join('');
+  $('#gTeams').querySelectorAll('button').forEach(b => b.onclick = () => setBrush(b.dataset.b));
+  const unkOn = /^unk|^unknown$|^mixed$/.test(BRUSH);
+  $('#gFlags').hidden = unkOn; $('#gUnk').hidden = !unkOn;
+  document.querySelectorAll('#gFlags button, #gUnk button').forEach(b =>
+    b.classList.toggle('on', b.dataset.b === BRUSH));
+  let left = 0, mine = 0;
+  for (const it of G.items) { if (isHuman(ANS.get(it.k))) mine++; else left++; }
+  const lb = $('#gLeftBtn');
+  lb.textContent = G_LEFT ? '‹ by team' : `leftovers · ${left}`;
+  lb.classList.toggle('on', G_LEFT);
+  $('#gCount').textContent = `${left} left · ${mine} yours`;
+  paintProgress();
+  $('#countTop').textContent = `${left} left · ${mine} yours`;
+  $('#gUndo').disabled = !G_UNDO.length;
+}
+
+function setBrush(b) {
+  if (b === 'leftovers') {
+    G_LEFT = !G_LEFT;
+    // Leftovers are mostly people, laptops and half-hidden robots: start on "not a robot"
+    // unless a team is already in hand.
+    if (G_LEFT && !/^\d/.test(BRUSH)) BRUSH = 'notrobot';
+    G_KEEP = new Set(); G_SHOW_DONE = false;
+    galChips(); galRender();
+    $('#gGrid').scrollTop = 0; if (innerWidth > 700) scrollTo({ top: 0 });
+    return;
+  }
+  if (b === 'unkmenu') { BRUSH = 'unknown'; }
+  else if (b === 'unkback') { BRUSH = G_TEAMS()[0]; }
+  else BRUSH = b;
+  // In leftovers the grid stays exactly where it is; only the brush changes.
+  if (G_LEFT) { galChips(); galRef(); galDim(); return; }
+  G_KEEP = new Set(); G_SHOW_DONE = false;       // a new team is the moment to close up
+  galChips(); galRender();
+  $('#gGrid').scrollTop = 0; if (innerWidth > 700) scrollTo({ top: 0 });
+}
+document.querySelectorAll('#gFlags button, #gUnk button').forEach(b =>
+  b.onclick = () => setBrush(b.dataset.b));
+
+// SECTIONS, most likely first, so the tiles to tap come in a run at the top:
+//   likely   -- a track the CURATOR already named this team (another tile of a track you
+//               named agreed with you 89% of the time, 2,750 of 3,080)
+//   alliance -- same bumper colour (the detector's colour call is right ~97% of the time)
+//   other    -- the other alliance
+//   done     -- frames that already have this team; folded away
+// Within a section, tiles of one track sit together in time order, so a run of the same
+// robot reads as a run.
+//
+// The machine's guess plays NO part in the order. It was right on 39-54% of 2026gal
+// answers, so a "likely 8069" section built on it was half other robots and had to be
+// read tile by tile anyway -- worse than no section, because it looked like a shortcut.
+function galSections() {
+  const pool = G.items.filter(it => !isHuman(ANS.get(it.k)) || G_KEEP.has(it.k));
+  const isTeam = /^\d/.test(BRUSH);
+  const tidTeams = new Map();      // tid -> Set of teams a human gave it
+  for (const it of G.items) {
+    const a = ANS.get(it.k);
+    if (isHuman(a) && a.team) {
+      if (!tidTeams.has(it.d.tid)) tidTeams.set(it.d.tid, new Set());
+      tidTeams.get(it.d.tid).add(String(a.team));
+    }
+  }
+  const tidFirst = new Map();
+  for (const it of G.items) if (!tidFirst.has(it.d.tid) || it.t < tidFirst.get(it.d.tid)) tidFirst.set(it.d.tid, it.t);
+  const order = (x, y) => (tidFirst.get(x.d.tid) - tidFirst.get(y.d.tid)) || (x.d.tid - y.d.tid) || (x.t - y.t);
+  const secs = { likely: [], alliance: [], other: [], done: [], left: [] };
+  if (G_LEFT) { secs.left = pool.sort(order); return secs; }
+  if (isTeam) {
+    const A = teamAlliance(BRUSH), has = framesWith(BRUSH);
+    for (const it of pool) {
+      const a = ANS.get(it.k);
+      const mineHere = isHuman(a) && String(a.team) === BRUSH;
+      const named = tidTeams.get(it.d.tid);
+      if (has.has(it.f) && !mineHere && !G_KEEP.has(it.k)) secs.done.push(it);
+      else if (named && named.has(BRUSH)) secs.likely.push(it);
+      else if (!it.d.alliance || it.d.alliance === A) secs.alliance.push(it);
+      else secs.other.push(it);
+    }
+  } else {
+    const A = BRUSH.startsWith('unk:') ? BRUSH.slice(4) : null;
+    for (const it of pool) {
+      if (A) (it.d.alliance === A ? secs.alliance : secs.other).push(it);
+      else secs.alliance.push(it);
+    }
+  }
+  for (const k in secs) secs[k].sort(order);
+  return secs;
+}
+
+function galRender() {
+  const grid = $('#gGrid');
+  const s = galSections();
+  const isTeam = /^\d/.test(BRUSH);
+  const name = brushName(BRUSH);
+  if (G_LEFT) {
+    grid.innerHTML = s.left.length
+      ? `<div class="gsec" title="Anything left unanswered is sent as a robot the solver identifies">`
+        + `Leftovers · ${s.left.length} · unanswered = unknown robot</div>`
+        + s.left.map(it => tileHtml(it)).join('')
+      : `<div class="empty">No leftovers. Submit when ready.</div>`;
+    grid.querySelectorAll('.gt').forEach(wireTile);
+    galRef(); galDim();
+    return;
+  }
+  const title = {
+    likely: `Tracks you named ${name}`,
+    alliance: isTeam ? `${teamAlliance(BRUSH) === 'red' ? 'Red' : 'Blue'} alliance` : (BRUSH.startsWith('unk:') ? `${BRUSH.slice(4)} bumpers` : 'All unanswered'),
+    other: isTeam ? `${teamAlliance(BRUSH) === 'red' ? 'Blue' : 'Red'} alliance` : 'Other colour',
+  };
+  let html = '';
+  for (const k of ['likely', 'alliance', 'other']) {
+    if (!s[k].length) continue;
+    html += `<div class="gsec">${title[k]} · ${s[k].length}</div>` + s[k].map(it => tileHtml(it)).join('');
+  }
+  if (s.done.length) {
+    html += `<div class="gsec">${s.done.length} in frames that already have ${name}`
+      + `<button id="gDoneT">${G_SHOW_DONE ? 'hide' : 'show'}</button></div>`;
+    if (G_SHOW_DONE) html += s.done.map(it => tileHtml(it, true)).join('');
+  }
+  if (!html) {
+    const left = G.items.filter(it => !isHuman(ANS.get(it.k))).length;
+    html = `<div class="empty">${left ? `Nothing left for ${name} — pick another team, or open leftovers.`
+      : 'Every detection has an answer. Submit when ready.'}</div>`;
+  }
+  grid.innerHTML = html;
+  const dt = $('#gDoneT');
+  if (dt) dt.onclick = () => { G_SHOW_DONE = !G_SHOW_DONE; galRender(); };
+  grid.querySelectorAll('.gt').forEach(wireTile);
+  galRef(); galDim();
+}
+
+function tileHtml(it, dim = false) {
+  const d = it.d, a = ANS.get(it.k);
+  const got = isHuman(a);
+  const cs = d.cropSize, cb = d.cropBox;
+  const box = Array.isArray(cs) && Array.isArray(cb)
+    ? `<svg viewBox="0 0 ${cs[0]} ${cs[1]}" preserveAspectRatio="xMidYMid meet">`
+      + `<rect x="${cb[0]}" y="${cb[1]}" width="${cb[2] - cb[0]}" height="${cb[3] - cb[1]}" `
+      + `fill="none" stroke="#f59e0b" stroke-width="2" vector-effect="non-scaling-stroke"/></svg>` : '';
+  return `<div class="gt ${d.alliance || ''}${got ? ' got' : ''}${dim ? ' dim' : ''}" data-k="${it.k}">`
+    + (d.crop ? `<img src="${d.crop}" alt="" loading="lazy" decoding="async">` : '')
+    + box + `<span class="gb">${got ? badge(a) : ''}</span>`
+    + `<span class="gtm">${Math.round(it.t)}s</span></div>`;
+}
+
+// Tap assigns; tap an answered tile with the same team to take it back; long-press opens
+// the crop full size (a request to LOOK, so it never also answers).
+function wireTile(el) {
+  let timer = null, fired = false, x0 = 0, y0 = 0;
+  el.addEventListener('pointerdown', e => {
+    fired = false; x0 = e.clientX; y0 = e.clientY;
+    timer = setTimeout(() => {
+      fired = true;
+      const it = G.byKey.get(el.dataset.k);
+      if (it?.d.crop) openExpand(it.d.crop, `t${Math.round(it.t)}s · frame ${it.f}`);
+    }, REF_HOLD_MS);
+  });
+  const cancel = () => { if (timer) { clearTimeout(timer); timer = null; } };
+  el.addEventListener('pointermove', e => { if (Math.hypot(e.clientX - x0, e.clientY - y0) > 8) cancel(); });
+  el.addEventListener('pointerup', cancel);
+  el.addEventListener('pointercancel', cancel);
+  el.addEventListener('pointerleave', cancel);
+  el.addEventListener('contextmenu', e => e.preventDefault());
+  el.addEventListener('click', () => { if (fired) { fired = false; return; } galTap(el.dataset.k); });
+}
+
+function galTap(k) {
+  const it = G.byKey.get(k);
+  if (!it) return;
+  const prev = ANS.get(k);
+  const now = Date.now();
+  if (sameVal(prev, BRUSH)) {
+    ANS.delete(k);                                   // a second tap takes it back
+  } else {
+    ANS.set(k, {
+      f: it.f, xy: it.d.xy, ...brushVal(BRUSH), src: 'human',
+      was: it.d.team ? String(it.d.team) : null,
+      ms: Math.min(now - G_T0, 120000),
+      aid: ['gallery'],
+    });
+    G_KEEP.add(k);
+  }
+  G_T0 = now;
+  G_UNDO.push({ k, prev });
+  if (G_UNDO.length > 200) G_UNDO.shift();
+  galAfter([k]);
+}
+
+function galAfter(keys) {
+  DRAFT.save(DOC?.match, ANS);
+  TIMER.tick(DOC?.match);
+  SENT = false;
+  for (const k of keys) {
+    const el = document.querySelector(`.gt[data-k="${k}"]`);
+    if (!el) continue;
+    const a = ANS.get(k);
+    el.classList.toggle('got', isHuman(a));
+    el.querySelector('.gb').textContent = isHuman(a) ? badge(a) : '';
+  }
+  galDim();
+  if (/^\d/.test(BRUSH)) galRef();
+  galChips();
+}
+
+// In place, never moving a tile, for the current team:
+//   dim  -- shares a frame with a tile already given it; a robot is in a frame once.
+//   mate -- on a track you have given it elsewhere, so it is very likely the same robot.
+//           This is the live form of the "tracks you named" section, which can only
+//           re-sort on a change of team.
+function galDim() {
+  const team = /^\d/.test(BRUSH) ? BRUSH : null;
+  const has = team ? framesWith(team) : new Set();
+  const tids = new Set();
+  if (team) for (const it of G.items) {
+    const a = ANS.get(it.k);
+    if (isHuman(a) && String(a.team) === team) tids.add(it.d.tid);
+  }
+  document.querySelectorAll('#gGrid .gt').forEach(el => {
+    const it = G.byKey.get(el.dataset.k), a = ANS.get(el.dataset.k);
+    const mine = isHuman(a) && String(a.team) === team;
+    const dim = !!team && has.has(it.f) && !mine;
+    el.classList.toggle('dim', dim);
+    el.classList.toggle('mate', !!team && !dim && !isHuman(a) && tids.has(it.d.tid));
+  });
+}
+
+$('#gUndo').onclick = () => {
+  const u = G_UNDO.pop();
+  if (!u) return;
+  if (u.prev) ANS.set(u.k, u.prev); else ANS.delete(u.k);
+  G_KEEP.add(u.k);
+  if (document.querySelector(`.gt[data-k="${u.k}"]`)) galAfter([u.k]);
+  else { galAfter([]); galRender(); }
+};
+
+// What this team looks like: tiles already given it in this match, then confirmed crops
+// from earlier matches. The template the eye matches against, always in view.
+function galRef() {
+  const el = $('#gRef');
+  // Fixed height and shown for every team, so updating it after a pick never moves the
+  // grid below it -- only a change of brush (a re-layout anyway) can hide it.
+  // In leftovers it stays up for every brush, since there the grid must not move at all.
+  el.hidden = !/^\d/.test(BRUSH) && !G_LEFT;
+  if (el.hidden) { el.innerHTML = ''; return; }
+  if (!/^\d/.test(BRUSH)) {
+    el.innerHTML = `<span class="glab" style="max-width:none"><b>${brushName(BRUSH)}</b><br>`
+      + `tap the tiles it applies to</span>`;
+    return;
+  }
+  const mine = G.items.filter(it => { const a = ANS.get(it.k); return isHuman(a) && String(a.team) === BRUSH && it.d.crop; })
+    .sort((x, y) => (y.d.leg ?? 0) - (x.d.leg ?? 0)).slice(0, 4).map(it => it.d.crop);
+  const refs = ((DOC.teamRefs || {})[BRUSH] || []).map(r => r.crop).filter(Boolean);
+  const earlier = ((DOC.matchRefs || {})[BRUSH] || []).map(r => r.crop).filter(Boolean);
+  const imgs = [...earlier, ...mine, ...refs].slice(0, 8);
+  el.innerHTML = `<span class="glab"><b style="color:var(--${teamAlliance(BRUSH)})">${BRUSH}</b><br>`
+    + `${imgs.length ? 'looks like' : 'no reference yet'}</span>`
+    + imgs.map(src => `<img src="${src}" alt="reference crop of ${BRUSH}">`).join('');
+  el.querySelectorAll('img').forEach(im => im.onclick = () => openExpand(im.src, `team ${BRUSH}`));
+}
+
+function galResize(step) {
+  G_SIZE = Math.max(0, Math.min(G_SIZES.length - 1, G_SIZE + step));
+  try { localStorage.setItem(GSIZE_KEY, String(G_SIZE)); } catch { }
+  $('#gGrid').style.setProperty('--gt', G_SIZES[G_SIZE] + 'px');
+}
+$('#gSmaller').onclick = () => galResize(-1);
+$('#gBigger').onclick = () => galResize(1);
+$('#gSubmit').onclick = () => $('#submit').click();
+
+// Desktop: 1-6 pick a team, z undoes.
+addEventListener('keydown', e => {
+  if (MODE !== 'team' || $('#gal').hidden || e.target.tagName === 'INPUT') return;
+  const n = Number(e.key);
+  if (n >= 1 && n <= G_TEAMS().length) setBrush(G_TEAMS()[n - 1]);
+  else if (e.key === 'z' || e.key === 'Z') $('#gUndo').click();
+});
 
 // ── deep link ───────────────────────────────────────────────────────────
 // The app links here with everything already filled in, so a curator never types a
@@ -1334,11 +2172,11 @@ $('#submit').onclick = async () => {
 (function deepLink() {
   const q = new URLSearchParams(location.search || location.hash.replace(/^#/, '?'));
   const relay = q.get('relay'), token = q.get('token'), id = q.get(ID_PARAM);
-  if (relay) { $('#relay').value = relay; localStorage.setItem('rtrackRelay', relay); }
+  if (relay && !BAKED_RELAY) { $('#relay').value = relay; localStorage.setItem('rtrackRelay', relay); }
   if (token) { $('#token').value = token; localStorage.setItem('rtrackToken', token);
                $('#tokRow').hidden = false; }
   if (id) { $(ID_FIELD).value = id; }
-  if (relay && id) $('#load').click();     // straight to work
+  if ((relay || BAKED_RELAY) && id) $('#load').click();     // straight to work
 })();
 </script>
 </body>

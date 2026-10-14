@@ -173,13 +173,40 @@ def calib_for(key: str, calib_from: str | None, event: str | None) -> str:
     return own
 
 
-def finish(key: str, calib_from: str | None, event: str | None) -> bool:
+MERGED_PATH = C.OUT_DIR / "watch_merged.json"
+
+
+def _merged() -> dict:
+    try:
+        return json.loads(MERGED_PATH.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {}
+
+
+def finish(key: str, calib_from: str | None, event: str | None, at: float = 0.0) -> bool:
     """Pull the answer, then run the match to publication."""
     print(f"\n[watch] {key}: answers are newer than what is on disk -- processing")
-    a = [PY, "-m", "rtrack.relay", "wait-answer", key, "--timeout", "30"]
-    if subprocess.run(a).returncode != 0:
-        print(f"[watch] {key}: could not fetch the answer")
-        return False
+    # PULL AN ANSWER ONCE, however many times the pipeline has to be retried. The pull
+    # merges into the corrections file and makes that a new curation ROUND, so a retry
+    # that pulled again re-merged the same answer every poll while another match held
+    # the event lock: 2026gal_qm2 went to round 15 in five minutes, a backup per pass,
+    # and 2026necmp1_qm44 and 2026mawor_qm20 had done the same before. Rounds are what
+    # "newest curation wins" compares, so they must count answers, not retries.
+    merged = _merged()
+    if at and merged.get(key, 0.0) >= at and \
+            (C.TRACKER_ROOT / "corrections" / f"{key}_corrections.json").exists():
+        print(f"[watch] {key}: this answer is already merged -- re-running the pipeline only")
+    else:
+        a = [PY, "-m", "rtrack.relay", "wait-answer", key, "--timeout", "30"]
+        if subprocess.run(a).returncode != 0:
+            print(f"[watch] {key}: could not fetch the answer")
+            return False
+        if at:
+            merged[key] = at
+            try:
+                MERGED_PATH.write_text(json.dumps(merged, indent=1), encoding="utf-8")
+            except OSError:
+                pass
     own_event = key.split("_", 1)[0]
     cf = calib_for(key, calib_from, event)
     if cf != (calib_from or own_event):
@@ -264,8 +291,8 @@ def main(argv=None) -> int:
             todo = []
         if todo:
             seen_quiet = False
-            for key, _ in todo:
-                finish(key, args.calib_from, args.event)
+            for key, at in todo:
+                finish(key, args.calib_from, args.event, at)
         # Route answers have priority: a gallery answer can wait, while a newly
         # curated live match is the latency-sensitive deliverable.
         try:

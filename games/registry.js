@@ -12,7 +12,7 @@ const GAME_REGISTRY = {
 };
 
 // Merged event sources from all registered game configs.
-// Keyed by event key (e.g. '2025necmp2'). Each value: { url?, pitUrl?, columnOverrides? }
+// Keyed by event key (e.g. '2025necmp2'). Each value: { url?, pitUrl?, columnOverrides?, rowAdapter? }
 export const EVENT_SOURCES = Object.values(GAME_REGISTRY)
     .reduce((acc, config) => ({ ...acc, ...(config.eventSources || {}) }), {});
 
@@ -36,7 +36,10 @@ export function processScoutingData(eventKey, rawRows, columnOverrides = {}) {
     if (!config) return null;
 
     const colMap = resolveColumnMap(config, columnOverrides);
-    const observations = rawRows
+    // A sheet from another scouting system is translated into this game's columns first
+    // (eventSources[key].rowAdapter), so everything downstream reads one format.
+    const adapt = EVENT_SOURCES[eventKey]?.rowAdapter;
+    const observations = (adapt ? rawRows.map(adapt) : rawRows)
         .map(row => config.processRow(row, colMap))
         .filter(r => r.teamNumber);
 

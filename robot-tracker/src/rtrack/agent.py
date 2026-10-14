@@ -275,10 +275,97 @@ def pending_jobs(agent_id: str) -> list[dict]:
             # `followup` request.
             continue
         rec = ledger.get(it.get("id") or "") or None
-        if rec and rec.get("state") in ("done", "failed", "superseded"):
+        if rec and rec.get("state") in ("done", "failed", "superseded", "dropped", "cancelled"):
             continue
         out.append(it)
     return sorted(out, key=lambda it: it.get("at") or 0)
+
+
+def process_cancellations(agent_id: str) -> bool:
+    """Carry out every job the app has marked cancelled. Returns whether anything changed.
+
+    The app can only re-post a job with `cancelled: true` -- its control token cannot
+    delete anything -- so the cleanup is done here, with the full token. For a `process`
+    job that means its UNANSWERED FIRST-ROUND bundles too: the outstanding cap counts every
+    unanswered bundle on the relay, so a cancelled job's leftovers would keep blocking any
+    other event's job. (2026necmp1 qm51-qm60 held all 10 slots against a 2026mawor
+    request.) Follow-ups are kept: a person asked for each one. Nothing local is touched,
+    so a later request for the same range picks up where this one stopped.
+
+    The job itself is deleted LAST, so a bundle delete that fails leaves the cancellation
+    listed and the next poll tries again.
+    """
+    url, _ = R._env()
+    import requests
+    r = requests.get(f"{url}/index", timeout=60)
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    bundles = {it.get("id") or "": (it.get("at") or 0) / 1000.0
+               for it in items if it.get("kind") == "bundle"}
+    answers = {it.get("id") or "": (it.get("at") or 0) / 1000.0
+               for it in items if it.get("kind") == "answer"}
+    changed = False
+    for it in items:
+        if it.get("kind") != "job" or not it.get("cancelled"):
+            continue
+        if it.get("agentId") not in (None, "", agent_id):
+            continue
+        job_id = it.get("id") or ""
+        freed, failed = [], False
+        if it.get("jobType") == "process" and it.get("event"):
+            from .replay import parse_matches
+            keys = [f"{it['event']}_{s}" for s in parse_matches(it.get("matches") or "")]
+            for k in keys:
+                at = bundles.get(k)
+                if at is None or answers.get(k, 0.0) > at or _is_followup(k, at):
+                    continue
+                try:
+                    R.delete("bundle", k)
+                    freed.append(k)
+                except Exception as exc:          # noqa: BLE001
+                    failed = True
+                    print(f"[agent] cancel {job_id[:8]}: could not remove bundle {k} "
+                          f"({type(exc).__name__}: {exc})", flush=True)
+        if failed:
+            continue
+        try:
+            R.delete("job", job_id)
+        except Exception as exc:                  # noqa: BLE001
+            print(f"[agent] cancel {job_id[:8]}: could not remove the job "
+                  f"({type(exc).__name__}: {exc})", flush=True)
+            continue
+        jobs = _load_jobs()
+        prev = jobs.get(job_id) or {}
+        jobs[job_id] = {"state": "cancelled", "type": it.get("jobType") or prev.get("type"),
+                        "event": it.get("event") or prev.get("event"),
+                        "done": prev.get("done"), "total": prev.get("total"),
+                        "freed": len(freed), "finishedAt": _now_iso()}
+        _save_jobs(jobs)
+        print(f"[agent] job {job_id[:8]}: cancelled"
+              + (f", {len(freed)} unanswered bundle(s) removed" if freed else ""), flush=True)
+        changed = True
+    return changed
+
+
+def retire_vanished(pending: list[dict]) -> None:
+    """Close ledger entries still marked running whose job the relay no longer lists.
+
+    A job leaves the relay by expiring, being cancelled or being deleted. Supersede only
+    sees jobs still listed, so such an entry stayed "running" forever, and the app drew
+    its full per-match breakdown next to the live job's: 2026necmp1 had f8c89302 from
+    2026-10-04 shown beside the identical f3279c1e that replaced it. Called only with a
+    pending list from a successful /index read, so a relay outage retires nothing.
+    """
+    live = {it.get("id") for it in pending}
+    ledger = _load_jobs()
+    gone = [k for k, v in ledger.items()
+            if not k.startswith("_") and v.get("state") == "running" and k not in live]
+    for k in gone:
+        ledger[k].update({"state": "dropped", "finishedAt": _now_iso(),
+                          "error": "no longer on the relay (expired or cancelled)"})
+        print(f"[agent] job {k[:8]}: no longer on the relay, closed", flush=True)
+    if gone:
+        _save_jobs(ledger)
 
 
 def relay_bundle_state() -> tuple[dict, dict]:
@@ -396,6 +483,46 @@ def _curated(match_key: str) -> bool:
         return published.stat().st_mtime + 1 >= corr.stat().st_mtime
     except OSError:
         return False
+
+
+def _bundle_predates_calib(match_key: str, calib_path) -> bool:
+    """Was this match's local bundle built before the camera's current calibration?"""
+    b = _bundle_path(match_key)
+    try:
+        return b.exists() and calib_path.exists() and \
+            b.stat().st_mtime < calib_path.stat().st_mtime - 1
+    except OSError:
+        return False
+
+
+# STALE GUESSES. Bundles are built well ahead of curation -- on 2026gal, qm19's at 13:03
+# and curated at 17:18, by which time eight more matches had been curated -- and a bundle
+# carries the machine's guesses as of the moment it was built. Replayed that way, 2026gal
+# guesses scored 45% (six-team); from a gallery current at curation time, with the head,
+# 64%. So a waiting bundle is re-voted once this many matches of its event have been
+# curated since it was built. Only the next few waiting bundles, a couple per pass: each
+# refresh is a pipeline run from votes, and a bundle twenty matches out will be refreshed
+# again before anyone sees it.
+GUESS_REFRESH_AFTER = 3      # curated matches of the event since the bundle was built
+GUESS_REFRESH_NEXT = 3       # only the lowest-numbered waiting bundles
+GUESS_REFRESH_PER_PASS = 2
+
+
+def _guesses_stale(match_key: str, event: str) -> bool:
+    b = _bundle_path(match_key)
+    try:
+        built = b.stat().st_mtime
+    except OSError:
+        return False
+    n = 0
+    for p in (C.TRACKER_ROOT / "corrections").glob(f"{event}_*_corrections.json"):
+        if p.name.startswith(match_key + "_"):
+            continue
+        try:
+            n += p.stat().st_mtime > built
+        except OSError:
+            pass
+    return n >= GUESS_REFRESH_AFTER
 
 
 def _bundle_path(match_key: str):
@@ -646,6 +773,10 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
     report(f"{len(curated)}/{len(keys)} curated", len(curated), len(keys),
            process_plan(keys, event, bundles, answers, cap, out))
     failed, detected_now, pushed, attempts = [], 0, 0, 0
+    calib_stem = job.get("calibFrom") or event
+    calib_path = C.CALIB_DIR / f"{calib_stem}.json"
+    calib_note: list[str] = []        # report "waiting for calibration" once per pass
+    waiting_rank = refreshed = 0      # see GUESS_REFRESH_NEXT / _PER_PASS
     why: dict[str, dict] = {}         # key -> {stage, reason}, persisted to the ledger below
     fetch_note: dict[str, str] = {}   # key -> why the per-match download failed, if it did
 
@@ -749,24 +880,59 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
                      else "pipeline succeeded but no current route was published")
             continue
 
-        # A bundle already waiting for this match is not re-pushed: that would reset a
-        # curator's 24-hour window and churn the relay for no gain.
-        if bundles.get(key, 0.0) > answers.get(key, 0.0):
+        # NO BUNDLE WITHOUT A CALIBRATION. The pipeline does not stop when the camera has
+        # none -- it skips the off-field filter, field positions and the view check and
+        # builds the bundle anyway -- so 2026gal's first ten bundles went up full of
+        # detections off the field, before anyone had calibrated. Detection above needs no
+        # calibration and carries on; bundling waits for it.
+        if not calib_path.exists():
+            if not calib_note:
+                calib_note.append(key)
+                report(f"waiting for {calib_stem} to be calibrated before bundling "
+                       f"(detection continues)", len(curated), len(keys))
             continue
+
+        # A bundle already waiting for this match is not re-pushed: that would reset a
+        # curator's 24-hour window and churn the relay for no gain -- UNLESS it was built
+        # before the camera's current calibration. Then its off-field filter and positions
+        # were wrong or missing, and the curator would be labelling the wrong boxes; it is
+        # rebuilt in place (no new slot: it already holds one) and replaced on the relay.
+        stale = _bundle_predates_calib(key, calib_path)
+        # ...or its guesses are out of date (see GUESS_REFRESH_AFTER). Rebuilt from the
+        # votes in place, the same way, and the bundle keeps its slot.
+        regues = False
+        if bundles.get(key, 0.0) > answers.get(key, 0.0) and not stale:
+            waiting_rank += 1
+            regues = (waiting_rank <= GUESS_REFRESH_NEXT
+                      and refreshed < GUESS_REFRESH_PER_PASS
+                      and _guesses_stale(key, event))
+            if not regues:
+                continue
+            refreshed += 1
         # AN ANSWER ON THE RELAY means the match is curated and the watcher owns it, even
         # when no corrections file exists yet (the watcher may be waiting on the event
         # lock). Bundling it anyway re-pushed qm49's and qm50's already-answered bundles
         # a minute after the curator sent them, so both read "bundle waiting · re-curate".
         if answers.get(key, 0.0) > 0.0:
             continue
-        if out >= cap or attempts >= attempt_budget:
+        waiting = bundles.get(key, 0.0) > answers.get(key, 0.0)
+        if (out >= cap and not waiting) or attempts >= attempt_budget:
             continue
         attempts += 1
         suffix = key.split("_", 1)[1]
-        report(f"bundling {suffix}", len(curated), len(keys))
+        report(f"{'rebuilding' if stale else 'refreshing guesses for' if regues else 'bundling'} {suffix}"
+               + (f" (built before the {calib_stem} calibration)" if stale else "")
+               + (f" ({GUESS_REFRESH_AFTER}+ matches curated since it was built)" if regues else ""),
+               len(curated), len(keys))
         a = [PY, "-m", "rtrack.pipeline", key, "--match", key, "--event", event]
         if job.get("calibFrom"):
             a += ["--calib-from", job["calibFrom"]]
+        if stale:
+            # From the first step that uses the calibration: field positions, the solve
+            # (whose off-field filter reads it), the view check and the bundle itself.
+            a += ["--from", "prepos"]
+        elif regues:
+            a += ["--from", "votes"]
         # Logged like every other step. This one used to run bare and strike with no
         # reason, which is how 2026necmp1 qm45-qm65 were set aside with nothing to say why.
         rc, btail = _run_logged(a, cwd=C.TRACKER_ROOT)
@@ -785,6 +951,19 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         # eight such matches out of the event in one night.
         if rc == 0 and (_corrections_exist(key) or _answered_on_relay(key)):
             continue
+        if regues and rc != 0:
+            # A FAILED REFRESH IS NOT A FAILED MATCH. The bundle already waiting on the
+            # relay is intact and curatable; striking here set 2026gal_qm26 aside after a
+            # pipeline check added since its bundle was built refused the rerun three
+            # times. Keep the old guesses and leave the match alone until GUESS_REFRESH_AFTER
+            # more matches are curated -- touching the bundle restarts that count.
+            report(f"guess refresh for {suffix} failed ({failure_reason(btail, rc)}); "
+                   f"keeping its existing bundle", len(curated), len(keys))
+            try:
+                os.utime(bundle)
+            except OSError:
+                pass
+            continue
         if rc != 0 or not bundle.exists():
             fail(key, "bundle", failure_reason(btail, rc) if rc != 0
                  else "pipeline succeeded but wrote no curation bundle")
@@ -801,7 +980,8 @@ def run_process(job: dict, report) -> tuple[int, int, list[str], bool]:
         if prc != 0:
             fail(key, "push", failure_reason(ptail, prc))
             continue
-        out += 1
+        if not waiting:
+            out += 1                              # a replaced bundle already held its slot
         pushed += 1
 
     # Re-read the relay after the pass: bundles pushed a moment ago are part of the
@@ -908,9 +1088,22 @@ def run_calib(job: dict, report) -> tuple[int, int, list[str], bool]:
     if not camera:
         raise RuntimeError("calib job names no camera")
     footage = _camera_footage(camera, job.get("video"))
+    # A NEW EVENT HAS NO CLIP YET, and calibrating is usually the first thing done for one
+    # -- before any match is detected, which is what normally fetches clips. 2026gal was
+    # armed and calibrated with nothing in data/raw, so the request could only fail. The
+    # camera is named for its event, so fetch an early qual match the same way the process
+    # job does (per-match upload if TBA has one, else a slice of the webcast archive).
+    if not footage and re.fullmatch(r"\d{4}[a-z0-9]+", camera):
+        for suffix in ("qm1", "qm2", "qm3"):
+            report(f"no clip for {camera} yet: fetching {suffix} to take the plate from", 0, 1)
+            _run_logged([PY, "-m", "rtrack.replay", camera, "--matches", suffix, "--per-match"],
+                        cwd=C.TRACKER_ROOT)
+            footage = _camera_footage(camera, job.get("video"))
+            if footage:
+                break
     if not footage:
         raise RuntimeError(f"no footage for {camera}: need a clip in data/raw to take "
-                           f"the plate from")
+                           f"the plate from (fetching qm1-qm3 from TBA found none)")
     report(f"building the review bundle for {camera} from {footage}", 0, 1)
     ok, why = publish_calib_bundle(camera, footage)
     if not ok:
@@ -943,12 +1136,201 @@ FOLLOWUP_SNAP_S = 1.0        # a requested moment snaps to the busiest frame thi
 # inspector draws, because the labels must also land AFTER whatever went wrong.
 FOLLOWUP_SPAN_S = 10.0
 FOLLOWUP_PER_FLAG = 3
-JUMP_MIN_MS = 4.5            # the inspector's "fast" line; slower steps are not a jump
-JUMP_PAIR_S = 0.5            # ends closer than this are one moment: show one frame
-JUMP_RUN_GAP_S = 0.5         # a pause this long ends the run of samples at a jump end
+# A JUMP is a step longer than JUMP_BUDGET_MULT x the solver's measured movement envelope
+# for its time gap -- the same test the export uses to break a route ("teleport"). It
+# replaced a flat 4.5 m/s, which a swap between two robots ~2 m apart never reaches: on
+# 132 curated matches, 61 track hand-offs sat between 1.5x and 2x the envelope, and about
+# half of those rendered as genuine swaps between neighbouring robots.
+JUMP_BUDGET_MULT = 1.5
+JUMP_MAX_DT_S = 5.0          # consecutive samples further apart are not one step
+# EACH SIDE OF A JUMP gets its own frames, chosen to be READABLE rather than to sit on
+# the jump itself: the robot at the instant of a hand-off is usually half-hidden behind
+# whatever caused it. The largest, least-overlapped looks within a few seconds either side
+# -- before on the outgoing track, after on the incoming one -- so one answer per side
+# says who each track really was.
+SIDE_FRAMES = 2
+SIDE_WINDOW_S = 4.0
+SIDE_MIN_SEP_S = 0.5
+# ...but CLOSE to the jump. A track that switched robots is the wrong robot only for the
+# last stretch before the jump: 2026gal_qm18's track was 3937 until ~62 s and another
+# robot until 63.7 s, and the clearest looks in the window (60 s, 62 s) both showed 3937 --
+# two correct answers and the switch still uncaught. Clarity is weighted by
+# exp(-|t - jump| / SIDE_DECAY_S), so a frame a second away counts about a third as much.
+SIDE_DECAY_S = 1.0
+# AUTOMATIC FOLLOW-UP: once per curated match, the agent asks about every route
+# hand-off that breaks the envelope and every pair of curator labels the solver found
+# impossible. Same-track teleports are NOT asked about -- rendered, they were projection
+# noise (a few pixels at the far end of the field) or a broadcast camera cut.
+AUTO_FOLLOWUP_KEY = "_autoFollowup"
+AUTO_FOLLOWUP_SINCE = "_autoFollowupSince"
+# Matches curated BEFORE automatic follow-ups existed, queued on request (the backlog is
+# the user's call). Taken in match order at the same one-per-pass pace.
+AUTO_FOLLOWUP_QUEUE = "_autoFollowupQueue"
+AUTO_SKIP_FLAGS = {"offfield", "viewmoved"}
 
 
-def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[str], dict]:
+def _source_of_piece(rows: list[dict]) -> dict[int, int]:
+    """Solver piece id -> the stitched track it was cut from."""
+    out = {}
+    for r in rows:
+        for d in r["dets"]:
+            out.setdefault(int(d["tid"]), int(d.get("source_tid", d.get("orig_tid", d["tid"]))))
+    return out
+
+
+def _team_samples(key: str) -> dict[str, list]:
+    """Per team, (t, f, x, y, piece) from the solved positions, one per frame, time order."""
+    pp = C.STAGE2_DIR / f"{key}_positions.json"
+    out: dict[str, list] = defaultdict(list)
+    if not pp.exists():
+        return out
+    seen = set()
+    for s in json.loads(pp.read_text(encoding="utf-8")).get("samples") or []:
+        if not s.get("team") or (s["team"], s["f"]) in seen:
+            continue
+        if AUTO_SKIP_FLAGS & set(s.get("flags") or []):
+            continue
+        seen.add((s["team"], s["f"]))
+        out[str(s["team"])].append((s["t"], s["f"], s["x"], s["y"], int(s["tid"])))
+    for v in out.values():
+        v.sort()
+    return out
+
+
+def _jumps(samples: list, lo: float = -1e9, hi: float = 1e9, handoff_only: bool = False,
+           src: dict | None = None) -> list[dict]:
+    """Steps in one team's route that break the movement envelope, between lo and hi."""
+    from .solve import distance_budget
+    out = []
+    for a, b in zip(samples, samples[1:]):
+        if not (lo <= a[0] <= hi or lo <= b[0] <= hi):
+            continue
+        dt = b[0] - a[0]
+        if dt <= 0 or dt > JUMP_MAX_DT_S:
+            continue
+        if handoff_only and (src or {}).get(a[4], a[4]) == (src or {}).get(b[4], b[4]):
+            continue
+        d = math.hypot(b[2] - a[2], b[3] - a[3])
+        if d > JUMP_BUDGET_MULT * distance_budget(dt):
+            out.append({"ta": a[0], "tb": b[0], "pa": a[4], "pb": b[4], "d": d, "dt": dt})
+    return out
+
+
+def auto_events(key: str) -> list[dict]:
+    """What an automatic follow-up should ask about for one curated match."""
+    lab = C.STAGE3_DIR / f"{key}_labeled.jsonl"
+    rj = C.STAGE3_DIR / f"{key}_robots.json"
+    if not (lab.exists() and rj.exists()):
+        return []
+    rows = [json.loads(l) for l in lab.read_text(encoding="utf-8").splitlines() if l.strip()]
+    src = _source_of_piece(rows)
+    samples = _team_samples(key)
+    events = []
+    for team, v in samples.items():
+        for j in _jumps(v, handoff_only=True, src=src):
+            events.append({"team": team, "why": "hand-off", **j})
+    # Curator labels the solver could not reconcile. Usually a hand-off between them is
+    # already listed above; when not, ask about the largest change of piece between them.
+    for c in (json.loads(rj.read_text(encoding="utf-8")).get("curator") or {}).get("conflicts") or []:
+        if c.get("kind") != "impossible":
+            continue
+        team = str(c.get("team"))
+        lo, hi = sorted([float(c["a"]["t"]), float(c["b"]["t"])])
+        if any(e["team"] == team and lo - 1 <= e["ta"] <= hi + 1 for e in events):
+            continue
+        v = [s for s in samples.get(team, []) if lo <= s[0] <= hi]
+        cands = []
+        for a, b in zip(v, v[1:]):
+            if a[4] != b[4]:
+                cands.append({"ta": a[0], "tb": b[0], "pa": a[4], "pb": b[4],
+                              "d": math.hypot(b[2] - a[2], b[3] - a[3]), "dt": b[0] - a[0]})
+        if cands:
+            events.append({"team": team, "why": "label conflict", **max(cands, key=lambda e: e["d"])})
+    return sorted(events, key=lambda e: e["ta"])
+
+
+def _side_frames(rows_by_f: dict, team: str, piece: int, t_lo: float, t_hi: float,
+                 taken: list, t_jump: float) -> list[tuple[float, int]]:
+    """SIDE_FRAMES looks at `team` on `piece` between t_lo and t_hi: the one NEAREST the
+    jump at t_jump, then the clearest of the rest (clarity weighted toward the jump, see
+    SIDE_DECAY_S).
+
+    The nearest one is not optional. It holds the claim the jump is about -- on
+    2026gal_qm18 only the last 0.3 s before the jump showed the robot the track had
+    switched to, and every clearer look was earlier and showed the right robot."""
+    cands = []
+    for f, r in rows_by_f.items():
+        if not (t_lo <= r["t"] <= t_hi):
+            continue
+        mine = [d for d in r["dets"] if int(d["tid"]) == piece and str(d.get("team")) == team]
+        if not mine:
+            continue
+        x1, y1, x2, y2 = mine[0]["xyxy"]
+        area = max(0.0, (x2 - x1) * (y2 - y1))
+        worst = 0.0                                  # overlap with any other box
+        for o in r["dets"]:
+            if o is mine[0]:
+                continue
+            ix = max(0.0, min(x2, o["xyxy"][2]) - max(x1, o["xyxy"][0]))
+            iy = max(0.0, min(y2, o["xyxy"][3]) - max(y1, o["xyxy"][1]))
+            if area:
+                worst = max(worst, ix * iy / area)
+        near = math.exp(-abs(r["t"] - t_jump) / SIDE_DECAY_S)
+        cands.append((area * (1.0 - min(worst, 1.0)) * near, r["t"], f))
+    out: list[tuple[float, int]] = []
+    if cands:
+        _s, t, f = min(cands, key=lambda c: abs(c[1] - t_jump))
+        if all(abs(t - u) >= SIDE_MIN_SEP_S for u, _f in taken):
+            out.append((t, f))
+    for _s, t, f in sorted(cands, reverse=True):
+        if all(abs(t - u) >= SIDE_MIN_SEP_S for u, _f in out + taken):
+            out.append((t, f))
+        if len(out) >= SIDE_FRAMES:
+            break
+    return out
+
+
+def _match_refs(key: str, per_team: int = 4) -> dict[str, list]:
+    """What the curator already said each team looks like in THIS match: crops of their
+    own labels, from the bundles they answered, for the follow-up's curation screen. The
+    best-legibility look first, then spread out in time so it is not four of one moment."""
+    corr = C.TRACKER_ROOT / "corrections" / f"{key}_corrections.json"
+    if not corr.exists():
+        return {}
+    crops: dict[tuple, tuple] = {}
+    for p in (_bundle_path(key), C.STAGE3_DIR / f"{key}_followup_frames.json"):
+        try:
+            doc = json.loads(p.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            continue
+        for fr in doc.get("frames") or []:
+            for d in fr.get("dets") or []:
+                if d.get("crop"):
+                    crops[(int(fr["f"]), tuple(d["xy"]))] = (d["crop"], fr.get("t", 0.0),
+                                                            float(d.get("leg") or 0.0))
+    win = json.loads((C.STAGE3_DIR / f"{key}_robots.json").read_text(encoding="utf-8")) \
+        .get("custodyWindow") or [0.0]
+    by_team: dict[str, list] = defaultdict(list)
+    for l in json.loads(corr.read_text(encoding="utf-8")).get("labels") or []:
+        if l.get("src", "human") != "human" or not l.get("team"):
+            continue
+        hit = crops.get((int(l["f"]), tuple(l["xy"])))
+        if hit:
+            by_team[str(l["team"])].append(hit)
+    out = {}
+    for team, v in by_team.items():
+        pick = []
+        for crop, t, leg in sorted(v, key=lambda x: -x[2]):
+            if all(abs(t - u["t"] - win[0]) >= 5.0 for u in pick):
+                pick.append({"crop": crop, "t": round(t - win[0], 1)})
+            if len(pick) >= per_team:
+                break
+        out[team] = pick
+    return out
+
+
+def _followup_frames(key: str, times: list, gaps: int,
+                     events: list | None = None) -> tuple[list[int], list[str], dict]:
     lab = C.STAGE3_DIR / f"{key}_labeled.jsonl"
     rj = C.STAGE3_DIR / f"{key}_robots.json"
     if not (lab.exists() and rj.exists()):
@@ -996,50 +1378,35 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
     # 9.6 m at 135.4 s because ONE stray box (frame 5172) was pinned to it. The anchors
     # each took 5813's largest box and so showed only its correct detections; the one
     # wrong box was never asked about, and the re-curation changed nothing. So for each
-    # flagged team, the fastest step of its route within the span contributes the frames
-    # at both ends -- the frame holding the suspect box is the one a label can falsify.
-    pp = C.STAGE2_DIR / f"{key}_positions.json"
-    track_pos: dict[str, list] = defaultdict(list)
-    if pp.exists():
-        seen_f = set()
-        for s in json.loads(pp.read_text(encoding="utf-8")).get("samples") or []:
-            if s.get("team") and (s["team"], s["f"]) not in seen_f:
-                seen_f.add((s["team"], s["f"]))
-                track_pos[str(s["team"])].append((s["t"], s["f"], s["x"], s["y"], s["tid"]))
-        for v in track_pos.values():
-            v.sort()
+    # flagged team, the worst step of its route within the span (judged against the
+    # movement envelope, see JUMP_BUDGET_MULT) contributes SIDE_FRAMES readable looks on
+    # each side: the outgoing piece before it, the incoming piece after it. A stray of
+    # only a sample or two still gets its own frames, because they are the only ones of
+    # that piece in the window.
+    track_pos = _team_samples(key)
+    from .solve import distance_budget
 
-    def jump_frames(vt: float, team: str) -> list[tuple[float, int, float, float]]:
-        v = [p for p in track_pos.get(team, []) if abs(p[0] - vt) <= FOLLOWUP_SPAN_S / 2]
-        best = None
-        for a, b in zip(v, v[1:]):
-            dt = b[0] - a[0]
-            if dt <= 0 or dt > FOLLOWUP_SPAN_S / 2:
-                continue
-            d = math.hypot(b[2] - a[2], b[3] - a[3])
-            if d / max(dt, 0.2) >= JUMP_MIN_MS and (best is None or d / dt > best[0]):
-                best = (d / dt, d, a, b)
-        if best is None:
-            return []
-        _v, d, a, b = best
-        if b[0] - a[0] > JUMP_PAIR_S:
-            ends = [a, b]
-        else:
-            # Both ends in one moment: show the end on the SHORTER RUN -- the stretch of
-            # samples reaching it with no pause over JUMP_RUN_GAP_S -- which is the
-            # likelier stray. Not the shorter track: on qm6 the stray is the tail of a
-            # long piece, after a 3.4 s gap; on qm10 it is two samples at the head of
-            # one. Its frame usually carries the other end's robot as well.
-            full = track_pos[team]
-            i = full.index(a)
-            ra = i
-            while ra > 0 and full[ra][0] - full[ra - 1][0] <= JUMP_RUN_GAP_S:
-                ra -= 1
-            rb = i + 1
-            while rb + 1 < len(full) and full[rb + 1][0] - full[rb][0] <= JUMP_RUN_GAP_S:
-                rb += 1
-            ends = [b if (rb - i) < (i + 1 - ra) else a]
-        return [(p[0], p[1], d, b[0] - a[0]) for p in ends]
+    def side_frames(team: str, j: dict, label: str) -> None:
+        before = _side_frames(by_f, team, j["pa"], j["ta"] - SIDE_WINDOW_S, j["ta"],
+                              [(c[0], c[1]) for c in chosen], j["ta"])
+        # Spaced from OTHER moments' frames but not from this jump's "before" frames: the
+        # two sides are different boxes on different tracks, and on a quick hand-off
+        # (2026gal_qm2: 0.07 s) spacing them would leave the incoming side unasked.
+        after = _side_frames(by_f, team, j["pb"], j["tb"], j["tb"] + SIDE_WINDOW_S,
+                             [(c[0], c[1]) for c in chosen], j["tb"])
+        for side, picks in (("before", before), ("after", after)):
+            for t, f in picks:
+                if all(c[1] != f for c in chosen):
+                    chosen.append((t, f, f"{label} ({side})"))
+                    focus_boxes[f] = team_boxes(f, {team})
+
+    def worst_jump(vt: float, team: str) -> dict | None:
+        js = _jumps(track_pos.get(team, []), vt - FOLLOWUP_SPAN_S / 2, vt + FOLLOWUP_SPAN_S / 2)
+        return max(js, key=lambda j: j["d"] / distance_budget(j["dt"]), default=None)
+
+    for e in events or []:
+        side_frames(e["team"], e, f"auto {e['why']}: {e['team']} {e['d']:.1f} m in "
+                                  f"{e['dt']:.1f}s at {e['ta'] - off:.1f}s")
 
     for flag in times:
         # a flag is {t, teams} from the app, or a bare time from an older app
@@ -1063,11 +1430,10 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
                     focus_boxes[f] = team_boxes(f, teams)
             continue
         for team in sorted(teams):
-            for t, f, d, dt in jump_frames(off + t0, team):
-                if all(c[1] != f for c in chosen):
-                    chosen.append((t, f, f"requested {team} jump {d:.1f} m in {dt:.1f}s "
-                                         f"at {t - off:.1f}s"))
-                    focus_boxes[f] = team_boxes(f, teams)
+            j = worst_jump(off + t0, team)
+            if j:
+                side_frames(team, j, f"requested {team} jump {j['d']:.1f} m in "
+                                     f"{j['dt']:.1f}s at {j['ta'] - off:.1f}s")
         for k in range(FOLLOWUP_PER_FLAG):
             # evenly across the span, ends inset by the snap radius so both stay inside it
             frac = k / max(FOLLOWUP_PER_FLAG - 1, 1)
@@ -1098,7 +1464,7 @@ def _followup_frames(key: str, times: list, gaps: int) -> tuple[list[int], list[
     # the cap behind them, requested before gap frames, then in time order for the curator.
     exact = [c for c in chosen if c[2].startswith("requested exact")]
     rest = [c for c in chosen if not c[2].startswith("requested exact")]
-    rest.sort(key=lambda c: (not c[2].startswith("requested"), c[0]))
+    rest.sort(key=lambda c: (not c[2].startswith(("requested", "auto")), c[0]))
     chosen = sorted(exact + rest[:max(FOLLOWUP_MAX_FRAMES - len(exact), 0)])
     keep = {f for _t, f, _w in chosen}
     return ([f for _t, f, _w in chosen], [w for _t, _f, w in chosen],
@@ -1152,6 +1518,63 @@ def _waiting_followup(key: str) -> dict | None:
         return None
 
 
+AUTO_FOLLOWUP_EVERY_S = 60.0
+_auto_last = 0.0
+
+
+def auto_followup_pass(report) -> bool:
+    """Queue the automatic follow-up for one newly curated match, if it needs one.
+
+    ONE ROUND PER MATCH, recorded in the ledger whether or not it found anything, so an
+    answer that leaves a conflict standing cannot set off another round, and another.
+    Only matches curated after this first ran are considered: the backlog is the user's
+    call, not a flood of bundles on first start. A match is looked at once its published
+    route reflects its latest answers, and never while a bundle for it is still waiting.
+    """
+    global _auto_last
+    if time.time() - _auto_last < AUTO_FOLLOWUP_EVERY_S:
+        return False
+    _auto_last = time.time()
+    recs = _load_jobs()
+    since = recs.get(AUTO_FOLLOWUP_SINCE)
+    if since is None:
+        recs[AUTO_FOLLOWUP_SINCE] = time.time()
+        _save_jobs(recs)
+        return False
+    done = recs.get(AUTO_FOLLOWUP_KEY) or {}
+    queued = set(recs.get(AUTO_FOLLOWUP_QUEUE) or [])
+    todo = []
+    for corr in (C.TRACKER_ROOT / "corrections").glob("*_corrections.json"):
+        key = corr.name[: -len("_corrections.json")]
+        try:
+            m = corr.stat().st_mtime
+        except OSError:
+            continue
+        if key in done or (m < since and key not in queued):
+            continue
+        route = C.REPO_ROOT / "public" / "tracks" / f"{key}.json"
+        if not route.exists() or route.stat().st_mtime + 1 < m:
+            continue                                  # not re-solved with these answers yet
+        todo.append((m < since, m, key))         # new curations ahead of the backlog
+    if not todo:
+        return False
+    bundles, answers = relay_bundle_state()
+    for _backlog, _m, key in sorted(todo):
+        if bundles.get(key, 0.0) > answers.get(key, 0.0):
+            continue                                  # the curator has one waiting already
+        events = auto_events(key)
+        recs = _load_jobs()
+        recs.setdefault(AUTO_FOLLOWUP_KEY, {})[key] = {"at": _now_iso(), "events": len(events)}
+        _save_jobs(recs)
+        if not events:
+            report(f"auto follow-up {key}: nothing the solver could not explain")
+            continue
+        report(f"auto follow-up {key}: {len(events)} route jump(s) to ask about")
+        run_followup({"match": key, "auto": events}, lambda msg, *_a: report(msg))
+        return True
+    return False
+
+
 def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     """Build and push a follow-up bundle for one curated match."""
     key = job.get("match")
@@ -1160,10 +1583,11 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     # {t, teams} flags from the app; bare `times` from an app older than flags-with-teams
     flags = job.get("flags") or [float(t) for t in (job.get("times") or [])]
     gaps = max(0, min(int(job.get("gaps") or 0), FOLLOWUP_MAX_FRAMES))
-    if not flags and not gaps:
+    auto = job.get("auto") or []                  # from auto_events, see AUTO_FOLLOWUP_KEY
+    if not flags and not gaps and not auto:
         raise RuntimeError("followup job has no moments and no gap frames to ask about")
     report(f"follow-up {key}: choosing frames", 0, 2)
-    frames, why, focus_boxes = _followup_frames(key, flags, gaps)
+    frames, why, focus_boxes = _followup_frames(key, flags, gaps, auto)
     if not frames:
         raise RuntimeError(f"none of the requested moments in {key} shows a tracked robot")
     # ADD TO A WAITING FOLLOW-UP rather than replacing it. A match has one bundle slot on
@@ -1188,9 +1612,19 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     event = key.split("_")[0]
     st = C.STAGE1_DIR / f"{key}_tracks_stitched.jsonl"
     n_req = sum(1 for w in why if w.startswith("requested"))
-    note = (f"Follow-up: {len(frames)} frame(s) -- {n_req} flagged from the route view"
-            + (f", {len(frames) - n_req} from the longest unlabelled stretches" if len(frames) > n_req else "")
-            + ". Boxes are pre-filled from the current routes; fix any that are wrong.")
+    n_auto = sum(1 for w in why if w.startswith("auto"))
+    n_gap = len(frames) - n_req - n_auto
+    parts = []
+    if n_req:
+        parts.append(f"{n_req} flagged from the route view")
+    if n_auto:
+        parts.append(f"{n_auto} either side of {len(auto)} route jump(s) the solver "
+                     f"could not explain")
+    if n_gap:
+        parts.append(f"{n_gap} from the longest unlabelled stretches")
+    note = (f"Follow-up: {len(frames)} frame(s) -- {', '.join(parts)}. Boxes are pre-filled "
+            f"from the current routes; fix any that are wrong. Your earlier answers for each "
+            f"team in this match are shown for comparison (Teams, on a phone).")
     report(f"follow-up {key}: building {len(frames)} frame(s)", 1, 2)
     doc = CU.build_frames(key, st, key, 0, 0, frames=frames, note=note,
                           frame_w=800, frame_q=45, calib_stem=job.get("calibFrom") or event,
@@ -1199,7 +1633,13 @@ def run_followup(job: dict, report) -> tuple[int, int, list[str]]:
     # The flagged robot's box in each frame is highlighted and selected first in the
     # curation screen, so the curator starts from the claim being tested.
     doc["focus"] = _focus_tids(doc, focus_boxes)
-    doc["followup"] = {"round": "followup", "reasons": why,
+    # What the curator already said each team looks like in this match, so the new frames
+    # are judged against their own earlier answers rather than from memory.
+    try:
+        doc["matchRefs"] = _match_refs(key)
+    except Exception as exc:                          # noqa: BLE001 -- context, not required
+        print(f"[agent] follow-up {key}: no earlier answers attached ({exc})", flush=True)
+    doc["followup"] = {"round": "followup", "reasons": why, "auto": bool(auto),
                        "requestedAt": job.get("requestedAt"), "flags": flags, "gaps": gaps,
                        # solver-space boxes, so a later request can merge into this one
                        "focusBoxes": {str(f): b for f, b in focus_boxes.items()}}
@@ -1403,7 +1843,15 @@ def apply_points(camera: str, at: float) -> None:
 def run_job(job_item: dict, agent_id: str, on_report) -> None:
     """Fetch one job document, run it, and record the outcome in the ledger."""
     job_id = job_item.get("id") or ""
-    doc = R.get("job", job_id)
+    # Outside the runner's guard below, so a relay hiccup here used to escape run_job and
+    # end the agent -- on 2026-10-06 one dropped connection left it dead for five days.
+    # Not recorded as a failure: the job is fine, and the next poll fetches it again.
+    try:
+        doc = R.get("job", job_id)
+    except Exception as exc:                          # noqa: BLE001
+        print(f"[agent] job {job_id[:8]}: fetch failed ({type(exc).__name__}: {exc}); "
+              "retrying next poll", flush=True)
+        return
     if doc is None:
         print(f"[agent] job {job_id}: vanished before it could be fetched", flush=True)
         return
@@ -1938,8 +2386,17 @@ def main(argv=None) -> int:
             # AFTER reconcile, so an arm/disarm is never stuck behind a long backfill,
             # and one job at a time: they compete for one GPU, and two detections in
             # flight make both slower rather than finishing either sooner.
+            # Cancellations first: they free bundle slots the job about to run may need,
+            # and a cancelled job must be closed as cancelled, not as vanished.
+            try:
+                if process_cancellations(agent_id):
+                    changed = True
+            except Exception as exc:                  # noqa: BLE001
+                print(f"[agent] cancellation check failed ({type(exc).__name__}: {exc})",
+                      flush=True)
             try:
                 jobs_todo = pending_jobs(agent_id)
+                retire_vanished(jobs_todo)
             except Exception as exc:                  # noqa: BLE001
                 print(f"[agent] job check failed ({type(exc).__name__}: {exc})", flush=True)
                 jobs_todo = []
@@ -1948,8 +2405,19 @@ def main(argv=None) -> int:
                 beat = lambda: post_status(agent_id, watcher, desired, applied_nonce,
                                            "running" if watcher.alive else "working",
                                            last_error)
-                run_job(chosen, agent_id, beat)
+                # Belt and braces: nothing a job does may end the loop, or the heartbeat
+                # stops and the app is left with no sign of why.
+                try:
+                    run_job(chosen, agent_id, beat)
+                except Exception as exc:              # noqa: BLE001
+                    print(f"[agent] job pass failed ({type(exc).__name__}: {exc})", flush=True)
+                    last_error = f"job pass failed: {type(exc).__name__}"
                 changed = True
+            try:
+                if auto_followup_pass(lambda msg: print(f"[agent] {msg}", flush=True)):
+                    changed = True
+            except Exception as exc:                  # noqa: BLE001
+                print(f"[agent] auto follow-up failed ({type(exc).__name__}: {exc})", flush=True)
 
             run_state = "running" if watcher.alive else ("error" if last_error else "idle")
             beat_every = args.heartbeat_s or (

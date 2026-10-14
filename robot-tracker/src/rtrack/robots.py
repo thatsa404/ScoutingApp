@@ -32,6 +32,7 @@ from __future__ import annotations
 import argparse
 import hashlib
 import json
+import math
 from collections import Counter, defaultdict
 from pathlib import Path
 
@@ -43,6 +44,11 @@ from . import tba as tba_mod
 
 N_ROBOTS = 6
 ALLIANCE_MISMATCH = 1e6     # effectively forbidden, but still orderable
+# A curator's bumper colour, relative to a camera call backed by every detection (1.0).
+# The camera's per-track colour is 85-90% reliable; a person reading the bumper on the
+# frame in front of them is not perfect but far better, and 4x (1000 points at the
+# default --alli-weight) outweighs five votes' worth of conflicting appearance evidence.
+HUMAN_ALLI_CONF = 4.0
 VOTE_DISAGREE = 60.0        # cost of joining a group whose votes say otherwise
 GAP_PENALTY = 2.0           # per second unobserved, mild
 MIN_CONFLICT_DETS = 5       # a custody conflict needs real presence on BOTH sides
@@ -169,6 +175,77 @@ def positions_by_det(positions: dict | None, tracks_p) -> dict | None:
         if b:
             out[(sm["f"], b)] = (sm["t"], sm["x"], sm["y"])
     return out
+
+
+# ---- out-and-back excursions ---------------------------------------------------------
+# A robot goes briefly unseen (behind a hub, a referee), the detector fires on something
+# that is not it -- a person at the barrier, a sliver at the frame edge -- for a few
+# frames, and the solver hands that fragment to the one robot with nothing assigned at
+# that moment. The route darts metres away and straight back. 2026gal_qm50 4125: 4.6 m
+# out for 0.4 s at 133.4 s (a person by the near barrier) and 13.8 m for 0.2 s at 164.2 s
+# (a referee at the left edge), each time returning to its own track. A fragment that
+# short carries almost no evidence of its own, so the solve had nothing to refuse it with.
+#
+# So a short piece is unassigned when the route either side of it agrees with ITSELF and
+# the piece is a detour away from both. Unassigned, not reassigned: the detections are
+# usually not a robot at all, and a gap is honest where a guess is not. A piece a curator
+# labelled is never touched.
+EXCURSION_MAX_S = 1.0        # the whole piece, on this team, lasts no longer than this
+EXCURSION_CONTEXT_S = 6.0    # the route before and after it is at most this far apart
+EXCURSION_MIN_M = 1.5        # ...and the piece sits at least this far from both ends
+EXCURSION_DETOUR_M = 2.0     # ...going via it adds at least this to the direct path
+
+
+def drop_excursions(rows, tid_team: dict, pos_at: dict | None,
+                    protected: set) -> list[dict]:
+    """Unassign out-and-back fragments from tid_team in place; return what was dropped."""
+    if not pos_at:
+        return []
+    from .solve import distance_budget
+    seq: dict[str, list] = defaultdict(list)
+    span: dict[int, list] = {}
+    for r in rows:
+        for d in r["dets"]:
+            team = tid_team.get(d["tid"])
+            if not team:
+                continue
+            v = pos_at.get((r["f"], tuple(round(float(c), 1) for c in d["xyxy"])))
+            if not v:
+                continue
+            seq[team].append((v[0], d["tid"], v[1], v[2]))
+            sp = span.setdefault(d["tid"], [v[0], v[0]])
+            sp[0], sp[1] = min(sp[0], v[0]), max(sp[1], v[0])
+    dropped = []
+    for team, ss in seq.items():
+        ss.sort()
+        runs: list[list] = []
+        for s in ss:
+            if runs and runs[-1][-1][1] == s[1]:
+                runs[-1].append(s)
+            else:
+                runs.append([s])
+        for k in range(1, len(runs) - 1):
+            b, tid = runs[k], runs[k][0][1]
+            if tid in protected or span[tid][1] - span[tid][0] > EXCURSION_MAX_S:
+                continue
+            a, c = runs[k - 1][-1], runs[k + 1][0]
+            gap = c[0] - a[0]
+            if gap <= 0 or gap > EXCURSION_CONTEXT_S:
+                continue
+            d_ac = math.hypot(c[2] - a[2], c[3] - a[3])
+            if d_ac > distance_budget(gap):
+                continue                       # the two sides do not agree with each other
+            bx = float(np.median([s[2] for s in b]))
+            by = float(np.median([s[3] for s in b]))
+            d_ab, d_bc = math.hypot(bx - a[2], by - a[3]), math.hypot(c[2] - bx, c[3] - by)
+            if min(d_ab, d_bc) < EXCURSION_MIN_M or d_ab + d_bc - d_ac < EXCURSION_DETOUR_M:
+                continue
+            dropped.append({"team": team, "tid": int(tid), "t": round(b[0][0], 2),
+                            "durationS": round(span[tid][1] - span[tid][0], 2),
+                            "awayM": round(min(d_ab, d_bc), 2), "dets": len(b)})
+    for x in dropped:
+        tid_team[x["tid"]] = None
+    return dropped
 
 
 def compatible_join_head(npz_path: Path, event: str):
@@ -855,14 +932,24 @@ def track_info(rows, positions: dict | None, pos_at: dict | None = None):
             if tid < 0:
                 continue
             it = info.setdefault(tid, {"t0": r["t"], "t1": r["t"], "n": 0,
-                                       "alli": Counter()})
+                                       "alli": Counter(), "human": Counter()})
             it["t0"] = min(it["t0"], r["t"])
             it["t1"] = max(it["t1"], r["t"])
             it["n"] += 1
             if d.get("alliance"):
                 it["alli"][d["alliance"]] += 1
+            if d.get("alliHuman"):
+                it["human"][d["alliance"]] += 1
     for tid, it in info.items():
-        c = it["alli"]
+        c, hum = it["alli"], it.pop("human")
+        if hum:
+            # The curator's colour (corrections.apply_alliance_labels): a person reading
+            # the bumper, so it is weighted HUMAN_ALLI_CONF times a perfect camera call.
+            # Still soft -- a mis-tap must not be able to make the model infeasible.
+            it["alliance"] = hum.most_common(1)[0][0]
+            it["alliConf"] = HUMAN_ALLI_CONF
+            del it["alli"]
+            continue
         it["alliance"] = c.most_common(1)[0][0] if c else None
         # How much evidence actually backs that call: what share of this track's
         # detections got a hue decision at all, times how one-sided those decisions
@@ -2571,6 +2658,21 @@ def main(argv=None) -> int:
         m = tba_mod.match_by_key(args.match)
         red, blue = [str(t) for t in m["red"]], [str(t) for t in m["blue"]]
     print(f"[robots] red {red}  blue {blue}")
+    # NO-SHOWS. A team the curator never labelled on a well-curated match is taken to be
+    # absent and left out of the solve, rather than given a route assembled from other
+    # robots' tracks. See corrections.absent_teams for the evidence and the guards. The
+    # full schedule is kept for robots.json, so later bundles still offer the team.
+    red_all, blue_all, absent, absent_why = red, blue, [], ""
+    if args.corrections and args.corrections.exists():
+        from . import corrections as _CO
+        absent, absent_why = _CO.absent_teams(_CO.load(args.corrections), red + blue)
+        if absent:
+            red = [t for t in red if t not in absent]
+            blue = [t for t in blue if t not in absent]
+            print(f"[robots] NOT ON THE FIELD: {', '.join(absent)} ({absent_why}) -- "
+                  f"solving for red {red}  blue {blue}")
+        elif absent_why:
+            print(f"[robots] no-show check skipped: {absent_why}")
 
     # BEFORE ANY SPLIT, and that position is the whole point. On the stitched tracks a
     # duplicate is one long-lived pair -- qm24's worst shared 304 frames. After the 95
@@ -2738,7 +2840,7 @@ def main(argv=None) -> int:
                       f"(round {s_['round']}) -> f{nb['f']} {nb.get('team')} "
                       f"(round {nb.get('round')})")
         resolved = CO.resolve(rows, doc["labels"])
-        cuts = CO.cuts_from(resolved)
+        cuts = CO.cuts_from(resolved, rows)
         n_cuts = sum(len(v) for v in cuts.values())
         if cuts:
             rows, _n, orig_c2 = _apply_cuts(rows, cuts)
@@ -2807,6 +2909,14 @@ def main(argv=None) -> int:
                                 for k, v in c["support"].items())
                 print(f"[corrections]   {c['team']}: kept #{c['kept']}, demoted "
                       f"{c['demoted']} -- together in {c['frames']} frames  [{sup}]")
+    if args.corrections:
+        # A curator's bumper colour ("red/blue, number not readable") replaces the
+        # camera's for that piece. After the cuts and pins above, so it lands on the
+        # final pieces and never on one a team label already identifies.
+        n_pc, n_dt, n_fl = CO.apply_alliance_labels(rows, resolved, pinned)
+        if n_pc:
+            print(f"[corrections] {n_pc} piece(s) given the curator's bumper colour "
+                  f"({n_dt} detection(s); the camera had read the other colour on {n_fl})")
     run_stages.append({"stage": "curator-cuts", **_row_counts(rows),
                        "resolvedLabels": (len(resolved) if args.corrections else 0)})
 
@@ -3115,6 +3225,15 @@ def main(argv=None) -> int:
     for gi, members in enumerate(groups):
         for m in members:
             tid_team[m] = names.get(gi)
+    # Out-and-back fragments a team was handed while its own track was hidden. See
+    # drop_excursions. Curator-labelled pieces (pinned, or demoted to preferred) are kept.
+    excursions = drop_excursions(rows, tid_team, pos_at,
+                                 set(pinned) | set(preferred))
+    if excursions:
+        print(f"[robots] {len(excursions)} out-and-back excursion(s) unassigned:")
+        for x in excursions:
+            print(f"[robots]   {x['team']} piece #{x['tid']} at {x['t']}s: "
+                  f"{x['dets']} dets over {x['durationS']}s, {x['awayM']} m off its route")
     # CURATOR ALIGNMENT -- the one statistic on this pipeline that cannot be gamed.
     # Every other number (custody, coverage, label churn, impossible transitions) is
     # computed over the solver's OWN output, so a run that labels less can score better
@@ -3233,7 +3352,11 @@ def main(argv=None) -> int:
     }
     manifest_path.write_text(json.dumps(manifest, indent=2), encoding="utf-8")
     out.write_text(json.dumps(
-        {"video": stem, "teams": {"red": red, "blue": blue},
+        {"video": stem, "teams": {"red": red_all, "blue": blue_all},
+         # Scheduled but judged not on the field (corrections.absent_teams): no route.
+         "absent": absent, "absentReason": absent_why if absent else None,
+         # Short fragments unassigned as out-and-back excursions (drop_excursions).
+         "excursions": excursions,
          "solver": args.solver,
          "groups": {str(gi): {"team": names.get(gi), "tracks": sorted(ms),
                               "votes": dict(gvotes[gi]),

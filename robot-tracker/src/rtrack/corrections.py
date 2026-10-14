@@ -31,15 +31,21 @@ Schema (v1):
 Four non-team answers, and they are deliberately NOT interchangeable, because they
 ask the pipeline for different things:
 
-    mixed      more than one robot here and I cannot say where the join is
-               -> drop from grouping. Prefer labelling individual crops instead: two
-                  differing labels on one track is a CUT, which recovers both robots.
+    mixed      this box covers more than one robot ("multiple" in curate.html)
+               -> the stretch of track it was given on is cut out and dropped from
+                  grouping; the rest of the track keeps its labels. Prefer labelling
+                  individual crops where possible: two differing labels on one track is
+                  a CUT, which recovers both robots.
     notrobot   this is not a robot at all -- field element, ball pile, a person
                -> drop from grouping AND record it, because it is a detector false
                   positive and we want to be able to count them.
-               NOT the way to resolve two boxes on ONE robot. It is a TRACK-level
-                  verdict: pins_from subtracts the flagged tid from the pins, so it
-                  discards every team label on that track, in any frame, silently.
+               It applies to the STRETCH of the track it was given on: a team label
+                  elsewhere on the same track cuts it there (cuts_from), so a track that
+                  sits on a volunteer and then follows a robot keeps the robot. It was a
+                  whole-track verdict until 2026-10-12, which silently discarded every
+                  team label on the track; a track still carrying both after cutting
+                  (labels too close to separate) loses the team, and report() names it.
+               NOT the way to resolve two boxes on ONE robot.
                   For a duplicate box, label BOTH boxes with the same team and let
                   merge_duplicates fuse them -- it keeps the longer timeline, and
                   robots.geometric_duplicates finds the same pairs unaided. The old
@@ -48,6 +54,10 @@ ask the pipeline for different things:
     unknown    I looked and cannot tell which team this is
                -> change nothing. The solver still decides; this only records that a
                   human could not, which is what separates "hard" from "not yet asked".
+               With "alliance": "red"|"blue" (the colour chips in curate.html) it is a
+                  PARTIAL answer: the curator's bumper colour replaces the camera's for
+                  that piece of track (apply_alliance_labels), narrowing it to three
+                  teams without claiming which.
     (skipped)  not answered at all -- never written to the file.
 
 The difference between `unknown` and skipping matters for the loop: a skipped track
@@ -75,6 +85,49 @@ def load(path: Path) -> dict:
     if not isinstance(doc.get("labels"), list):
         raise SystemExit(f"{path}: no labels array")
     return doc
+
+
+# ---- teams that never played -------------------------------------------------------
+# A curated match in which a scheduled team received NO label is evidence the team was
+# not on the field. Checked against the 2026gal scouts: their two recorded no-shows in
+# curated matches (qm41 6487, qm57 364) are exactly the two 2026gal teams with zero
+# curator labels, and in both the solver had invented a route for the missing robot --
+# 20% and 49% of the match -- out of other robots' tracks, because it is told six teams
+# are on the field and fills six. Dropping the team from the solve stops that.
+#
+# Only on a match curated thoroughly enough for silence to mean something: with too few
+# answers, or a by-team pass that left most tiles unanswered, a present but hard-to-read
+# robot can simply have gone unlabelled. The nine zero-label cases on file had 76-437
+# answers each.
+ABSENT_MIN_ANSWERS = 40
+ABSENT_MIN_COVERAGE = 0.6     # by-team passes report how many tiles were left unanswered
+
+
+def absent_teams(doc: dict, teams: list[str]) -> tuple[list[str], str]:
+    """Scheduled teams the curator never labelled, if the curation can vouch for that.
+
+    Returns (absent teams, reason). An explicit top-level `present` list vetoes a team,
+    and an explicit `absent` list names one regardless of the guards -- room for the
+    curator page to ask rather than infer.
+    """
+    labels = [l for l in doc.get("labels") or [] if l.get("src", "human") == "human"]
+    explicit = [str(t) for t in doc.get("absent") or [] if str(t) in teams]
+    present = {str(t) for t in doc.get("present") or []}
+    named = {str(l["team"]) for l in labels if l.get("team")}
+    silent = [t for t in teams if t not in named and t not in present]
+    if not silent:
+        return sorted(set(explicit)), "explicit" if explicit else ""
+    if len(labels) < ABSENT_MIN_ANSWERS:
+        return explicit, (f"{len(labels)} curator answers, under {ABSENT_MIN_ANSWERS}: "
+                          f"too few to read silence as absence")
+    left = (doc.get("session") or {}).get("unanswered")
+    if isinstance(left, (int, float)) and left > 0:
+        cov = len(labels) / (len(labels) + left)
+        if cov < ABSENT_MIN_COVERAGE:
+            return explicit, (f"only {cov:.0%} of tiles answered, under "
+                              f"{ABSENT_MIN_COVERAGE:.0%}: silence is not evidence")
+    return sorted(set(silent) | set(explicit)), (
+        f"no curator label in {len(labels)} answers")
 
 
 def resolve(rows, labels, max_px: float = MATCH_PX) -> list[dict]:
@@ -178,7 +231,37 @@ def flag_of(label: dict) -> str | None:
     return None
 
 
-def cuts_from(resolved: list[dict]) -> dict[int, list[float]]:
+NOTROBOT_VALUE = "!notrobot"
+MIXED_VALUE = "!mixed"
+# Where a not-a-robot stretch meets a robot stretch, the cut goes on the frame-to-frame
+# step where the box changes most -- the detector letting go of a volunteer and taking up
+# the robot that drove behind them is a jump in position and size, not a gradual drift.
+# Below this score (centre move in box diagonals + |log area ratio|) there is no visible
+# handoff, and the midpoint between the two labels is used as before.
+HANDOFF_MIN_SCORE = 0.35
+
+
+def _handoff_t(rows, tid: int, t0: float, t1: float) -> float | None:
+    """The time of the sharpest box change on `tid` between two labels, or None."""
+    import math
+    seq = []
+    for r in rows:
+        if t0 <= r["t"] <= t1:
+            for d in r["dets"]:
+                if d["tid"] == tid:
+                    seq.append((r["t"], d["xyxy"]))
+    best, best_t = 0.0, None
+    for (ta, a), (tb, b) in zip(seq, seq[1:]):
+        wa, ha = max(1.0, a[2] - a[0]), max(1.0, a[3] - a[1])
+        wb, hb = max(1.0, b[2] - b[0]), max(1.0, b[3] - b[1])
+        move = math.hypot((a[0] + a[2] - b[0] - b[2]) / 2, (a[1] + a[3] - b[1] - b[3]) / 2)
+        score = move / math.hypot(wa, ha) + abs(math.log((wb * hb) / (wa * ha)))
+        if score > best:
+            best, best_t = score, (ta + tb) / 2.0
+    return best_t if best >= HANDOFF_MIN_SCORE else None
+
+
+def cuts_from(resolved: list[dict], rows=None) -> dict[int, list[float]]:
     """Where a curator's own labels disagree inside one track, cut between them.
 
     An `unknown` placed on a specific crop counts as a value here, not as a missing
@@ -191,6 +274,16 @@ def cuts_from(resolved: list[dict]) -> dict[int, list[float]]:
     Cutting on the boundary leaves the identified piece pinnable and the unidentified
     piece free for the solver, which is the whole point: partial knowledge should
     contribute the part that is known without claiming the part that is not.
+
+    `notrobot` is a value here too. A detection can sit on a volunteer for a second and
+    then follow a robot that drives behind them; "not a robot at t10, 6329 at t14" says
+    exactly that, and the cut leaves a not-a-robot piece (dropped) and a 6329 piece
+    (pinned). It used to be a whole-track verdict that discarded every team label on the
+    track. With `rows`, a cut touching a not-a-robot stretch is placed on the visible
+    handoff (see _handoff_t) rather than at the midpoint, so the robot's first seconds
+    are not thrown away with the volunteer. `mixed` (one box over several robots) is
+    handled the same way: the stretch it was given on is cut out and dropped, and the
+    rest of the track keeps whatever it was labelled.
     """
     by_tid: dict[int, list[tuple[float, str]]] = defaultdict(list)
     for r in resolved:
@@ -198,7 +291,14 @@ def cuts_from(resolved: list[dict]) -> dict[int, list[float]]:
             continue
         f = flag_of(r)
         if f == "unknown":
-            by_tid[r["tid"]].append((r["t"], "?"))
+            # "red, number not readable" and "blue, ..." are different statements, so a
+            # track read red at one moment and blue at another is cut between them.
+            a = r.get("alliance")
+            by_tid[r["tid"]].append((r["t"], f"?{a}" if a in ("red", "blue") else "?"))
+        elif f == "notrobot":
+            by_tid[r["tid"]].append((r["t"], NOTROBOT_VALUE))
+        elif f == "mixed":
+            by_tid[r["tid"]].append((r["t"], MIXED_VALUE))
         elif r.get("team") and not f:
             by_tid[r["tid"]].append((r["t"], str(r["team"])))
 
@@ -207,7 +307,10 @@ def cuts_from(resolved: list[dict]) -> dict[int, list[float]]:
         items.sort()
         for (t0, a), (t1, b) in zip(items, items[1:]):
             if a != b:
-                cuts.setdefault(tid, []).append((t0 + t1) / 2.0)
+                at = None
+                if rows is not None and ({a, b} & {NOTROBOT_VALUE, MIXED_VALUE}):
+                    at = _handoff_t(rows, tid, t0, t1)
+                cuts.setdefault(tid, []).append(at if at is not None else (t0 + t1) / 2.0)
     return cuts
 
 
@@ -244,6 +347,43 @@ def pins_from(resolved: list[dict]) -> tuple[dict[int, str], dict[int, str]]:
     pins = {tid: next(iter(teams)) for tid, teams in votes.items()
             if len(teams) == 1 and tid not in blocked}
     return pins, flags
+
+
+def apply_alliance_labels(rows, resolved: list[dict],
+                          pins: dict[int, str]) -> tuple[int, int, int]:
+    """Stamp a curator's bumper colour onto the track piece it was given on.
+
+    "Red, number not readable" is a partial identity: it narrows the robot to the three
+    red teams. The camera's own colour call is wrong on 2.4% of curator-labelled boxes
+    (3.7% on 2026gal), and usually confidently -- 169 of 212 at >=0.8 -- so a person's
+    reading replaces it for that piece: every detection on it takes the curator's colour
+    and is marked `alliHuman`, which track_info turns into a heavier (still soft)
+    alliance weight. A piece that is also pinned to a team is left alone; the team says
+    more. Returns (pieces stamped, detections stamped, detections whose camera colour
+    disagreed) so the report can say how often the camera was overruled.
+    """
+    want: dict[int, str] = {}
+    for r in resolved:
+        if r["ok"] and flag_of(r) == "unknown" and r.get("alliance") in ("red", "blue"):
+            if r["tid"] in pins:
+                continue
+            # Two colours on one piece survived the cuts only if they were too close to
+            # separate; claim neither rather than pick one.
+            if want.get(r["tid"]) not in (None, r["alliance"]):
+                want[r["tid"]] = ""
+            else:
+                want[r["tid"]] = r["alliance"]
+    want = {t: a for t, a in want.items() if a}
+    n_det = n_flip = 0
+    for row in rows:
+        for d in row["dets"]:
+            a = want.get(d["tid"])
+            if a:
+                if d.get("alliance") and d["alliance"] != a:
+                    n_flip += 1
+                d["alliance"], d["alliHuman"] = a, True
+                n_det += 1
+    return len(want), n_det, n_flip
 
 
 def dropped(flags: dict[int, str]) -> set[int]:

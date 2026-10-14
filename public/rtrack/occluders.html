@@ -162,7 +162,10 @@ let FRAME = { w: 0, h: 0 };
 const PALETTE = ['#f59e0b', '#38bdf8', '#a78bfa', '#4ade80', '#fb7185', '#facc15'];
 const say = (el, t, cls = '') => { el.textContent = t; el.className = 'msg ' + cls; };
 
-$('#relay').value = localStorage.getItem('rtrackRelay') || window.RTRACK_DEFAULT_RELAY || '';
+// The baked relay (repository secret RELAY_URL_RTRACK) WINS and its field is hidden.
+const BAKED_RELAY = (window.RTRACK_DEFAULT_RELAY || '').trim();
+$('#relay').value = BAKED_RELAY || localStorage.getItem('rtrackRelay') || '';
+if (BAKED_RELAY) { $('#relay').style.display = 'none'; $('label[for=relay]').style.display = 'none'; }
 $('#vid').value = localStorage.getItem('rtrackCalibVid') || '';
 
 // ---- loading a frame ---------------------------------------------------------
