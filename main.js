@@ -3859,7 +3859,9 @@ function _recordLocalArchive(eventKey, archiveType) {
 function _downloadBundle(bundle) {
     _recordLocalArchive(bundle.eventKey, bundle.archiveType);
     const a = document.createElement('a');
-    a.href = URL.createObjectURL(new Blob([JSON.stringify(bundle, null, 2)], { type: 'application/json' }));
+    // COMPACT, not indented. Indentation put every route point across six lines and made
+    // a full archive 2.6x its content: 2026gal was 35 MB on disk for 13.6 MB of data.
+    a.href = URL.createObjectURL(new Blob([JSON.stringify(bundle)], { type: 'application/json' }));
     a.download = `${bundle.eventKey}_${bundle.archiveType}_archive.json`;
     a.click();
     URL.revokeObjectURL(a.href);
