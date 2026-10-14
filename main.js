@@ -463,6 +463,9 @@ function updateAppEventKey(eventKey) {
         if (subtitle) subtitle.textContent = eventKey;
         document.title = `Nashoba Robotics — ${eventKey}`;
         if (selectBtn) selectBtn.textContent = 'Switch Event';
+        // The event's routes come with the event. Deferred so callers that set the key
+        // and then the input field have both done by the time it reads them.
+        setTimeout(() => { try { syncRoutesForOffline(String(eventKey).trim().toLowerCase()); } catch {} }, 0);
     } else {
         if (subtitle) subtitle.textContent = 'Event Hub';
         document.title = 'Nashoba Robotics — Event Hub';
@@ -473,6 +476,8 @@ function updateAppEventKey(eventKey) {
 }
 
 // ── EVENT SELECTOR ─────────────────────────────────────────────────────────────
+
+const PUBLIC_ARCHIVE_TYPES = 'publicArchiveTypes';   // { eventKey: 'full'|'config'|'plain' }
 
 function showEventSelector() {
     const overlay = document.getElementById('event-selector-overlay');
@@ -486,11 +491,17 @@ function showEventSelector() {
         ? `<span style="color:#60a5fa;font-size:0.72em;font-weight:700;margin-top:2px;">Full archive</span>`
         : `<span style="color:#94a3b8;font-size:0.72em;margin-top:2px;">Archive</span>`;
 
+    // An archive published under public/scouting/ counts as much as one saved on this
+    // device -- without this the badge only appeared after loading the event once. The
+    // last probe result is remembered so the badges also show offline.
+    const pubReg = JSON.parse(localStorage.getItem(PUBLIC_ARCHIVE_TYPES) || '{}');
+    const typeOf = key => localReg[key]?.archiveType || pubReg[key] || null;
+
     const makeCard = (key, sublabel, archiveType) => `
-        <button class="event-preset-card" onclick="window.selectPresetEvent('${key}')">
+        <button class="event-preset-card" data-event-key="${key}" onclick="window.selectPresetEvent('${key}')">
             <span class="preset-key">${key}</span>
             ${sublabel ? `<span class="preset-sublabel">${sublabel}</span>` : ''}
-            ${archiveType ? archiveBadge(archiveType) : ''}
+            <span class="preset-archive">${archiveType ? archiveBadge(archiveType) : ''}</span>
         </button>`;
 
     // Build preset cards grouped by year, newest first
@@ -518,7 +529,7 @@ function showEventSelector() {
                 const gameConfig = getGameConfig(key);
                 const sublabel = [src.label, gameConfig ? `${gameConfig.name} ${year}` : null]
                     .filter(Boolean).join(' · ');
-                return makeCard(key, sublabel, localReg[key]?.archiveType);
+                return makeCard(key, sublabel, typeOf(key));
             }).join('');
             return makeSection(year, cards, i === 0);
         }).join('');
@@ -527,12 +538,30 @@ function showEventSelector() {
             const cards = registryOnlyKeys.map(key => {
                 const gameConfig = getGameConfig(key);
                 const sublabel = gameConfig ? `${gameConfig.name} ${gameConfig.year}` : null;
-                return makeCard(key, sublabel, localReg[key]?.archiveType);
+                return makeCard(key, sublabel, typeOf(key));
             }).join('');
             return makeSection('My Archives', cards, true);
         })() : '';
 
         presetsEl.innerHTML = archiveSection + sourceSections;
+
+        // Refresh the published-archive badges in the background.
+        if (navigator.onLine) {
+            const keys = Object.keys(SCOUTING_SOURCES).filter(k => !localReg[k]?.archiveType);
+            Promise.all(keys.map(async k => {
+                const url = await findArchiveUrl(k);
+                return [k, url ? (/_full_archive\.json$/.test(url) ? 'full'
+                    : /_config_archive\.json$/.test(url) ? 'config' : 'plain') : null];
+            })).then(found => {
+                const next = {};
+                for (const [k, t] of found) if (t) next[k] = t;
+                localStorage.setItem(PUBLIC_ARCHIVE_TYPES, JSON.stringify(next));
+                for (const [k, t] of found) {
+                    const slot = presetsEl.querySelector(`[data-event-key="${k}"] .preset-archive`);
+                    if (slot) slot.innerHTML = t ? archiveBadge(t) : '';
+                }
+            }).catch(() => {});
+        }
     }
 
     // Show "Continue with [key]" if a key is already saved
@@ -1868,7 +1897,7 @@ async function renderMatchTracks(matchKey) {
     if (!doc || host._rtTok !== tok) return;
 
     const q = doc.quality || {};
-    const vid = doc.source?.videoId;
+    const vid = routeVideo(doc);
     host.innerHTML = `
         <h3 style="margin:18px 0 8px; font-size:15px;">Robot Routes</h3>
         <div style="display:flex; gap:10px; flex-wrap:wrap; align-items:baseline;
@@ -1888,8 +1917,8 @@ async function renderMatchTracks(matchKey) {
             <input type="range" id="mtScrub" min="0" max="1000" value="1000" style="flex:1; min-width:160px;">
             <span id="mtClock" style="font-variant-numeric:tabular-nums; font-size:12px;
                   color:#94a3b8; min-width:64px;">full</span>
-            ${vid ? `<button id="mtSeek" title="Open the match video at the moment the slider is showing"
-                 style="padding:3px 10px;font-size:0.78em;border-radius:4px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;">▶ Watch this moment</button>` : ''}
+            ${vid ? `<button id="mtSeek" title="The match video with its routes beside it, from the moment the slider is showing"
+                 style="padding:3px 10px;font-size:0.78em;border-radius:4px;cursor:pointer;border:1px solid #334155;background:transparent;color:#94a3b8;">▶ Watch with routes</button>` : ''}
         </div>
         <div id="mtTeams" style="display:flex; gap:6px; flex-wrap:wrap; margin-top:8px;"></div>
         <div id="mtLegend" style="display:flex; gap:14px; flex-wrap:wrap; margin-top:7px;
@@ -2029,40 +2058,12 @@ async function renderMatchTracks(matchKey) {
         else cancelAnimationFrame(raf);
     };
     const seek = document.getElementById('mtSeek');
-    if (seek) seek.onclick = () => {
-        // Opens the match video at whatever instant the slider is on. One-way only:
-        // reading playback position BACK would need the full YouTube IFrame API with
-        // event listeners, and this app only ever posts commands to embeds.
-        const at = Math.max(0, (doc.source?.matchStartVideoSec || 0)
-                               + (tNow >= tMax ? 0 : tNow));
-        // Thumbnails are '#yt-thumb-<i>' (~main.js:1504) or '#stream-seek-thumb'.
-        const holder = document.querySelector(
-            '#matchVideoSection [id^="yt-thumb-"], #matchVideoSection #stream-seek-thumb');
-        if (holder) { loadYTEmbedAtTime(vid, holder.id, at); return; }
-        // Embed already running: rewriting iframe.src mid-playback was the error you
-        // hit -- the player is initialised and a src swap tears it down uncleanly. Post
-        // a seek instead, which is what the API is for, and only touch src as a last
-        // resort when there is no iframe at all.
-        const frame = document.querySelector('#matchVideoSection iframe[data-yt]');
-        if (frame && frame.contentWindow) {
-            try {
-                frame.contentWindow.postMessage(JSON.stringify({
-                    event: 'command', func: 'seekTo', args: [Math.floor(at), true],
-                }), '*');
-                frame.contentWindow.postMessage(JSON.stringify({
-                    event: 'command', func: 'playVideo', args: [],
-                }), '*');
-                return;
-            } catch { /* fall through */ }
-        }
-        // Nothing to talk to: build the embed fresh at the right time.
-        const host = document.getElementById('matchVideoSection');
-        if (host) {
-            const id = 'mt-yt-host';
-            host.insertAdjacentHTML('afterbegin', `<div id="${id}"></div>`);
-            loadYTEmbedAtTime(vid, id, at);
-        }
-    };
+    // THE ROUTE'S OWN VIDEO, not whatever the match section shows. That is TBA's
+    // per-match upload, while a route cut from the livestream is timed against the
+    // stream -- seeking one with the other's clock lands minutes away.
+    if (seek) seek.onclick = () => window.openRouteWatch(doc, {
+        t: tNow >= tMax ? null : tNow, teams: shown,
+    });
 
     // The img may already be cached (complete) or still loading — handle both, exactly
     // as initFieldTab does for the drawing canvas.
@@ -3886,11 +3887,6 @@ function showArchiveSummaryModal(bundle) {
         row('Matches', isConfig ? '— (config only)' : `${bundle.matches?.length || 0} total (${played} played, ${unplayed} unplayed)`),
         row('Scouting data', isConfig ? '— (config only)' : `${bundle.scoutingRows?.length || 0} match rows, ${bundle.pitRows?.length || 0} pit rows`),
         row('Alliance picks', isConfig ? '— (config only)' : check(bundle.tbaAlliances?.length)),
-        row('Robot routes', isConfig ? '— (config only)'
-            : bundle.matchTracks?.length
-              ? `${bundle.matchTracks.length} match${bundle.matchTracks.length === 1 ? '' : 'es'}`
-                + ` (~${Math.round(JSON.stringify(bundle.matchTracks).length / 1024)} KB)`
-              : check(false)),
         row('RP thresholds', check(bundle.rpThresholds)),
         row('Webcast URLs', bundle.webcasts?.length ? `${bundle.webcasts.length} streams` : check(false)),
         row('Scouting sheet URL', check(bundle.scoutingSheetUrl)),
@@ -3991,41 +3987,11 @@ window.saveArchiveBundle = async function (mode = 'full') {
         bundle.pitRows       = JSON.parse(localStorage.getItem(`pitData_${eventKey}`) ?? 'null');
         bundle.matches       = matches;
         bundle.tbaAlliances  = JSON.parse(localStorage.getItem(`tbaAlliances_${eventKey}`) ?? 'null');
-        // Robot routes. Without these an archive restores everything about a past event
-        // EXCEPT where the robots were, and the Routes tabs come back empty on any device
-        // that cannot reach public/tracks/ -- which is the case an archive exists for.
-        //
-        // Size scales with how many matches were actually processed, not with the event:
-        // ~143 KB each, and a realistic event has tracks for a fraction of its matches
-        // (11 of 100 on 2026mawor).
-        //
-        // EVERY AVAILABLE ROUTE, NOT JUST WHAT THIS DEVICE HAPPENS TO HAVE CACHED. This
-        // used to archive the Dexie cache alone, which only holds matches someone opened
-        // here -- a 2026necmp1 archive came out with 33 of the 50 routes. Each listed match
-        // (published manifest + relay) goes through loadMatchTracks, which also replaces a
-        // cached copy that a later curation has made stale. Anything cached but no longer
-        // listed anywhere (e.g. expired from the relay, never committed) is kept too.
-        try {
-            const keys = new Set();
-            try {
-                const man = await loadTracksManifest(true);
-                (man.matches || []).forEach(m => { if (String(m.key).startsWith(eventKey + '_')) keys.add(m.key); });
-            } catch {}
-            try {
-                [...(await relayTracksIndex()).keys()].forEach(k => { if (k.startsWith(eventKey + '_')) keys.add(k); });
-            } catch {}
-            const got = new Map(), list = [...keys];
-            document.body.style.cursor = 'progress';         // a few seconds for a full event
-            try {
-                for (let i = 0; i < list.length; i += 6) {  // a few at a time, not 50 at once
-                    (await Promise.all(list.slice(i, i + 6).map(k => loadMatchTracks(k).catch(() => null))))
-                        .forEach(d => { if (d) got.set(d.key, d); });
-                }
-            } finally { document.body.style.cursor = ''; }
-            (await db.matchTracks.where('eventKey').equals(eventKey).toArray())
-                .forEach(d => { if (!got.has(d.key)) got.set(d.key, d); });
-            bundle.matchTracks = [...got.values()];
-        } catch { bundle.matchTracks = []; }
+        // NO ROUTES. They used to be copied in here, which made an archive 3-5x larger and
+        // left a second copy of every route that went stale the moment one was re-exported.
+        // Routes live in public/tracks/ (and the relay) and load for an event when the
+        // event is loaded -- see syncRoutesForOffline. An old archive that still carries
+        // them is accepted on import; a current one does not need to.
     }
 
     showArchiveSummaryModal(bundle);
@@ -11560,6 +11526,9 @@ window.openRoutesFull = function (doc, opts = {}) {
         '  <span id="rfNav" class="step-nav"></span>',
         '  <span id="rfNote" style="color:#64748b; font-size:12px;"></span>',
         '  <span style="flex:1;"></span>',
+        (routeVideo(doc) ? '  <button id="rfWatch" title="The match video with these routes beside it. Or click any point on a route."'
+            + ' style="padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer; border:1px solid #334155;'
+            + ' background:transparent; color:#94a3b8;">&#9654; Watch</button>' : ''),
         '  <button id="rfArrows" style="padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer;"></button>',
         '  <button id="rfAuto" style="padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer;"></button>',
         '  <button onclick="closeRoutesFull()" style="padding:6px 14px; border-radius:8px;',
@@ -11664,6 +11633,43 @@ window.openRoutesFull = function (doc, opts = {}) {
         } else cancelAnimationFrame(raf);
     };
 
+    // CLICK A ROUTE TO WATCH IT. The nearest drawn point within reach opens the video at
+    // that moment -- how a strategist goes from "why is the scorer over there?" to the
+    // footage. Only points currently drawn count, so a hidden team cannot be hit.
+    if (routeVideo(doc)) {
+        const inner = el.querySelector('#rfInner');
+        el.querySelector('#rfWatch').onclick = () => window.openRouteWatch(doc, {
+            t: tNow < tMax ? tNow : null, teams: shown });
+        const hitAt = (e) => {
+            const r = cv.getBoundingClientRect();
+            let X = (e.clientX - r.left) / r.width, Y = (e.clientY - r.top) / r.height;
+            if (_trackFlip(doc)) { X = 1 - X; Y = 1 - Y; }
+            const N = _trackNorm(doc);
+            const lo = autoOnly ? span.t0 : -Infinity, hi = Math.min(autoOnly ? autoEnd : Infinity, tNow);
+            const reach = 18 / r.width;
+            let best = null, bd = reach * reach;
+            for (const rb of doc.robots || []) {
+                if (!shown.has(String(rb.team))) continue;
+                for (const s of rb.samples || []) {
+                    if (s.t < lo || s.t > hi) continue;
+                    const [nx, ny] = N(s.x, s.y);
+                    const d = (nx - X) ** 2 + ((ny - Y) * r.height / r.width) ** 2;
+                    if (d < bd) { bd = d; best = { t: s.t, team: String(rb.team) }; }
+                }
+            }
+            return best;
+        };
+        inner.addEventListener('click', (e) => {
+            const h = hitAt(e);
+            if (h) window.openRouteWatch(doc, { t: h.t, teams: shown });
+        });
+        inner.addEventListener('mousemove', (e) => {
+            const h = hitAt(e);
+            inner.style.cursor = h ? 'pointer' : '';
+            inner.title = h ? `${h.team} at ${h.t.toFixed(1)} s — click to watch` : '';
+        });
+    }
+
     if (img.complete && img.naturalWidth) setT(tNow);
     else img.addEventListener('load', () => setT(tNow), { once: true });
     _fsRoutes = paint;
@@ -11688,13 +11694,343 @@ window.openRoutesFull = function (doc, opts = {}) {
         }).catch(() => {});
     }
     const onKey = (e) => {
-        if (e.key === 'Escape') {
+        // The watch view opens ON TOP of this one; Escape there closes only that.
+        if (e.key === 'Escape' && !document.getElementById('routeWatch')) {
             closeRoutesFull();
             document.removeEventListener('keydown', onKey);
         }
     };
     document.addEventListener('keydown', onKey);
     navLayerOpen('routesFull', closeRoutesFull, () => !!document.getElementById('routesFull'));
+};
+
+// ── WATCH: the match video beside its routes ─────────────────────────────────
+//
+// The video plays on the left; the routes on the right follow it, drawn over the
+// camera's own calibration frame so the picture beside the video is the same view. Click
+// anywhere on a route and the video jumps to that moment.
+//
+// BESIDE, NEVER ON TOP. YouTube's embed rules forbid drawing anything in front of the
+// player ("You must not display overlays, frames, or other visual elements in front of
+// any part of a YouTube embedded player" -- Required Minimum Functionality), so the
+// routes get their own pane. The player is driven only through the documented API.
+//
+// Time comes from player.getCurrentTime(), which the player refreshes a few times a
+// second; between refreshes it is extrapolated at the playback rate. Close enough to
+// follow a robot, and "Routes off" drops the routes when buffering makes them disagree.
+const WATCH_LEAD_S = 2;          // a clicked moment opens this much earlier: the lead-up
+const WATCH_HIT_PX = 22;         // how close a click must land to a route point
+const WATCH_TRAILS = [5, 15, null];   // seconds of route behind the dots; null = all so far
+const _YT_ID_RE = /^[A-Za-z0-9_-]{11}$/;
+
+// {id, start} for the YouTube video a route came from, or null. Exports from before
+// rtrack.vsource put the LOCAL CLIP NAME in videoId -- '2026gal_qm8' is itself eleven
+// characters and passes the id pattern -- so an id that starts with the event key is a
+// clip name, not a video, and must not be handed to a player.
+function routeVideo(doc) {
+    const s = doc?.source || {};
+    const ev = doc?.match?.eventKey || doc?.eventKey || '';
+    if (!s.videoId || !_YT_ID_RE.test(s.videoId) || (ev && s.videoId.startsWith(ev))) return null;
+    if (typeof s.matchStartVideoSec !== 'number') return null;
+    return { id: s.videoId, start: s.matchStartVideoSec };
+}
+window.routeVideo = routeVideo;
+
+let _ytApi = null;
+function loadYTApi() {
+    if (window.YT?.Player) return Promise.resolve(window.YT);
+    if (_ytApi) return _ytApi;
+    _ytApi = new Promise((res, rej) => {
+        const prev = window.onYouTubeIframeAPIReady;
+        window.onYouTubeIframeAPIReady = () => { try { prev?.(); } catch {} res(window.YT); };
+        const s = document.createElement('script');
+        s.src = 'https://www.youtube.com/iframe_api';
+        s.onerror = () => { _ytApi = null; rej(new Error('YouTube player unavailable')); };
+        document.head.appendChild(s);
+    });
+    return _ytApi;
+}
+
+// Routes in the camera's perspective. Each robot carries `uv`, [u0, v0, u1, v1, ...] in
+// 1920x1080 video pixels parallel to its samples, so drawing is a scale -- no projection
+// in the app. Returns the points drawn, for clicks.
+function _camPoints(r) {
+    const uv = r.uv, S = r.samples || [];
+    if (!Array.isArray(uv) || uv.length !== 2 * S.length) return [];
+    const out = [];
+    for (let k = 0; k < S.length; k++) {
+        const u = uv[2 * k], v = uv[2 * k + 1];
+        if (u !== null && v !== null) out.push({ t: S[k].t, u, v });
+    }
+    return out;
+}
+function hasCameraView(doc) {
+    return !!doc?.cameraView && (doc.robots || []).some(r => Array.isArray(r.uv) && r.uv.length);
+}
+function renderCameraRoutes(canvas, doc, opts = {}) {
+    const ctx = canvas.getContext('2d');
+    const W = canvas.width, H = canvas.height;
+    ctx.clearRect(0, 0, W, H);
+    const hits = [];
+    const cvw = doc.cameraView;
+    if (!W || !H || !cvw) return hits;
+    const [VW, VH] = cvw.videoSize || [1920, 1080];
+    const sx = W / VW, sy = H / VH;
+    const tNow = opts.tNow ?? null, trail = opts.trailS ?? null;
+    const lo = (tNow !== null && trail !== null) ? tNow - trail : -Infinity;
+    const hi = tNow !== null ? tNow : Infinity;
+    const labels = [];
+    doc.robots.forEach((r, i) => {
+        if (opts.teams && !opts.teams.has(String(r.team))) return;
+        const col = window.trackColourFor(r, i);
+        const gaps = r.gaps || [];
+        const pts = _camPoints(r).filter(s => s.t >= lo && s.t <= hi);
+        if (!pts.length) return;
+        ctx.strokeStyle = col; ctx.lineWidth = 2.5; ctx.lineJoin = 'round'; ctx.lineCap = 'round';
+        ctx.beginPath();
+        for (let k = 0; k < pts.length; k++) {
+            const p = pts[k], X = p.u * sx, Y = p.v * sy;
+            const q = pts[k - 1];
+            const brk = !q || p.t - q.t > 0.45 || gaps.some(g => g.tStart <= q.t && p.t <= g.tEnd);
+            if (brk) ctx.moveTo(X, Y); else ctx.lineTo(X, Y);
+            hits.push({ X, Y, t: p.t, team: String(r.team) });
+        }
+        ctx.globalAlpha = 0.9; ctx.stroke(); ctx.globalAlpha = 1;
+        // The dot is where the robot IS, so only when the route has a point near now; a
+        // robot out of view keeps its trail but loses its dot rather than freezing.
+        const cur = pts[pts.length - 1];
+        if (tNow !== null && tNow - cur.t <= 0.6) {
+            const X = cur.u * sx, Y = cur.v * sy;
+            ctx.beginPath(); ctx.arc(X, Y, 7, 0, Math.PI * 2);
+            ctx.fillStyle = col; ctx.fill();
+            ctx.lineWidth = 2; ctx.strokeStyle = '#0f1115'; ctx.stroke();
+            labels.push({ X, Y, col, text: String(r.team) });
+        }
+    });
+    // Labels last, over every route, on a dark pill so they read over any background.
+    ctx.font = '600 12px system-ui, sans-serif';
+    for (const l of labels) {
+        const w = ctx.measureText(l.text).width + 10;
+        const x = Math.min(W - w - 2, Math.max(2, l.X - w / 2)), y = Math.max(2, l.Y - 28);
+        ctx.fillStyle = 'rgba(15,17,21,0.82)';
+        ctx.beginPath(); ctx.roundRect ? ctx.roundRect(x, y, w, 17, 5) : ctx.rect(x, y, w, 17); ctx.fill();
+        ctx.fillStyle = l.col; ctx.fillText(l.text, x + 5, y + 13);
+    }
+    return hits;
+}
+
+let _watchTeardown = null;
+function _closeRouteWatchDom() {
+    if (_watchTeardown) { try { _watchTeardown(); } catch {} _watchTeardown = null; }
+    document.getElementById('routeWatch')?.remove();
+    if (!document.getElementById('routesFull') && !document.getElementById('routeInspector')) {
+        document.body.style.overflow = '';
+    }
+}
+function closeRouteWatch() {
+    _closeRouteWatchDom();
+    navLayerClosed('routeWatch');
+}
+window.closeRouteWatch = closeRouteWatch;
+
+/**
+ * The video beside its routes. opts: { t: match time to open at (null = just before
+ * auto), teams: Set of teams to show }.
+ */
+window.openRouteWatch = function (doc, opts = {}) {
+    const vid = routeVideo(doc);
+    if (!doc || !vid) return;
+    _closeRouteWatchDom();
+    const BASE = import.meta.env.BASE_URL;
+    const hasCam = hasCameraView(doc);
+    let view = hasCam ? 'camera' : 'field';
+    try { const v = localStorage.getItem('rtrackWatchView'); if (v === 'field' || (v === 'camera' && hasCam)) view = v; } catch {}
+    let trailIx = 0;
+    try { const k = Number(localStorage.getItem('rtrackWatchTrail')); if (k >= 0 && k < WATCH_TRAILS.length) trailIx = k; } catch {}
+    let routesOn = true;
+    const shown = new Set(opts.teams ? [...opts.teams].map(String) : (doc.robots || []).map(r => String(r.team)));
+    let tNow = null, hits = [];
+
+    const el = document.createElement('div');
+    el.id = 'routeWatch';
+    el.style.cssText = 'position:fixed; inset:0; z-index:9050; background:#0b1220; overflow:auto;'
+        + 'display:flex; flex-direction:column; padding:10px; gap:8px;';
+    const btn = 'padding:5px 11px; font-size:12px; border-radius:6px; cursor:pointer;';
+    el.innerHTML = `
+        <div style="display:flex; align-items:center; gap:8px; flex-wrap:wrap;">
+          <b style="font-size:15px;">${doc.match?.key || doc.key || ''}</b>
+          <span id="rwClock" style="color:#94a3b8; font-size:12px; font-variant-numeric:tabular-nums;"></span>
+          <span style="flex:1;"></span>
+          <button id="rwRoutes" style="${btn}"></button>
+          <button id="rwView" style="${btn}" ${hasCam ? '' : 'disabled title="This route has no camera view yet"'}></button>
+          <button id="rwTrail" style="${btn}"></button>
+          <button id="rwClose" style="padding:6px 14px; border-radius:8px; border:1px solid #334155;
+                  background:#1e293b; color:#e2e8f0; cursor:pointer;">Close</button>
+        </div>
+        <div id="rwTeams" style="display:flex; gap:6px; flex-wrap:wrap;"></div>
+        <div id="rwPanes" style="display:flex; gap:10px; flex-wrap:wrap; align-items:flex-start;">
+          <div style="flex:1 1 480px; min-width:0;">
+            <div style="position:relative; width:100%; aspect-ratio:16/9; background:#000; border-radius:8px; overflow:hidden;">
+              <div id="rwPlayer" style="position:absolute; inset:0;"></div>
+            </div>
+          </div>
+          <div style="flex:1 1 480px; min-width:0;">
+            <div id="rwStage" style="position:relative; width:100%; border-radius:8px; overflow:hidden; cursor:crosshair;">
+              <img id="rwImg" alt="" style="display:block; width:100%; height:auto;">
+              <canvas id="rwCv" style="position:absolute; inset:0; width:100%; height:100%;"></canvas>
+            </div>
+            <div id="rwHint" style="color:#64748b; font-size:12px; margin-top:6px;">
+              Click a route to jump the video there.</div>
+          </div>
+        </div>`;
+    document.body.appendChild(el);
+    document.body.style.overflow = 'hidden';
+
+    const img = el.querySelector('#rwImg'), cv = el.querySelector('#rwCv');
+    const stage = el.querySelector('#rwStage');
+    const style = (b, on) => {
+        b.style.border = '1px solid ' + (on ? '#3b82f6' : '#334155');
+        b.style.background = on ? '#1e3a5f' : 'transparent';
+        b.style.color = on ? '#60a5fa' : '#94a3b8';
+    };
+    const flipped = () => view === 'field' && _trackFlip(doc);
+
+    const paint = () => {
+        if (!_trackSizeCanvas(img, cv)) return;
+        if (!routesOn) { cv.getContext('2d').clearRect(0, 0, cv.width, cv.height); hits = []; return; }
+        const trail = WATCH_TRAILS[trailIx];
+        if (view === 'camera') {
+            hits = renderCameraRoutes(cv, doc, { teams: shown, tNow, trailS: trail });
+            return;
+        }
+        renderFieldRoutes(cv, doc, {
+            teams: shown, tNow, trailOnly: tNow !== null, dots: tNow !== null,
+            tMin: (tNow !== null && trail !== null) ? tNow - trail : null, arrows: false,
+        });
+        const N = _trackNorm(doc), W = cv.width, H = cv.height;
+        const lo = (tNow !== null && trail !== null) ? tNow - trail : -Infinity;
+        hits = [];
+        for (const r of doc.robots || []) {
+            if (!shown.has(String(r.team))) continue;
+            for (const s of r.samples || []) {
+                if (s.t < lo || (tNow !== null && s.t > tNow)) continue;
+                const [nx, ny] = N(s.x, s.y);
+                hits.push({ X: nx * W, Y: ny * H, t: s.t, team: String(r.team) });
+            }
+        }
+    };
+    const setView = (v) => {
+        view = v;
+        try { localStorage.setItem('rtrackWatchView', v); } catch {}
+        img.src = view === 'camera' ? BASE + doc.cameraView.image : BASE + doc.field.imageRef;
+        stage.style.transform = flipped() ? 'rotate(180deg)' : '';
+        syncBtns();
+    };
+    const syncBtns = () => {
+        const rb = el.querySelector('#rwRoutes'), vb = el.querySelector('#rwView'), tb = el.querySelector('#rwTrail');
+        rb.textContent = 'Routes ' + (routesOn ? 'on' : 'off'); style(rb, routesOn);
+        vb.textContent = view === 'camera' ? 'Camera view' : 'Field view'; style(vb, false);
+        const tr = WATCH_TRAILS[trailIx];
+        tb.textContent = tr === null ? 'Trail: whole match' : `Trail: ${tr} s`; style(tb, false);
+    };
+    el.querySelector('#rwRoutes').onclick = () => { routesOn = !routesOn; syncBtns(); paint(); };
+    el.querySelector('#rwView').onclick = () => { if (hasCam) setView(view === 'camera' ? 'field' : 'camera'); };
+    el.querySelector('#rwTrail').onclick = () => {
+        trailIx = (trailIx + 1) % WATCH_TRAILS.length;
+        try { localStorage.setItem('rtrackWatchTrail', String(trailIx)); } catch {}
+        syncBtns(); paint();
+    };
+    el.querySelector('#rwClose').onclick = closeRouteWatch;
+
+    el.querySelector('#rwTeams').innerHTML = (doc.robots || []).map((r, k) => {
+        const t = String(r.team), c = window.trackColourFor(r, k);
+        return `<button data-team="${t}" style="padding:4px 10px; font-size:12px; border-radius:999px;
+                cursor:pointer; border:1px solid ${c}; background:transparent; color:${c};">${t}</button>`;
+    }).join('');
+    const syncTeams = () => el.querySelectorAll('#rwTeams button').forEach(
+        o => { o.style.opacity = shown.has(o.dataset.team) ? '1' : '0.32'; });
+    el.querySelectorAll('#rwTeams button').forEach(b => {
+        b.onclick = () => {
+            const t = b.dataset.team;
+            if (shown.has(t)) shown.delete(t); else shown.add(t);
+            syncTeams(); paint();
+        };
+    });
+    syncTeams();
+
+    // Click -> nearest drawn route point -> seek. The stage may be rotated (field view
+    // with the camera on the far side), so undo that before comparing.
+    const nearest = (e) => {
+        const r = cv.getBoundingClientRect();
+        let X = (e.clientX - r.left) * cv.width / r.width, Y = (e.clientY - r.top) * cv.height / r.height;
+        if (flipped()) { X = cv.width - X; Y = cv.height - Y; }
+        let best = null, bd = WATCH_HIT_PX * WATCH_HIT_PX * (cv.width / r.width) ** 2;
+        for (const h of hits) {
+            const d = (h.X - X) ** 2 + (h.Y - Y) ** 2;
+            if (d < bd) { bd = d; best = h; }
+        }
+        return best;
+    };
+    let player = null, ready = false;
+    stage.addEventListener('click', (e) => {
+        const h = nearest(e);
+        if (!h || !player || !ready) return;
+        player.seekTo(Math.max(0, vid.start + h.t - WATCH_LEAD_S), true);
+        player.playVideo();
+    });
+    stage.addEventListener('mousemove', (e) => {
+        const h = nearest(e);
+        stage.style.cursor = h ? 'pointer' : 'crosshair';
+        stage.title = h ? `${h.team} at ${h.t.toFixed(1)} s — click to watch` : '';
+    });
+
+    // Sync loop. getCurrentTime() steps a few times a second; extrapolate between steps.
+    let raf = 0, lastVT = null, lastAt = 0, lastPainted = null;
+    const clock = el.querySelector('#rwClock');
+    const tick = () => {
+        raf = requestAnimationFrame(tick);
+        if (!ready) return;
+        let vt;
+        try { vt = player.getCurrentTime(); } catch { return; }
+        const now = performance.now();
+        const playingNow = player.getPlayerState?.() === 1;
+        if (vt !== lastVT) { lastVT = vt; lastAt = now; }
+        const est = playingNow ? lastVT + Math.min(0.5, (now - lastAt) / 1000) * (player.getPlaybackRate?.() || 1) : lastVT;
+        const t = est - vid.start;
+        clock.textContent = t < 0 ? `${(-t).toFixed(1)} s before auto` : `match ${t.toFixed(1)} s`;
+        if (lastPainted === null || Math.abs(t - lastPainted) > 0.033) { tNow = t; lastPainted = t; paint(); }
+    };
+
+    const t0 = (opts.t ?? null) !== null ? Math.max(0, vid.start + opts.t - WATCH_LEAD_S) : Math.max(0, vid.start - 3);
+    loadYTApi().then((YT) => {
+        if (document.getElementById('routeWatch') !== el) return;
+        player = new YT.Player(el.querySelector('#rwPlayer'), {
+            videoId: vid.id, host: 'https://www.youtube-nocookie.com',
+            width: '100%', height: '100%',
+            playerVars: { start: Math.floor(t0), autoplay: 1, playsinline: 1, rel: 0 },
+            events: {
+                onReady: () => { ready = true; try { player.seekTo(t0, true); } catch {} },
+            },
+        });
+    }).catch(() => {
+        el.querySelector('#rwHint').textContent = 'The YouTube player could not load (offline?). Routes are shown without video.';
+        tNow = opts.t ?? null; paint();
+    });
+    raf = requestAnimationFrame(tick);
+
+    const onResize = () => paint();
+    window.addEventListener('resize', onResize);
+    const onKey = (e) => { if (e.key === 'Escape') closeRouteWatch(); };
+    document.addEventListener('keydown', onKey);
+    img.addEventListener('load', paint);
+    _watchTeardown = () => {
+        cancelAnimationFrame(raf);
+        window.removeEventListener('resize', onResize);
+        document.removeEventListener('keydown', onKey);
+        try { player?.destroy(); } catch {}
+    };
+    setView(view);
+    navLayerOpen('routeWatch', closeRouteWatch, () => !!document.getElementById('routeWatch'));
 };
 
 // ── ROUTE INSPECTION ─────────────────────────────────────────────────────────
@@ -12285,6 +12621,7 @@ window.openRouteInspector = function (doc, matchKey, opts = {}) {
 
     const onResize = () => { drawStrip(); paintField(); };
     const onKey = (e) => {
+        if (document.getElementById('routeWatch')) return;    // the watch view is on top
         if (e.key === 'Escape') closeRouteInspector();
         else if (e.key === 'ArrowLeft') setT(tNow - (e.shiftKey ? INSPECT_FRAME_S : INSPECT_DT));
         else if (e.key === 'ArrowRight') setT(tNow + (e.shiftKey ? INSPECT_FRAME_S : INSPECT_DT));
@@ -14786,26 +15123,40 @@ window.addEventListener('message', e => {
     if (document.getElementById('tools-tab-tracks')) renderTracksTab();
 });
 
-// ── ROUTES FOR OFFLINE USE ───────────────────────────────────────────────────
+// ── ROUTES FOR THE LOADED EVENT ──────────────────────────────────────────────
 // The app works offline from what it has cached, and routes were cached only when opened:
 // a scout in a venue with no signal could see the matches they happened to have looked at
-// and nothing else. So whenever there is a connection -- on start, when it comes back, and
-// every ten minutes -- every published route (git manifest and relay, all events) that is
-// missing or out of date is downloaded into Dexie, through loadMatchTracks so it is
-// revalidated exactly as a viewed route is. A route that is already current costs one
-// Dexie read. Curation bundles are not cached: curating needs the relay anyway.
+// and nothing else. So the LOADED EVENT's routes are downloaded into Dexie as soon as the
+// event is loaded, and again whenever there is a connection -- when it comes back, and
+// every ten minutes -- through loadMatchTracks, so each is revalidated exactly as a viewed
+// route is. A route that is already current costs one Dexie read.
+//
+// One event, not all of them: routes used to come with event archives, and now come with
+// the event instead (archives no longer carry them). Other events' routes still load on
+// demand when opened. Curation bundles are not cached: curating needs the relay anyway.
 const ROUTE_SYNC_EVERY_MS = 10 * 60 * 1000;
 const ROUTE_SYNC_STATUS = 'rtrackRouteSync';
-let _routeSyncBusy = false;
+let _routeSyncBusy = false, _routeSyncAgain = false;
 
-async function syncRoutesForOffline() {
-    if (_routeSyncBusy || navigator.onLine === false) return;
+function _loadedEventKey() {
+    return (document.getElementById('eventKeyInput')?.value || localStorage.getItem('lastEventKey') || '')
+        .trim().toLowerCase();
+}
+
+async function syncRoutesForOffline(eventKey) {
+    if (navigator.onLine === false) return;
+    // A sync already running for the previous event must not swallow the request for the
+    // new one: note it and run again when that finishes.
+    if (_routeSyncBusy) { _routeSyncAgain = eventKey || true; return; }
+    const ev = (typeof eventKey === 'string' && eventKey) || _loadedEventKey();
+    if (!ev) return;
     _routeSyncBusy = true;
     try {
         const man = await loadTracksManifest(true);
         let relay = new Map();
         try { relay = await relayTracksIndex(); } catch {}
-        const keys = [...new Set([...(man.matches || []).map(m => m.key), ...relay.keys()])];
+        const keys = [...new Set([...(man.matches || []).map(m => m.key), ...relay.keys()])]
+            .filter(k => k.startsWith(ev + '_'));
         let saved = 0, i = 0;
         const images = new Set();
         const worker = async () => {
@@ -14823,10 +15174,18 @@ async function syncRoutesForOffline() {
         for (const ref of images) { try { await fetch(`${import.meta.env.BASE_URL}${ref}`); } catch {} }
         try {
             localStorage.setItem(ROUTE_SYNC_STATUS, JSON.stringify(
-                { at: Date.now(), saved, listed: keys.length }));
+                { at: Date.now(), saved, listed: keys.length, event: ev }));
         } catch {}
+        // The Routes tab memoises by team; newly cached routes must reach it.
+        if (saved) routesRenderedFor = null;
         paintOfflineRoutes();
-    } finally { _routeSyncBusy = false; }
+    } finally {
+        _routeSyncBusy = false;
+        if (_routeSyncAgain) {
+            const next = _routeSyncAgain; _routeSyncAgain = false;
+            syncRoutesForOffline(typeof next === 'string' ? next : undefined);
+        }
+    }
 }
 window.syncRoutesForOffline = syncRoutesForOffline;
 
@@ -14835,13 +15194,16 @@ async function paintOfflineRoutes() {
     if (!el) return;
     let st = null;
     try { st = JSON.parse(localStorage.getItem(ROUTE_SYNC_STATUS) || 'null'); } catch {}
+    const ev = _loadedEventKey();
     let have = 0;
-    try { have = await db.matchTracks.count(); } catch {}
+    try { have = ev ? await db.matchTracks.where('eventKey').equals(ev).count() : await db.matchTracks.count(); } catch {}
     const when = st?.at ? new Date(st.at).toLocaleString([], { month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit' }) : null;
-    el.innerHTML = navigator.onLine === false
-        ? `<span style="color:#f59e0b;">Offline</span> · ${have} saved route${have === 1 ? '' : 's'} available${when ? ` (last updated ${when})` : ''}`
-        : st ? `Routes saved for offline: ${st.saved} of ${st.listed}${when ? ` · updated ${when}` : ''}`
-             : `Saving routes for offline use…`;
+    const cur = st && (!st.event || st.event === ev);
+    el.innerHTML = !ev ? 'Load an event to save its routes for offline use'
+        : navigator.onLine === false
+        ? `<span style="color:#f59e0b;">Offline</span> · ${have} saved ${ev} route${have === 1 ? '' : 's'} available${when && cur ? ` (last updated ${when})` : ''}`
+        : cur ? `${ev} routes saved for offline: ${st.saved} of ${st.listed}${when ? ` · updated ${when}` : ''}`
+              : `Saving ${ev} routes for offline use…`;
 }
 
 window.addEventListener('online', () => { paintOfflineRoutes(); syncRoutesForOffline(); });

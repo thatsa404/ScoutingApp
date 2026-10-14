@@ -1,6 +1,6 @@
 {
  "schemaVersion": 1,
- "updatedAt": "2026-09-21T15:35:11Z",
+ "updatedAt": "2026-10-14T16:39:48Z",
  "gallery": {
   "2026necmp": {
    "1768": 588,
@@ -65,24 +65,2008 @@
  },
  "matches": [
   {
-   "key": "2026mawor_f1m2",
-   "eventKey": "2026mawor",
-   "compLevel": "f",
+   "key": "2026gal_qm1",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 1,
+   "videoId": "A_fBDQpovYA",
+   "teams": [
+    "2491",
+    "4450",
+    "10991",
+    "8069",
+    "6665",
+    "11214"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.6564,
+   "maxSpeed": {
+    "mps": 4.14,
+    "team": "2491",
+    "t": 35.3,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 6.0
+   },
+   "bytes": 210257,
+   "exportedAt": "2026-10-14T16:38:15Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm10",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 10,
+   "videoId": "9trhT1AZ96g",
+   "teams": [
+    "7415",
+    "6201",
+    "5653",
+    "614",
+    "2590",
+    "4469"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.6839,
+   "maxSpeed": {
+    "mps": 5.79,
+    "team": "5653",
+    "t": 138.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 12.734
+   },
+   "bytes": 247051,
+   "exportedAt": "2026-10-14T16:38:15Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm11",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 11,
+   "videoId": "8MLRq-aPknU",
+   "teams": [
+    "11244",
+    "1768",
+    "6911",
+    "8229",
+    "111",
+    "2054"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.7437,
+   "maxSpeed": {
+    "mps": 5.11,
+    "team": "1768",
+    "t": 94.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 7.0
+   },
+   "bytes": 236586,
+   "exportedAt": "2026-10-14T16:38:15Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm13",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 13,
+   "videoId": "dhRz7k15Vm4",
+   "teams": [
+    "931",
+    "4322",
+    "2813",
+    "2491",
+    "8159",
+    "8119"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7346,
+   "maxSpeed": {
+    "mps": 4.93,
+    "team": "2491",
+    "t": 122.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 74.333
+   },
+   "bytes": 230844,
+   "exportedAt": "2026-10-14T16:38:15Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm14",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 14,
+   "videoId": "zgGswbkYCHo",
+   "teams": [
+    "3501",
+    "6487",
+    "4450",
+    "8858",
+    "2556",
+    "9572"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7164,
+   "maxSpeed": {
+    "mps": 5.23,
+    "team": "9572",
+    "t": 81.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 27.067
+   },
+   "bytes": 224870,
+   "exportedAt": "2026-10-14T16:38:17Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm15",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 15,
+   "videoId": "z2XimdenuhE",
+   "teams": [
+    "4607",
+    "8069",
+    "2582",
+    "1756",
+    "449",
+    "484"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7372,
+   "maxSpeed": {
+    "mps": 4.95,
+    "team": "449",
+    "t": 3.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 91.467
+   },
+   "bytes": 232504,
+   "exportedAt": "2026-10-14T16:38:18Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm16",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 16,
+   "videoId": "v8USX6oq9YM",
+   "teams": [
+    "6665",
+    "7183",
+    "1391",
+    "364",
+    "1023",
+    "6985"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7291,
+   "maxSpeed": {
+    "mps": 4.83,
+    "team": "6665",
+    "t": 45.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 42.733
+   },
+   "bytes": 230661,
+   "exportedAt": "2026-10-14T16:38:18Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm17",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 17,
+   "videoId": "8mchFhsueIs",
+   "teams": [
+    "5705",
+    "11214",
+    "16",
+    "3082",
+    "9496",
+    "2468"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.648,
+   "maxSpeed": {
+    "mps": 5.18,
+    "team": "2468",
+    "t": 98.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 23.933
+   },
+   "bytes": 208028,
+   "exportedAt": "2026-10-14T16:38:18Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm18",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 18,
+   "videoId": "5md58dI4yVw",
+   "teams": [
+    "7915",
+    "2231",
+    "6429",
+    "3937",
+    "5653",
+    "3243"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7296,
+   "maxSpeed": {
+    "mps": 5.34,
+    "team": "3243",
+    "t": 93.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 38.0
+   },
+   "bytes": 229689,
+   "exportedAt": "2026-10-14T16:38:20Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm19",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 19,
+   "videoId": "whuwo6gCOrc",
+   "teams": [
+    "6528",
+    "614",
+    "51",
+    "3753",
+    "2054",
+    "11417"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7363,
+   "maxSpeed": {
+    "mps": 5.69,
+    "team": "6528",
+    "t": 32.7,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 6,
+    "t": 9.0
+   },
+   "bytes": 231777,
+   "exportedAt": "2026-10-14T16:38:20Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm2",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 2,
-   "videoId": "WFj_FsFQRkM",
+   "videoId": "8Zvo0cbjJ3E",
    "teams": [
-    "5347",
-    "5000",
-    "190",
-    "1768",
-    "8567",
-    "3467"
+    "5895",
+    "2813",
+    "7915",
+    "9572",
+    "2582",
+    "11242"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.755,
-   "bytes": 177165,
-   "exportedAt": "2026-09-14T23:46:21Z",
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7996,
+   "maxSpeed": {
+    "mps": 4.11,
+    "team": "11242",
+    "t": 56.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 75.0
+   },
+   "bytes": 161665,
+   "exportedAt": "2026-10-14T16:38:20Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm20",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 20,
+   "videoId": "4zdZcftbUuA",
+   "teams": [
+    "1816",
+    "6201",
+    "4655",
+    "4766",
+    "1768",
+    "2635"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7576,
+   "maxSpeed": {
+    "mps": 4.71,
+    "team": "6201",
+    "t": 103.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 4.602
+   },
+   "bytes": 273288,
+   "exportedAt": "2026-10-14T16:38:21Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm22",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 22,
+   "videoId": "W3HghIQecQ4",
+   "teams": [
+    "4125",
+    "1403",
+    "8229",
+    "4020",
+    "7415",
+    "2393"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7206,
+   "maxSpeed": {
+    "mps": 4.55,
+    "team": "8229",
+    "t": 58.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 67.174
+   },
+   "bytes": 265699,
+   "exportedAt": "2026-10-14T16:38:23Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm23",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 23,
+   "videoId": "pI2BY0ilHvg",
+   "teams": [
+    "10034",
+    "2590",
+    "5913",
+    "1533",
+    "7840",
+    "11242"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7391,
+   "maxSpeed": {
+    "mps": 4.3,
+    "team": "10034",
+    "t": 122.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 7.867
+   },
+   "bytes": 230874,
+   "exportedAt": "2026-10-14T16:38:23Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm24",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 24,
+   "videoId": "jhLtTCoYO2M",
+   "teams": [
+    "10980",
+    "4469",
+    "4087",
+    "111",
+    "5181",
+    "10991"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7759,
+   "maxSpeed": {
+    "mps": 5.53,
+    "team": "4087",
+    "t": 38.7,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 38.574
+   },
+   "bytes": 276069,
+   "exportedAt": "2026-10-14T16:38:23Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm25",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 25,
+   "videoId": "wKDx4mIafxE",
+   "teams": [
+    "931",
+    "11244",
+    "3544",
+    "4322",
+    "6911",
+    "5577"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.8373,
+   "maxSpeed": {
+    "mps": 3.81,
+    "team": "3544",
+    "t": 67.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 5,
+    "t": 9.133
+   },
+   "bytes": 258875,
+   "exportedAt": "2026-10-14T16:38:23Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm27",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 27,
+   "videoId": "bfzcUHp3TSE",
+   "teams": [
+    "11417",
+    "16",
+    "614",
+    "2556",
+    "8069",
+    "3243"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7985,
+   "maxSpeed": {
+    "mps": 4.42,
+    "team": "614",
+    "t": 154.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 5,
+    "t": 88.6
+   },
+   "bytes": 248808,
+   "exportedAt": "2026-10-14T16:38:25Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm28",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 28,
+   "videoId": "oXidFbDp6YY",
+   "teams": [
+    "9496",
+    "6985",
+    "8119",
+    "3753",
+    "4450",
+    "6528"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7226,
+   "maxSpeed": {
+    "mps": 5.31,
+    "team": "9496",
+    "t": 123.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 56.333
+   },
+   "bytes": 233918,
+   "exportedAt": "2026-10-14T16:38:25Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm29",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 29,
+   "videoId": "DJieR4m5GN0",
+   "teams": [
+    "5895",
+    "3082",
+    "1816",
+    "2231",
+    "2054",
+    "4607"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7539,
+   "maxSpeed": {
+    "mps": 4.92,
+    "team": "3082",
+    "t": 31.0,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 54.133
+   },
+   "bytes": 236402,
+   "exportedAt": "2026-10-14T16:38:25Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm3",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 3,
+   "videoId": "LbCUBoMn7iM",
+   "teams": [
+    "7769",
+    "449",
+    "6429",
+    "2635",
+    "16",
+    "6487"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.7933,
+   "maxSpeed": {
+    "mps": 3.82,
+    "team": "6429",
+    "t": 32.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 29.933
+   },
+   "bytes": 247186,
+   "exportedAt": "2026-10-14T16:38:26Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm30",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 30,
+   "videoId": "xeskjvR6dfU",
+   "teams": [
+    "1391",
+    "364",
+    "1506",
+    "4020",
+    "1403",
+    "2635"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.8073,
+   "maxSpeed": {
+    "mps": 5.01,
+    "team": "2635",
+    "t": 40.2,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 39.933
+   },
+   "bytes": 246971,
+   "exportedAt": "2026-10-14T16:38:28Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm31",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 31,
+   "videoId": "o-1cUdZYucI",
+   "teams": [
+    "7769",
+    "1768",
+    "3937",
+    "11242",
+    "51",
+    "2491"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7405,
+   "maxSpeed": {
+    "mps": 4.16,
+    "team": "7769",
+    "t": 23.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 7.4
+   },
+   "bytes": 239973,
+   "exportedAt": "2026-10-14T16:38:29Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm32",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 32,
+   "videoId": "JQ0cfY7JSEY",
+   "teams": [
+    "2393",
+    "7840",
+    "6487",
+    "6665",
+    "4469",
+    "1533"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7326,
+   "maxSpeed": {
+    "mps": 4.91,
+    "team": "6487",
+    "t": 91.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 30.6
+   },
+   "bytes": 235110,
+   "exportedAt": "2026-10-14T16:38:28Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm33",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 33,
+   "videoId": "y_YtvQSmCZc",
+   "teams": [
+    "11244",
+    "9572",
+    "3931",
+    "6201",
+    "4125",
+    "10991"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7491,
+   "maxSpeed": {
+    "mps": 5.05,
+    "team": "3931",
+    "t": 91.8,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 41.446
+   },
+   "bytes": 240906,
+   "exportedAt": "2026-10-14T16:38:29Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm34",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 34,
+   "videoId": "G_FpYksGIzs",
+   "teams": [
+    "5577",
+    "11214",
+    "4087",
+    "449",
+    "7915",
+    "8858"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.8015,
+   "maxSpeed": {
+    "mps": 5.57,
+    "team": "7915",
+    "t": 149.2,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 15.619
+   },
+   "bytes": 253186,
+   "exportedAt": "2026-10-14T16:38:31Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm35",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 35,
+   "videoId": "_z2VioVj00E",
+   "teams": [
+    "4655",
+    "111",
+    "484",
+    "4322",
+    "5181",
+    "3544"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7518,
+   "maxSpeed": {
+    "mps": 4.47,
+    "team": "4322",
+    "t": 106.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 99.8
+   },
+   "bytes": 228937,
+   "exportedAt": "2026-10-14T16:38:31Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm36",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 36,
+   "videoId": "Hi31ODACeGU",
+   "teams": [
+    "7183",
+    "2468",
+    "2590",
+    "8229",
+    "931",
+    "1690"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7031,
+   "maxSpeed": {
+    "mps": 4.98,
+    "team": "2468",
+    "t": 61.8,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 5.6
+   },
+   "bytes": 225878,
+   "exportedAt": "2026-10-14T16:38:31Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm37",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 37,
+   "videoId": "D_eoyldyjQ4",
+   "teams": [
+    "10980",
+    "7415",
+    "5913",
+    "2582",
+    "6911",
+    "8159"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7025,
+   "maxSpeed": {
+    "mps": 5.51,
+    "team": "5913",
+    "t": 146.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 5,
+    "t": 6.2
+   },
+   "bytes": 220286,
+   "exportedAt": "2026-10-14T16:38:32Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm38",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 38,
+   "videoId": "0U8iVutdPOs",
+   "teams": [
+    "10034",
+    "1506",
+    "16",
+    "6528",
+    "2813",
+    "4766"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7179,
+   "maxSpeed": {
+    "mps": 5.72,
+    "team": "1506",
+    "t": 38.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 26.933
+   },
+   "bytes": 232960,
+   "exportedAt": "2026-10-14T16:38:33Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm39",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 39,
+   "videoId": "Dk-ONT7SRVY",
+   "teams": [
+    "5653",
+    "5895",
+    "1403",
+    "8119",
+    "8069",
+    "3937"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7015,
+   "maxSpeed": {
+    "mps": 4.06,
+    "team": "3937",
+    "t": 116.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 45.048
+   },
+   "bytes": 229500,
+   "exportedAt": "2026-10-14T16:38:33Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm4",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 4,
+   "videoId": "02Di47JRH1M",
+   "teams": [
+    "8858",
+    "6528",
+    "7183",
+    "1756",
+    "3931",
+    "1816"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7361,
+   "maxSpeed": {
+    "mps": 4.43,
+    "team": "7183",
+    "t": 90.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 38.267
+   },
+   "bytes": 235738,
+   "exportedAt": "2026-10-14T16:38:33Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm40",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 40,
+   "videoId": "YKvGWJD92bw",
+   "teams": [
+    "6985",
+    "1533",
+    "2054",
+    "4020",
+    "1756",
+    "7769"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.748,
+   "maxSpeed": {
+    "mps": 4.01,
+    "team": "7769",
+    "t": 121.2,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 54.733
+   },
+   "bytes": 234685,
+   "exportedAt": "2026-10-14T16:38:35Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm41",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 41,
+   "videoId": "br5CWRNoebU",
+   "teams": [
+    "6487",
+    "11244",
+    "1391",
+    "3243",
+    "3501",
+    "1768"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.5644,
+   "maxSpeed": {
+    "mps": 4.45,
+    "team": "1768",
+    "t": 11.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 35.972
+   },
+   "bytes": 187882,
+   "exportedAt": "2026-10-14T16:38:36Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm42",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 42,
+   "videoId": "-aLcSn6_YtQ",
+   "teams": [
+    "9572",
+    "2491",
+    "2635",
+    "2231",
+    "4469",
+    "5577"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6422,
+   "maxSpeed": {
+    "mps": 4.89,
+    "team": "9572",
+    "t": 114.6,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 47.333
+   },
+   "bytes": 213202,
+   "exportedAt": "2026-10-14T16:38:36Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm43",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 43,
+   "videoId": "M-8DmNV40AE",
+   "teams": [
+    "2393",
+    "4087",
+    "364",
+    "11214",
+    "1816",
+    "1023"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6966,
+   "maxSpeed": {
+    "mps": 5.65,
+    "team": "364",
+    "t": 75.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 10,
+    "t": 34.8
+   },
+   "bytes": 224123,
+   "exportedAt": "2026-10-14T16:38:36Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm44",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 44,
+   "videoId": "QaBPxxVRIkA",
+   "teams": [
+    "7840",
+    "6201",
+    "3753",
+    "7183",
+    "8229",
+    "7915"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6874,
+   "maxSpeed": {
+    "mps": 5.03,
+    "team": "7915",
+    "t": 92.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 28.551
+   },
+   "bytes": 251884,
+   "exportedAt": "2026-10-14T16:38:37Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm45",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 45,
+   "videoId": "ClFggHPdSO0",
+   "teams": [
+    "2468",
+    "10991",
+    "3544",
+    "2582",
+    "5913",
+    "614"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6779,
+   "maxSpeed": {
+    "mps": 4.7,
+    "team": "2468",
+    "t": 76.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 6,
+    "t": 64.801
+   },
+   "bytes": 229402,
+   "exportedAt": "2026-10-14T16:38:38Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm46",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 46,
+   "videoId": "F2x9zfYrF2g",
+   "teams": [
+    "6429",
+    "111",
+    "4450",
+    "484",
+    "7415",
+    "51"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7023,
+   "maxSpeed": {
+    "mps": 5.48,
+    "team": "51",
+    "t": 54.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 50.733
+   },
+   "bytes": 226196,
+   "exportedAt": "2026-10-14T16:38:38Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm47",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 47,
+   "videoId": "SwTGjveuzSo",
+   "teams": [
+    "6665",
+    "3082",
+    "2556",
+    "3931",
+    "4655",
+    "2813"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6528,
+   "maxSpeed": {
+    "mps": 4.96,
+    "team": "3082",
+    "t": 77.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 141.867
+   },
+   "bytes": 212018,
+   "exportedAt": "2026-10-14T16:38:39Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm49",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 49,
+   "videoId": "ri7IOQYVd5o",
+   "teams": [
+    "4766",
+    "9496",
+    "2590",
+    "8159",
+    "4322",
+    "8858"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6159,
+   "maxSpeed": {
+    "mps": 4.78,
+    "team": "8858",
+    "t": 107.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 32.667
+   },
+   "bytes": 197167,
+   "exportedAt": "2026-10-14T16:38:40Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm5",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 5,
+   "videoId": "4mOISx8v0T4",
+   "teams": [
+    "4607",
+    "8119",
+    "4125",
+    "2556",
+    "364",
+    "2468"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7367,
+   "maxSpeed": {
+    "mps": 4.45,
+    "team": "2468",
+    "t": 30.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 7,
+    "t": 28.133
+   },
+   "bytes": 240635,
+   "exportedAt": "2026-10-14T16:38:41Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm50",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 50,
+   "videoId": "vRl5XBeYWLg",
+   "teams": [
+    "4125",
+    "5705",
+    "931",
+    "11242",
+    "10980",
+    "4607"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6297,
+   "maxSpeed": {
+    "mps": 4.63,
+    "team": "5705",
+    "t": 99.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 26.944
+   },
+   "bytes": 237273,
+   "exportedAt": "2026-10-14T16:38:41Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm51",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 51,
+   "videoId": "7Ow6jkBr8kw",
+   "teams": [
+    "1816",
+    "6985",
+    "4020",
+    "16",
+    "3937",
+    "5895"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6816,
+   "maxSpeed": {
+    "mps": 5.68,
+    "team": "1816",
+    "t": 123.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 30.267
+   },
+   "bytes": 218309,
+   "exportedAt": "2026-10-14T16:38:41Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm53",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 53,
+   "videoId": "TKw-tpEditw",
+   "teams": [
+    "4469",
+    "3544",
+    "8069",
+    "2054",
+    "7183",
+    "3501"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6789,
+   "maxSpeed": {
+    "mps": 4.66,
+    "team": "4469",
+    "t": 40.6,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 37.8
+   },
+   "bytes": 211532,
+   "exportedAt": "2026-10-14T16:38:42Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm54",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 54,
+   "videoId": "L4Si-aFHhZ4",
+   "teams": [
+    "51",
+    "2231",
+    "6201",
+    "2468",
+    "484",
+    "7840"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7215,
+   "maxSpeed": {
+    "mps": 4.67,
+    "team": "2468",
+    "t": 115.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 127.933
+   },
+   "bytes": 226571,
+   "exportedAt": "2026-10-14T16:38:43Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm55",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 55,
+   "videoId": "YftMkCLeIh8",
+   "teams": [
+    "1533",
+    "7915",
+    "4450",
+    "2813",
+    "1023",
+    "11244"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7266,
+   "maxSpeed": {
+    "mps": 5.06,
+    "team": "4450",
+    "t": 114.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 7,
+    "t": 8.8
+   },
+   "bytes": 230724,
+   "exportedAt": "2026-10-14T16:38:43Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm56",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 56,
+   "videoId": "ig54TSucqQA",
+   "teams": [
+    "11417",
+    "10034",
+    "8119",
+    "6487",
+    "2491",
+    "7415"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.5939,
+   "maxSpeed": {
+    "mps": 5.19,
+    "team": "7415",
+    "t": 42.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 72.416
+   },
+   "bytes": 219645,
+   "exportedAt": "2026-10-14T16:38:43Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm57",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 57,
+   "videoId": "6iQk_q4weIw",
+   "teams": [
+    "3082",
+    "5577",
+    "364",
+    "10991",
+    "8159",
+    "3243"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6112,
+   "maxSpeed": {
+    "mps": 4.6,
+    "team": "3243",
+    "t": 161.0,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 117.664
+   },
+   "bytes": 223682,
+   "exportedAt": "2026-10-14T16:38:44Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm58",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 58,
+   "videoId": "086kLik4b40",
+   "teams": [
+    "6911",
+    "4607",
+    "1756",
+    "1391",
+    "614",
+    "9496"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6264,
+   "maxSpeed": {
+    "mps": 5.01,
+    "team": "9496",
+    "t": 120.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 133.533
+   },
+   "bytes": 212687,
+   "exportedAt": "2026-10-14T16:38:46Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm59",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 59,
+   "videoId": "GMXHc8iW5jY",
+   "teams": [
+    "2556",
+    "4766",
+    "2393",
+    "449",
+    "5913",
+    "931"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7526,
+   "maxSpeed": {
+    "mps": 4.91,
+    "team": "5913",
+    "t": 62.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 103.4
+   },
+   "bytes": 234552,
+   "exportedAt": "2026-10-14T16:38:46Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm6",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 6,
+   "videoId": "Ry_WY5PFiKk",
+   "teams": [
+    "3937",
+    "6985",
+    "10034",
+    "2393",
+    "3501",
+    "4655"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7604,
+   "maxSpeed": {
+    "mps": 4.95,
+    "team": "4655",
+    "t": 78.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 49.667
+   },
+   "bytes": 246102,
+   "exportedAt": "2026-10-14T16:38:46Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm60",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 60,
+   "videoId": "2Zm3FLA9uEw",
+   "teams": [
+    "10980",
+    "3753",
+    "1506",
+    "2590",
+    "4655",
+    "5653"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7313,
+   "maxSpeed": {
+    "mps": 4.52,
+    "team": "2590",
+    "t": 94.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 233485,
+   "exportedAt": "2026-10-14T16:38:47Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm61",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 61,
+   "videoId": "yhICEa1XPwg",
+   "teams": [
+    "2582",
+    "8229",
+    "6665",
+    "5181",
+    "2635",
+    "5705"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6114,
+   "maxSpeed": {
+    "mps": 4.51,
+    "team": "5181",
+    "t": 134.0,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 45.733
+   },
+   "bytes": 196347,
+   "exportedAt": "2026-10-14T16:38:48Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm62",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 62,
+   "videoId": "cly0s0kOhEg",
+   "teams": [
+    "111",
+    "1690",
+    "8858",
+    "11242",
+    "6429",
+    "4125"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7393,
+   "maxSpeed": {
+    "mps": 4.49,
+    "team": "11242",
+    "t": 27.8,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 254323,
+   "exportedAt": "2026-10-14T16:38:49Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm63",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 63,
+   "videoId": "F2wYMw10TM4",
+   "teams": [
+    "3931",
+    "2468",
+    "8069",
+    "4322",
+    "4087",
+    "7915"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6611,
+   "maxSpeed": {
+    "mps": 5.67,
+    "team": "7915",
+    "t": 57.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 54.6
+   },
+   "bytes": 216691,
+   "exportedAt": "2026-10-14T16:38:48Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm64",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 64,
+   "videoId": "mUgJytJbdDY",
+   "teams": [
+    "3544",
+    "7183",
+    "1023",
+    "1768",
+    "5895",
+    "11417"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6962,
+   "maxSpeed": {
+    "mps": 6.2,
+    "team": "3544",
+    "t": 62.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 31.399
+   },
+   "bytes": 233381,
+   "exportedAt": "2026-10-14T16:38:49Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm65",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 65,
+   "videoId": "azcU-7y_ZOE",
+   "teams": [
+    "1403",
+    "1816",
+    "8159",
+    "484",
+    "11244",
+    "10034"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.6613,
+   "maxSpeed": {
+    "mps": 6.5,
+    "team": "11244",
+    "t": 143.4,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 5,
+    "t": 78.133
+   },
+   "bytes": 209425,
+   "exportedAt": "2026-10-14T16:38:51Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm7",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 7,
+   "videoId": "sDrf7bNE-eg",
+   "teams": [
+    "5913",
+    "484",
+    "4020",
+    "5705",
+    "3753",
+    "3082"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.7294,
+   "maxSpeed": {
+    "mps": 5.1,
+    "team": "5913",
+    "t": 71.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 39.533
+   },
+   "bytes": 232657,
+   "exportedAt": "2026-10-14T16:38:51Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026gal_qm8",
+   "eventKey": "2026gal",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 8,
+   "videoId": "UPd1FXl-prA",
+   "teams": [
+    "1391",
+    "5181",
+    "1023",
+    "5577",
+    "1506",
+    "51"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.732,
+   "maxSpeed": {
+    "mps": 4.25,
+    "team": "1023",
+    "t": 56.5,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 64.906
+   },
+   "bytes": 262793,
+   "exportedAt": "2026-10-14T16:38:51Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -92,7 +2076,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 1,
-   "videoId": "2026mawor_qm1",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "5112",
     "4628",
@@ -101,10 +2085,22 @@
     "5422",
     "716"
    ],
+   "absent": [],
    "curated": true,
+   "identityEvidence": "anchors-only",
    "meanCustody": 0.8307,
-   "bytes": 171936,
-   "exportedAt": "2026-09-21T13:48:54Z",
+   "maxSpeed": {
+    "mps": 8.96,
+    "team": "716",
+    "t": 114.2,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 250888,
+   "exportedAt": "2026-10-14T16:38:52Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -114,7 +2110,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 10,
-   "videoId": "2026mawor_qm10",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "1768",
     "1027",
@@ -123,10 +2119,22 @@
     "5112",
     "11483"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8656,
-   "bytes": 172363,
-   "exportedAt": "2026-09-21T15:35:11Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8385,
+   "maxSpeed": {
+    "mps": 8.82,
+    "team": "5112",
+    "t": 44.2,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 251910,
+   "exportedAt": "2026-10-14T16:38:54Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -136,7 +2144,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 11,
-   "videoId": "2026mawor_qm11",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "2370",
     "3467",
@@ -145,10 +2153,22 @@
     "3634",
     "157"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8714,
-   "bytes": 175544,
-   "exportedAt": "2026-09-21T14:33:28Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8631,
+   "maxSpeed": {
+    "mps": 10.94,
+    "team": "2262",
+    "t": 83.5,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 255534,
+   "exportedAt": "2026-10-14T16:38:54Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -158,7 +2178,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 12,
-   "videoId": "2026mawor_qm12",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "5422",
     "8544",
@@ -167,10 +2187,22 @@
     "6333",
     "9644"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8237,
-   "bytes": 168092,
-   "exportedAt": "2026-09-21T14:37:07Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8345,
+   "maxSpeed": {
+    "mps": 3.58,
+    "team": "9644",
+    "t": 41.0,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 244056,
+   "exportedAt": "2026-10-14T16:38:54Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -180,7 +2212,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 13,
-   "videoId": "2026mawor_qm13",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "1757",
     "3205",
@@ -189,10 +2221,22 @@
     "2079",
     "999"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.7673,
-   "bytes": 161094,
-   "exportedAt": "2026-09-21T14:39:36Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.7461,
+   "maxSpeed": {
+    "mps": 4.39,
+    "team": "1100",
+    "t": 104.4,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 232382,
+   "exportedAt": "2026-10-14T16:38:55Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -202,7 +2246,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 14,
-   "videoId": "2026mawor_qm14",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "1768",
     "8567",
@@ -211,10 +2255,22 @@
     "10254",
     "716"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.5484,
-   "bytes": 112536,
-   "exportedAt": "2026-09-21T02:32:01Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.5507,
+   "maxSpeed": {
+    "mps": 5.51,
+    "team": "10254",
+    "t": 28.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 167837,
+   "exportedAt": "2026-10-14T16:38:56Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -224,7 +2280,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 15,
-   "videoId": "2026mawor_qm15",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "2168",
     "190",
@@ -233,10 +2289,158 @@
     "10393",
     "237"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.5945,
-   "bytes": 130736,
-   "exportedAt": "2026-09-21T02:36:49Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.6344,
+   "maxSpeed": {
+    "mps": 4.27,
+    "team": "1027",
+    "t": 41.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 206580,
+   "exportedAt": "2026-10-14T16:38:57Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm16",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 16,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "348",
+    "3467",
+    "2262",
+    "9644",
+    "4048",
+    "5491"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8246,
+   "maxSpeed": {
+    "mps": 3.61,
+    "team": "348",
+    "t": 85.0,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 247985,
+   "exportedAt": "2026-10-14T16:38:57Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm17",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 17,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "999",
+    "7760",
+    "5422",
+    "5000",
+    "6333",
+    "3634"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.8089,
+   "maxSpeed": {
+    "mps": 5.24,
+    "team": "5422",
+    "t": 146.2,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 245262,
+   "exportedAt": "2026-10-14T16:38:57Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm18",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 18,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "8544",
+    "1757",
+    "467",
+    "97",
+    "2370",
+    "3205"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.785,
+   "maxSpeed": {
+    "mps": 4.65,
+    "team": "8544",
+    "t": 15.0,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 234970,
+   "exportedAt": "2026-10-14T16:38:59Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm19",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 19,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "5494",
+    "1474",
+    "11483",
+    "2079",
+    "5112",
+    "6762"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.7721,
+   "maxSpeed": {
+    "mps": 4.85,
+    "team": "5494",
+    "t": 42.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 235238,
+   "exportedAt": "2026-10-14T16:38:59Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -246,7 +2450,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 2,
-   "videoId": "2026mawor_qm2",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "10254",
     "467",
@@ -255,10 +2459,362 @@
     "1757",
     "190"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8465,
-   "bytes": 170633,
-   "exportedAt": "2026-09-21T13:51:10Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8119,
+   "maxSpeed": {
+    "mps": 6.29,
+    "team": "467",
+    "t": 102.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 241648,
+   "exportedAt": "2026-10-14T16:38:59Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm20",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 20,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "5491",
+    "348",
+    "1740",
+    "1100",
+    "5347",
+    "4048"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.901,
+   "maxSpeed": {
+    "mps": 4.08,
+    "team": "1100",
+    "t": 115.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 75.733
+   },
+   "bytes": 266752,
+   "exportedAt": "2026-10-14T16:39:00Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm21",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 21,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "10393",
+    "7760",
+    "190",
+    "2168",
+    "999",
+    "3467"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8266,
+   "maxSpeed": {
+    "mps": 4.3,
+    "team": "190",
+    "t": 80.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 37.2
+   },
+   "bytes": 242062,
+   "exportedAt": "2026-10-14T16:39:01Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm22",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 22,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "1757",
+    "157",
+    "10254",
+    "1027",
+    "5000",
+    "2262"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8085,
+   "maxSpeed": {
+    "mps": 4.43,
+    "team": "5000",
+    "t": 6.6,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 29.8
+   },
+   "bytes": 236187,
+   "exportedAt": "2026-10-14T16:39:02Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm23",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 23,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "3634",
+    "5112",
+    "5422",
+    "467",
+    "8724",
+    "3205"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.7887,
+   "maxSpeed": {
+    "mps": 4.82,
+    "team": "5112",
+    "t": 17.6,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 241713,
+   "exportedAt": "2026-10-14T16:39:02Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm24",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 24,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "9644",
+    "8544",
+    "6762",
+    "2079",
+    "5347",
+    "4628"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.8057,
+   "maxSpeed": {
+    "mps": 4.8,
+    "team": "9644",
+    "t": 14.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 222494,
+   "exportedAt": "2026-10-14T16:39:02Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm25",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 25,
+   "videoId": "Br7Vmfkk6-k",
+   "teams": [
+    "6333",
+    "716",
+    "1474",
+    "8567",
+    "1100",
+    "11483"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "reviewed-gallery",
+   "meanCustody": 0.8121,
+   "maxSpeed": {
+    "mps": 4.0,
+    "team": "716",
+    "t": 31.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 146546,
+   "exportedAt": "2026-10-14T16:39:04Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm26",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 26,
+   "videoId": "H1y6rXYw02c",
+   "teams": [
+    "1740",
+    "5494",
+    "97",
+    "2370",
+    "237",
+    "1768"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8658,
+   "maxSpeed": {
+    "mps": 4.19,
+    "team": "1768",
+    "t": 54.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 68.034
+   },
+   "bytes": 282832,
+   "exportedAt": "2026-10-14T16:39:05Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm27",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 27,
+   "videoId": "4yX-2z1UsEE",
+   "teams": [
+    "10393",
+    "5000",
+    "4048",
+    "3467",
+    "10254",
+    "7760"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8657,
+   "maxSpeed": {
+    "mps": 3.72,
+    "team": "3467",
+    "t": 150.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 160.862
+   },
+   "bytes": 282620,
+   "exportedAt": "2026-10-14T16:39:05Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm28",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 28,
+   "videoId": "rro3ICT6JF4",
+   "teams": [
+    "2168",
+    "1027",
+    "5112",
+    "2262",
+    "6762",
+    "1757"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8639,
+   "maxSpeed": {
+    "mps": 3.99,
+    "team": "1757",
+    "t": 116.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 139.138
+   },
+   "bytes": 253592,
+   "exportedAt": "2026-10-14T16:39:05Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm29",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 29,
+   "videoId": "tCJFvngPTPc",
+   "teams": [
+    "8544",
+    "8724",
+    "5347",
+    "11483",
+    "467",
+    "999"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.872,
+   "maxSpeed": {
+    "mps": 3.61,
+    "team": "8724",
+    "t": 117.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 152.267
+   },
+   "bytes": 259527,
+   "exportedAt": "2026-10-14T16:39:06Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -268,7 +2824,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 3,
-   "videoId": "2026mawor_qm3",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "3634",
     "5491",
@@ -277,10 +2833,56 @@
     "1740",
     "8567"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.7744,
-   "bytes": 54934,
-   "exportedAt": "2026-09-21T13:52:41Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8631,
+   "maxSpeed": {
+    "mps": 2.57,
+    "team": "5491",
+    "t": 13.7,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 57408,
+   "exportedAt": "2026-10-14T16:39:07Z",
+   "galleryKnown": 0,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026mawor_qm30",
+   "eventKey": "2026mawor",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 30,
+   "videoId": "kVhsr0aWKVg",
+   "teams": [
+    "237",
+    "5491",
+    "5422",
+    "1474",
+    "1768",
+    "3634"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8729,
+   "maxSpeed": {
+    "mps": 4.51,
+    "team": "1768",
+    "t": 77.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 66.379
+   },
+   "bytes": 257918,
+   "exportedAt": "2026-10-14T16:39:07Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -290,7 +2892,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 4,
-   "videoId": "2026mawor_qm4",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "11483",
     "2079",
@@ -299,10 +2901,22 @@
     "8724",
     "2370"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8146,
-   "bytes": 163628,
-   "exportedAt": "2026-09-21T13:54:35Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8108,
+   "maxSpeed": {
+    "mps": 5.59,
+    "team": "8724",
+    "t": 59.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 240329,
+   "exportedAt": "2026-10-14T16:39:08Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -312,7 +2926,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 5,
-   "videoId": "2026mawor_qm5",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "1474",
     "9644",
@@ -321,10 +2935,22 @@
     "5347",
     "10393"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8306,
-   "bytes": 168802,
-   "exportedAt": "2026-09-21T13:56:40Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8124,
+   "maxSpeed": {
+    "mps": 7.68,
+    "team": "9644",
+    "t": 63.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 227039,
+   "exportedAt": "2026-10-14T16:39:09Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -334,7 +2960,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 6,
-   "videoId": "2026mawor_qm6",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "999",
     "157",
@@ -343,10 +2969,22 @@
     "1100",
     "8544"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.7887,
-   "bytes": 156202,
-   "exportedAt": "2026-09-21T14:07:27Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8302,
+   "maxSpeed": {
+    "mps": 4.03,
+    "team": "999",
+    "t": 134.6,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 245852,
+   "exportedAt": "2026-10-14T16:39:09Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -356,7 +2994,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 7,
-   "videoId": "2026mawor_qm7",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "5000",
     "4628",
@@ -365,10 +3003,22 @@
     "6333",
     "1740"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8022,
-   "bytes": 163459,
-   "exportedAt": "2026-09-21T14:09:29Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.7871,
+   "maxSpeed": {
+    "mps": 4.61,
+    "team": "190",
+    "t": 28.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 237560,
+   "exportedAt": "2026-10-14T16:39:10Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -378,7 +3028,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 8,
-   "videoId": "2026mawor_qm8",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "4048",
     "716",
@@ -387,10 +3037,22 @@
     "6762",
     "8724"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.8716,
-   "bytes": 174746,
-   "exportedAt": "2026-09-21T14:11:29Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8588,
+   "maxSpeed": {
+    "mps": 3.91,
+    "team": "8724",
+    "t": 29.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 253990,
+   "exportedAt": "2026-10-14T16:39:10Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -400,7 +3062,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 9,
-   "videoId": "2026mawor_qm9",
+   "videoId": "Br7Vmfkk6-k",
    "teams": [
     "348",
     "467",
@@ -409,10 +3071,22 @@
     "237",
     "8567"
    ],
+   "absent": [],
    "curated": true,
-   "meanCustody": 0.9038,
-   "bytes": 181174,
-   "exportedAt": "2026-09-21T14:13:27Z",
+   "identityEvidence": "anchors-only",
+   "meanCustody": 0.8875,
+   "maxSpeed": {
+    "mps": 4.77,
+    "team": "348",
+    "t": 39.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 264520,
+   "exportedAt": "2026-10-14T16:39:12Z",
    "galleryKnown": 0,
    "galleryTotal": 6
   },
@@ -422,7 +3096,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 1,
-   "videoId": "2026necmp1_qm1",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "509",
     "58",
@@ -431,10 +3105,22 @@
     "9644",
     "125"
    ],
-   "curated": false,
-   "meanCustody": 0.7571,
-   "bytes": 110476,
-   "exportedAt": "2026-09-19T11:45:24Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7694,
+   "maxSpeed": {
+    "mps": 5.19,
+    "team": "125",
+    "t": 121.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 118.0
+   },
+   "bytes": 164613,
+   "exportedAt": "2026-10-14T16:39:12Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -444,7 +3130,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 10,
-   "videoId": "2026necmp1_qm10",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "2370",
     "5112",
@@ -453,10 +3139,22 @@
     "2876",
     "175"
    ],
-   "curated": false,
-   "meanCustody": 0.6923,
-   "bytes": 169968,
-   "exportedAt": "2026-09-19T11:45:31Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7975,
+   "maxSpeed": {
+    "mps": 5.35,
+    "team": "2876",
+    "t": 65.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 64.266
+   },
+   "bytes": 254795,
+   "exportedAt": "2026-10-14T16:39:13Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -466,7 +3164,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 11,
-   "videoId": "2026necmp1_qm11",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "509",
     "3654",
@@ -475,10 +3173,22 @@
     "1729",
     "151"
    ],
-   "curated": false,
-   "meanCustody": 0.7465,
-   "bytes": 160721,
-   "exportedAt": "2026-09-19T11:45:32Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7399,
+   "maxSpeed": {
+    "mps": 4.24,
+    "team": "151",
+    "t": 141.4,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 97.8
+   },
+   "bytes": 230889,
+   "exportedAt": "2026-10-14T16:39:13Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -488,7 +3198,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 12,
-   "videoId": "2026necmp1_qm12",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "2079",
     "2170",
@@ -497,10 +3207,22 @@
     "4905",
     "5000"
    ],
-   "curated": false,
-   "meanCustody": 0.7078,
-   "bytes": 152371,
-   "exportedAt": "2026-09-19T11:45:33Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7106,
+   "maxSpeed": {
+    "mps": 4.3,
+    "team": "2079",
+    "t": 86.3,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 130.533
+   },
+   "bytes": 223025,
+   "exportedAt": "2026-10-14T16:39:14Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -510,7 +3232,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 13,
-   "videoId": "2026necmp1_qm13",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "172",
     "3146",
@@ -519,10 +3241,22 @@
     "2713",
     "58"
    ],
-   "curated": false,
-   "meanCustody": 0.6861,
-   "bytes": 154509,
-   "exportedAt": "2026-09-19T11:45:16Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7433,
+   "maxSpeed": {
+    "mps": 4.6,
+    "team": "58",
+    "t": 41.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 30.333
+   },
+   "bytes": 231105,
+   "exportedAt": "2026-10-14T16:39:23Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -532,7 +3266,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 14,
-   "videoId": "2026necmp1_qm14",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "10910",
     "173",
@@ -541,10 +3275,22 @@
     "10063",
     "11175"
    ],
-   "curated": false,
-   "meanCustody": 0.6663,
-   "bytes": 140884,
-   "exportedAt": "2026-09-19T11:45:34Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6658,
+   "maxSpeed": {
+    "mps": 4.21,
+    "team": "9710",
+    "t": 62.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 126.866
+   },
+   "bytes": 204733,
+   "exportedAt": "2026-10-14T16:39:15Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -554,7 +3300,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 15,
-   "videoId": "2026necmp1_qm15",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "236",
     "8708",
@@ -563,10 +3309,22 @@
     "571",
     "155"
    ],
-   "curated": false,
-   "meanCustody": 0.7346,
-   "bytes": 175060,
-   "exportedAt": "2026-09-19T11:45:35Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8325,
+   "maxSpeed": {
+    "mps": 4.09,
+    "team": "155",
+    "t": 102.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 256081,
+   "exportedAt": "2026-10-14T16:39:16Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -576,7 +3334,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 16,
-   "videoId": "2026necmp1_qm16",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "1058",
     "78",
@@ -585,10 +3343,22 @@
     "348",
     "133"
    ],
-   "curated": false,
-   "meanCustody": 0.733,
-   "bytes": 162187,
-   "exportedAt": "2026-09-19T11:45:17Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7426,
+   "maxSpeed": {
+    "mps": 5.77,
+    "team": "78",
+    "t": 82.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 3.933
+   },
+   "bytes": 237615,
+   "exportedAt": "2026-10-14T16:39:17Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -598,7 +3368,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 17,
-   "videoId": "2026necmp1_qm17",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "3623",
     "7127",
@@ -607,10 +3377,22 @@
     "1768",
     "5000"
    ],
-   "curated": false,
-   "meanCustody": 0.7284,
-   "bytes": 163444,
-   "exportedAt": "2026-09-19T11:45:36Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7439,
+   "maxSpeed": {
+    "mps": 4.46,
+    "team": "1768",
+    "t": 54.6,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 236819,
+   "exportedAt": "2026-10-14T16:39:17Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -620,7 +3402,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 18,
-   "videoId": "2026necmp1_qm18",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "172",
     "175",
@@ -629,10 +3411,22 @@
     "5687",
     "58"
    ],
-   "curated": false,
-   "meanCustody": 0.707,
-   "bytes": 164324,
-   "exportedAt": "2026-09-19T11:45:37Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.756,
+   "maxSpeed": {
+    "mps": 4.37,
+    "team": "2170",
+    "t": 72.7,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 73.133
+   },
+   "bytes": 239109,
+   "exportedAt": "2026-10-14T16:39:18Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -642,7 +3436,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 19,
-   "videoId": "2026necmp1_qm19",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "151",
     "2067",
@@ -651,10 +3445,22 @@
     "8724",
     "10063"
    ],
-   "curated": false,
-   "meanCustody": 0.6769,
-   "bytes": 145664,
-   "exportedAt": "2026-09-19T11:45:38Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6731,
+   "maxSpeed": {
+    "mps": 4.19,
+    "team": "151",
+    "t": 70.5,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 31.133
+   },
+   "bytes": 213029,
+   "exportedAt": "2026-10-14T16:39:20Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -664,7 +3470,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 2,
-   "videoId": "2026necmp1_qm2",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "2876",
     "155",
@@ -673,10 +3479,22 @@
     "5687",
     "1512"
    ],
-   "curated": false,
-   "meanCustody": 0.7977,
-   "bytes": 144493,
-   "exportedAt": "2026-09-19T11:45:25Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7926,
+   "maxSpeed": {
+    "mps": 4.42,
+    "team": "151",
+    "t": 113.7,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 214215,
+   "exportedAt": "2026-10-14T16:39:20Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -686,7 +3504,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 20,
-   "videoId": "2026necmp1_qm20",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "155",
     "2079",
@@ -695,10 +3513,22 @@
     "125",
     "10910"
    ],
-   "curated": false,
-   "meanCustody": 0.7104,
-   "bytes": 151198,
-   "exportedAt": "2026-09-19T11:45:39Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7248,
+   "maxSpeed": {
+    "mps": 4.97,
+    "team": "2079",
+    "t": 87.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 225206,
+   "exportedAt": "2026-10-14T16:39:21Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -708,7 +3538,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 21,
-   "videoId": "2026necmp1_qm21",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "1058",
     "9710",
@@ -717,10 +3547,294 @@
     "10254",
     "8708"
    ],
-   "curated": false,
-   "meanCustody": 0.7418,
-   "bytes": 166323,
-   "exportedAt": "2026-09-19T11:45:40Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7782,
+   "maxSpeed": {
+    "mps": 4.43,
+    "team": "9710",
+    "t": 119.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 238115,
+   "exportedAt": "2026-10-14T16:39:22Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm22",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 22,
+   "videoId": "i1cedzJVzzg",
+   "teams": [
+    "1768",
+    "236",
+    "7127",
+    "5813",
+    "2713",
+    "1512"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7794,
+   "maxSpeed": {
+    "mps": 5.37,
+    "team": "1768",
+    "t": 135.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 53.733
+   },
+   "bytes": 246410,
+   "exportedAt": "2026-10-14T16:39:22Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm23",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 23,
+   "videoId": "i1cedzJVzzg",
+   "teams": [
+    "1073",
+    "8709",
+    "348",
+    "78",
+    "571",
+    "3654"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7654,
+   "maxSpeed": {
+    "mps": 4.36,
+    "team": "348",
+    "t": 88.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 3,
+    "t": 43.733
+   },
+   "bytes": 242094,
+   "exportedAt": "2026-10-14T16:39:23Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm24",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 24,
+   "videoId": "i1cedzJVzzg",
+   "teams": [
+    "8567",
+    "195",
+    "4925",
+    "173",
+    "3146",
+    "2876"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7788,
+   "maxSpeed": {
+    "mps": 4.29,
+    "team": "8567",
+    "t": 106.4,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 242900,
+   "exportedAt": "2026-10-14T16:39:24Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm25",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 25,
+   "videoId": "i1cedzJVzzg",
+   "teams": [
+    "9644",
+    "3958",
+    "1729",
+    "3623",
+    "133",
+    "4905"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8027,
+   "maxSpeed": {
+    "mps": 4.26,
+    "team": "4905",
+    "t": 2.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 78.733
+   },
+   "bytes": 248959,
+   "exportedAt": "2026-10-14T16:39:25Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm26",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 26,
+   "videoId": "i1cedzJVzzg",
+   "teams": [
+    "5000",
+    "509",
+    "4311",
+    "131",
+    "8724",
+    "9710"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7561,
+   "maxSpeed": {
+    "mps": 4.43,
+    "team": "509",
+    "t": 127.5,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 36.267
+   },
+   "bytes": 240504,
+   "exportedAt": "2026-10-14T16:39:25Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm27",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 27,
+   "videoId": "0COnzxLtc5Q",
+   "teams": [
+    "5813",
+    "8708",
+    "2370",
+    "125",
+    "1058",
+    "2067"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7466,
+   "maxSpeed": {
+    "mps": 4.51,
+    "team": "8708",
+    "t": 75.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 96.233
+   },
+   "bytes": 236374,
+   "exportedAt": "2026-10-14T16:39:26Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm28",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 28,
+   "videoId": "k9nK9rK4Ldo",
+   "teams": [
+    "571",
+    "172",
+    "10254",
+    "3654",
+    "151",
+    "2079"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7928,
+   "maxSpeed": {
+    "mps": 4.41,
+    "team": "151",
+    "t": 126.7,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 252114,
+   "exportedAt": "2026-10-14T16:39:27Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm29",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 29,
+   "videoId": "wauZpuqlBBg",
+   "teams": [
+    "1073",
+    "10063",
+    "2713",
+    "8567",
+    "2876",
+    "11175"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7381,
+   "maxSpeed": {
+    "mps": 4.41,
+    "team": "11175",
+    "t": 34.1,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 236303,
+   "exportedAt": "2026-10-14T16:39:28Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -730,7 +3844,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 3,
-   "videoId": "2026necmp1_qm3",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "2067",
     "11175",
@@ -739,10 +3853,362 @@
     "131",
     "5112"
    ],
-   "curated": false,
-   "meanCustody": 0.6935,
-   "bytes": 163315,
-   "exportedAt": "2026-09-19T11:45:26Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7526,
+   "maxSpeed": {
+    "mps": 3.52,
+    "team": "11175",
+    "t": 129.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 236928,
+   "exportedAt": "2026-10-14T16:39:28Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm30",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 30,
+   "videoId": "UAlVvejwfOQ",
+   "teams": [
+    "230",
+    "10910",
+    "236",
+    "5687",
+    "8709",
+    "1729"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8227,
+   "maxSpeed": {
+    "mps": 5.52,
+    "team": "5687",
+    "t": 40.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 4.007
+   },
+   "bytes": 258259,
+   "exportedAt": "2026-10-14T16:39:28Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm31",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 31,
+   "videoId": "KGqGGxpvaSg",
+   "teams": [
+    "2170",
+    "4925",
+    "9644",
+    "1512",
+    "195",
+    "5112"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6316,
+   "maxSpeed": {
+    "mps": 4.08,
+    "team": "195",
+    "t": 30.9,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 203849,
+   "exportedAt": "2026-10-14T16:39:32Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm32",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 32,
+   "videoId": "2nacLTmylkY",
+   "teams": [
+    "3958",
+    "3623",
+    "3146",
+    "7127",
+    "175",
+    "78"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7711,
+   "maxSpeed": {
+    "mps": 4.2,
+    "team": "3623",
+    "t": 139.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 239740,
+   "exportedAt": "2026-10-14T16:39:30Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm33",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 33,
+   "videoId": "er0n806BekY",
+   "teams": [
+    "133",
+    "6324",
+    "155",
+    "4905",
+    "348",
+    "173"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7832,
+   "maxSpeed": {
+    "mps": 4.51,
+    "team": "133",
+    "t": 33.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 31.169
+   },
+   "bytes": 245018,
+   "exportedAt": "2026-10-14T16:39:31Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm34",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 34,
+   "videoId": "FvGQljM2Df0",
+   "teams": [
+    "8567",
+    "2067",
+    "58",
+    "172",
+    "3654",
+    "1768"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7342,
+   "maxSpeed": {
+    "mps": 3.98,
+    "team": "58",
+    "t": 113.8,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 233165,
+   "exportedAt": "2026-10-14T16:39:31Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm35",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 35,
+   "videoId": "UemELrIbIk8",
+   "teams": [
+    "9710",
+    "8709",
+    "5813",
+    "2370",
+    "2713",
+    "5687"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7395,
+   "maxSpeed": {
+    "mps": 4.13,
+    "team": "2370",
+    "t": 135.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 118.618
+   },
+   "bytes": 241194,
+   "exportedAt": "2026-10-14T16:39:32Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm36",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 36,
+   "videoId": "e3Pw1KdCRsk",
+   "teams": [
+    "5000",
+    "1058",
+    "2170",
+    "571",
+    "1073",
+    "236"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7055,
+   "maxSpeed": {
+    "mps": 3.79,
+    "team": "2170",
+    "t": 103.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 4,
+    "t": 29.701
+   },
+   "bytes": 230672,
+   "exportedAt": "2026-10-14T16:39:33Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm37",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 37,
+   "videoId": "uHUDFmX6m2Q",
+   "teams": [
+    "8724",
+    "4311",
+    "9644",
+    "10910",
+    "7127",
+    "151"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6627,
+   "maxSpeed": {
+    "mps": 3.79,
+    "team": "8724",
+    "t": 114.1,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 209954,
+   "exportedAt": "2026-10-14T16:39:33Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm38",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 38,
+   "videoId": "rE4fMP1IXk4",
+   "teams": [
+    "3623",
+    "2876",
+    "8708",
+    "173",
+    "230",
+    "3958"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7586,
+   "maxSpeed": {
+    "mps": 4.78,
+    "team": "230",
+    "t": 150.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 235766,
+   "exportedAt": "2026-10-14T16:39:34Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm39",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 39,
+   "videoId": "oUCoCSduRq4",
+   "teams": [
+    "1512",
+    "131",
+    "3146",
+    "10254",
+    "6324",
+    "4905"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.8243,
+   "maxSpeed": {
+    "mps": 3.92,
+    "team": "4905",
+    "t": 110.8,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 259754,
+   "exportedAt": "2026-10-14T16:39:35Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -752,7 +4218,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 4,
-   "videoId": "2026necmp1_qm4",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "6324",
     "3958",
@@ -761,10 +4227,430 @@
     "4905",
     "2713"
    ],
-   "curated": false,
-   "meanCustody": 0.6703,
-   "bytes": 85206,
-   "exportedAt": "2026-09-19T11:45:27Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.8491,
+   "maxSpeed": {
+    "mps": 4.26,
+    "team": "6324",
+    "t": 57.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 32.6
+   },
+   "bytes": 130947,
+   "exportedAt": "2026-10-14T16:39:36Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm40",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 40,
+   "videoId": "xHXwmBrThng",
+   "teams": [
+    "58",
+    "11175",
+    "78",
+    "4925",
+    "509",
+    "133"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7065,
+   "maxSpeed": {
+    "mps": 4.18,
+    "team": "58",
+    "t": 10.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 173817,
+   "exportedAt": "2026-10-14T16:39:35Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm41",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 41,
+   "videoId": "YR2n58LWeqo",
+   "teams": [
+    "348",
+    "10063",
+    "1729",
+    "125",
+    "5112",
+    "2079"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.815,
+   "maxSpeed": {
+    "mps": 4.47,
+    "team": "10063",
+    "t": 144.3,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 79.282
+   },
+   "bytes": 252238,
+   "exportedAt": "2026-10-14T16:39:37Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm42",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 42,
+   "videoId": "QW-W_eDTcxA",
+   "teams": [
+    "8724",
+    "1768",
+    "175",
+    "195",
+    "155",
+    "1073"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7593,
+   "maxSpeed": {
+    "mps": 4.19,
+    "team": "195",
+    "t": 127.1,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 152.09
+   },
+   "bytes": 240475,
+   "exportedAt": "2026-10-14T16:39:38Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm43",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 43,
+   "videoId": "-OspxN-jsw0",
+   "teams": [
+    "9710",
+    "3958",
+    "7127",
+    "9644",
+    "2067",
+    "3654"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6747,
+   "maxSpeed": {
+    "mps": 3.42,
+    "team": "9644",
+    "t": 33.1,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 2,
+    "t": 94.568
+   },
+   "bytes": 214354,
+   "exportedAt": "2026-10-14T16:39:38Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm44",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 44,
+   "videoId": "w-iAgWX7CBc",
+   "teams": [
+    "3146",
+    "1058",
+    "4905",
+    "2876",
+    "1512",
+    "8709"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated-gallery",
+   "meanCustody": 0.7613,
+   "maxSpeed": {
+    "mps": 4.51,
+    "team": "1512",
+    "t": 85.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 148.133
+   },
+   "bytes": 234328,
+   "exportedAt": "2026-10-14T16:39:38Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm45",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 45,
+   "videoId": "qQD7yG030rM",
+   "teams": [
+    "2713",
+    "78",
+    "2170",
+    "10254",
+    "173",
+    "151"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7382,
+   "maxSpeed": {
+    "mps": 4.39,
+    "team": "173",
+    "t": 102.0,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 230340,
+   "exportedAt": "2026-10-14T16:39:40Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm46",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 46,
+   "videoId": "vt824z7MRE4",
+   "teams": [
+    "5687",
+    "5112",
+    "133",
+    "4311",
+    "2079",
+    "3623"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.783,
+   "maxSpeed": {
+    "mps": 5.59,
+    "team": "133",
+    "t": 37.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 238175,
+   "exportedAt": "2026-10-14T16:39:40Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm47",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 47,
+   "videoId": "UGqS-cFNhec",
+   "teams": [
+    "125",
+    "11175",
+    "172",
+    "8708",
+    "131",
+    "571"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.6729,
+   "maxSpeed": {
+    "mps": 4.8,
+    "team": "125",
+    "t": 115.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 133.667
+   },
+   "bytes": 215041,
+   "exportedAt": "2026-10-14T16:39:40Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm48",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 48,
+   "videoId": "vkcZK5t_itI",
+   "teams": [
+    "6324",
+    "10910",
+    "195",
+    "1729",
+    "58",
+    "236"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7214,
+   "maxSpeed": {
+    "mps": 4.3,
+    "team": "195",
+    "t": 60.6,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 39.667
+   },
+   "bytes": 227798,
+   "exportedAt": "2026-10-14T16:39:41Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm49",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 49,
+   "videoId": "X4tnQrFLly8",
+   "teams": [
+    "4925",
+    "2370",
+    "5000",
+    "155",
+    "348",
+    "1768"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7278,
+   "maxSpeed": {
+    "mps": 4.26,
+    "team": "4925",
+    "t": 39.9,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 230083,
+   "exportedAt": "2026-10-14T16:39:43Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm5",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 5,
+   "videoId": "seE1iFD9Fuo",
+   "teams": [
+    "175",
+    "236",
+    "2079",
+    "8724",
+    "78",
+    "2370"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7466,
+   "maxSpeed": {
+    "mps": 5.09,
+    "team": "175",
+    "t": 151.3,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 147.417
+   },
+   "bytes": 229929,
+   "exportedAt": "2026-10-14T16:39:43Z",
+   "galleryKnown": 6,
+   "galleryTotal": 6
+  },
+  {
+   "key": "2026necmp1_qm50",
+   "eventKey": "2026necmp1",
+   "compLevel": "qm",
+   "setNumber": 1,
+   "matchNumber": 50,
+   "videoId": "XQSYhkwwq_k",
+   "teams": [
+    "175",
+    "5813",
+    "230",
+    "509",
+    "8567",
+    "10063"
+   ],
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7954,
+   "maxSpeed": {
+    "mps": 4.2,
+    "team": "230",
+    "t": 152.0,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 238983,
+   "exportedAt": "2026-10-14T16:39:43Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -774,7 +4660,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 6,
-   "videoId": "2026necmp1_qm6",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "3654",
     "133",
@@ -783,10 +4669,22 @@
     "5813",
     "3146"
    ],
-   "curated": false,
-   "meanCustody": 0.7346,
-   "bytes": 156513,
-   "exportedAt": "2026-09-19T11:45:28Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7338,
+   "maxSpeed": {
+    "mps": 4.43,
+    "team": "133",
+    "t": 144.2,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 229283,
+   "exportedAt": "2026-10-14T16:39:43Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -796,7 +4694,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 7,
-   "videoId": "2026necmp1_qm7",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "1768",
     "9710",
@@ -805,10 +4703,22 @@
     "4311",
     "230"
    ],
-   "curated": false,
-   "meanCustody": 0.6889,
-   "bytes": 106971,
-   "exportedAt": "2026-09-19T11:45:29Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7387,
+   "maxSpeed": {
+    "mps": 4.76,
+    "team": "4311",
+    "t": 36.5,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 1,
+    "t": 84.067
+   },
+   "bytes": 154179,
+   "exportedAt": "2026-10-14T16:39:45Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -818,7 +4728,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 8,
-   "videoId": "2026necmp1_qm8",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "348",
     "8567",
@@ -827,10 +4737,22 @@
     "10063",
     "1058"
    ],
-   "curated": false,
-   "meanCustody": 0.8064,
-   "bytes": 114369,
-   "exportedAt": "2026-09-19T11:45:29Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.7894,
+   "maxSpeed": {
+    "mps": 4.56,
+    "team": "10063",
+    "t": 123.3,
+    "acrossGap": false
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 177785,
+   "exportedAt": "2026-10-14T16:39:45Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -840,7 +4762,7 @@
    "compLevel": "qm",
    "setNumber": 1,
    "matchNumber": 9,
-   "videoId": "2026necmp1_qm9",
+   "videoId": "i1cedzJVzzg",
    "teams": [
     "5687",
     "195",
@@ -849,10 +4771,22 @@
     "1073",
     "8708"
    ],
-   "curated": false,
-   "meanCustody": 0.769,
-   "bytes": 127352,
-   "exportedAt": "2026-09-19T11:45:30Z",
+   "absent": [],
+   "curated": true,
+   "identityEvidence": "curated+reviewed-gallery",
+   "meanCustody": 0.758,
+   "maxSpeed": {
+    "mps": 5.2,
+    "team": "8708",
+    "t": 115.4,
+    "acrossGap": true
+   },
+   "labelConflicts": {
+    "n": 0,
+    "t": null
+   },
+   "bytes": 192861,
+   "exportedAt": "2026-10-14T16:39:46Z",
    "galleryKnown": 6,
    "galleryTotal": 6
   },
@@ -871,8 +4805,17 @@
     "3467",
     "6329"
    ],
+   "absent": [],
    "curated": true,
+   "identityEvidence": "anchors-only",
    "meanCustody": 0.7579,
+   "maxSpeed": {
+    "mps": 11.03,
+    "team": "5687",
+    "t": 61.2,
+    "acrossGap": true
+   },
+   "labelConflicts": null,
    "bytes": 167006,
    "exportedAt": "2026-09-14T13:01:21Z",
    "galleryKnown": 6,
@@ -893,8 +4836,17 @@
     "3467",
     "6329"
    ],
+   "absent": [],
    "curated": true,
+   "identityEvidence": "anchors-only",
    "meanCustody": 0.7685,
+   "maxSpeed": {
+    "mps": 13.09,
+    "team": "6329",
+    "t": 154.6,
+    "acrossGap": true
+   },
+   "labelConflicts": null,
    "bytes": 168791,
    "exportedAt": "2026-09-14T13:01:59Z",
    "galleryKnown": 6,

@@ -131,6 +131,79 @@ def max_speed(robots: list[dict]) -> dict | None:
     return best
 
 
+def _source_block(stem: str, t0: float) -> dict:
+    """Which YouTube video this route's clip is, and where auto starts in it."""
+    from . import vsource
+    vs = vsource.load(stem)
+    if not vs:
+        print(f"[export] no video source for {stem} -- run rtrack.vsource backfill; "
+              f"the route will not link to video")
+        return {"provider": "youtube", "videoId": None, "kind": None,
+                "matchStartVideoSec": None, "clip": stem, "clipMatchStartSec": round(float(t0), 3)}
+    return {"provider": "youtube", "videoId": vs["youtubeId"], "kind": vs["kind"],
+            "matchStartVideoSec": round(float(vs["clipStartSec"]) + float(t0), 3),
+            "clip": stem, "clipMatchStartSec": round(float(t0), 3),
+            "sourceMethod": vs.get("method")}
+
+
+CAM_IMAGE_W = 1280      # published still; samples stay in 1920x1080 video pixels
+VIDEO_WH = (1920, 1080)
+
+
+def camera_still(cam: str) -> Path | None:
+    """public/tracks/cams/<camera>.jpg: the calibration's reference frame, written once.
+
+    The CALIBRATION frame specifically, not any frame of this match: it is the image the
+    homography was fitted on, so a route projected back through it lands where the
+    calibration says it should."""
+    dest = C.REPO_ROOT / "public" / "tracks" / "cams" / f"{cam}.jpg"
+    if dest.exists():
+        return dest
+    try:
+        import cv2
+        from .acquire import raw_path
+        cal = json.loads((C.CALIB_DIR / f"{cam}.json").read_text(encoding="utf-8"))
+        cap = cv2.VideoCapture(str(raw_path(cal.get("video") or cam)))
+        cap.set(cv2.CAP_PROP_POS_FRAMES, int(cal.get("refFrame") or 0))
+        ok, img = cap.read()
+        cap.release()
+        if not ok:
+            return None
+        if img.shape[1] != VIDEO_WH[0]:
+            print(f"[export] calibration video for {cam} is {img.shape[1]}x{img.shape[0]}, "
+                  f"not 1920x1080; no camera view")
+            return None
+        img = cv2.resize(img, (CAM_IMAGE_W, round(CAM_IMAGE_W * img.shape[0] / img.shape[1])),
+                         interpolation=cv2.INTER_AREA)
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(dest), img, [cv2.IMWRITE_JPEG_QUALITY, 82])
+        print(f"[export] camera still -> {dest} ({dest.stat().st_size // 1024} KB)")
+        return dest
+    except Exception as e:
+        print(f"[export] camera still for {cam} not written ({type(e).__name__}: {e})")
+        return None
+
+
+def field_to_video(cam: str, ref: dict):
+    """f(xs, ys) -> (N, 2) video pixels, NaN where the lens model cannot reach. Exactly
+    rtrack.project.project_points run backwards: metres -> field px -> H^-1 ->
+    distort. Fed UNCORRECTED metres, which is what the homography produced."""
+    import numpy as np
+    import cv2
+    from .project import load_calib
+    from . import lens as _lens
+    H, lens = load_calib(cam)
+    Hi = np.linalg.inv(H)
+    r, ppm = ref["fieldRectPx"], ref["pxPerMeter"]
+
+    def f(xs, ys):
+        fp = np.stack([r["x0"] + np.asarray(xs, float) * ppm,
+                       r["y1"] - np.asarray(ys, float) * ppm], axis=1)
+        und = cv2.perspectiveTransform(fp.reshape(-1, 1, 2), Hi).reshape(-1, 2)
+        return _lens.distort_points(und, lens) if lens else und
+    return f
+
+
 def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
           calib_stem: str | None = None, allow_stale: bool = False,
           allow_unsafe_calibration: bool = False,
@@ -307,6 +380,18 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         print(f"[export] no route correction for {calib_stem or stem}; publishing "
               f"uncorrected samples")
 
+    # CAMERA VIEW. Same camera stem as the calibration and the correction.
+    camera_view, to_video = None, None
+    _cam = calib_stem or stem
+    try:
+        if camera_still(_cam):
+            to_video = field_to_video(_cam, ref)
+            camera_view = {"image": f"tracks/cams/{_cam}.jpg", "camera": _cam,
+                           "videoSize": list(VIDEO_WH)}
+    except Exception as e:
+        print(f"[export] camera view not built ({type(e).__name__}: {e})")
+        camera_view, to_video = None, None
+
     custody = robots_doc.get("custody") or {}
     continuity_doc = robots_doc.get("continuity") or {}
     continuity_enabled = bool(continuity_doc.get("enabled"))
@@ -321,12 +406,13 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         # teleport -- see rtrack.smooth. Each point gains `sd`, its uncertainty (m).
         if smooth_routes:
             ss = _SM.smooth(ss)
-        picked, last_t = [], None
+        picked, last_t, raw_xy = [], None, []
         for s in ss:
             t = round(s["t"] - t0, 3)
             if last_t is not None and t - last_t < step:
                 continue
             last_t = t
+            raw_xy.append((float(s["x"]), float(s["y"])))
             px, py = (_rc.apply_xy(float(s["x"]), float(s["y"]), corr) if corr
                       else (float(s["x"]), float(s["y"])))
             pt = {"t": t, "x": round(px, 3), "y": round(py, 3),
@@ -334,6 +420,16 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             if "sd" in s:
                 pt["sd"] = round(float(s["sd"]), 3)
             picked.append(pt)
+        # One flat [u0, v0, u1, v1, ...] list per robot, parallel to `samples`, rather
+        # than u/v keys on every sample: the key names alone were half the cost (+22% on
+        # a route as keys, ~+11% as a list). null pairs where the lens model cannot reach.
+        uv_flat = None
+        if to_video and raw_xy:
+            import math as _m
+            uv_flat = []
+            for u, v in to_video([p[0] for p in raw_xy], [p[1] for p in raw_xy]):
+                ok = _m.isfinite(u) and _m.isfinite(v)
+                uv_flat += [int(round(u)), int(round(v))] if ok else [None, None]
         gaps = [{"tStart": a["t"], "tEnd": b["t"], "reason": "unobserved"}
                 for a, b in zip(picked, picked[1:]) if b["t"] - a["t"] > GAP_S]
         gaps.extend(_route_jump_gaps(picked))
@@ -355,6 +451,7 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
             "station": station_of.get(team),
             "custody": round((custody.get(team, {}).get("pct") or 0.0) / 100.0, 4),
             "samples": [{k: v for k, v in s.items() if k != "_tid"} for s in picked],
+            **({"uv": uv_flat} if uv_flat is not None else {}),
             "gaps": gaps,
         })
 
@@ -424,8 +521,16 @@ def build(stem: str, match_key: str, hz: float = DEFAULT_HZ,
         "match": {"key": match_key, "eventKey": match_key.split("_")[0],
                   "compLevel": m.get("compLevel"), "setNumber": m.get("setNumber"),
                   "matchNumber": m.get("matchNumber")},
-        "source": {"provider": "youtube", "videoId": stem,
-                   "matchStartVideoSec": round(float(t0), 3)},
+        # videoId is the REAL YouTube video and matchStartVideoSec is auto start in
+        # THAT video's time -- for a clip cut from a livestream, hours into the stream.
+        # Before rtrack.vsource this held the local clip's name, which no player can
+        # open; a route whose clip has no known source now says so with videoId null.
+        "source": _source_block(stem, t0),
+        # The camera's own view: a still from the calibration, and on each robot `uv`,
+        # where it stands in that view at each sample ([u0, v0, u1, v1, ...] in
+        # 1920x1080 video pixels, parallel to samples). Lets a route be drawn in the same
+        # perspective as the video beside it. Null when unavailable.
+        "cameraView": camera_view,
         "field": {"year": C.YEAR, "units": "meters", "convention": "wpilib-2026",
                   "sizeM": ref["fieldSizeM"],          # authoritative; see docstring
                   "imageRef": "field/2026-field.png",

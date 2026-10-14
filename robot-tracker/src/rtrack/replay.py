@@ -326,6 +326,9 @@ def main(argv=None) -> int:
             if yt:
                 t0 = time.time()
                 if fetch_match_video(yt, dest):
+                    # Where it came from, so the published route can link to it.
+                    from .vsource import save as _vs_save
+                    _vs_save(stem, yt, "match", 0.0, "download")
                     print(f"  {suf}: per-match video {yt} -> {dest.name} "
                           f"({dest.stat().st_size / 1e6:.0f} MB, {time.time() - t0:.0f}s)")
                     ok += 1
@@ -339,6 +342,11 @@ def main(argv=None) -> int:
         pa = args.pad_after if args.pad_after is not None else PAD_AFTER_S
         good = slice_match(urls[vid], offset - pb, MATCH_S + pb + pa, dest, ff)
         if good:
+            # The exact cut, so the route links into the stream at the right moment. The
+            # cut is what the clip IS, even when TBA's time named the wrong match.
+            from .vsource import save as _vs_save, refine_cut as _vs_refine
+            _vs_save(stem, vid, "stream", offset - pb, "cut")
+            _vs_refine(stem, vid, offset - pb)
             mb = dest.stat().st_size / 1e6
             print(f"  {suf}: t+{offset:.0f}s -> {dest.name} "
                   f"({mb:.0f} MB, {time.time() - t0:.0f}s)")
